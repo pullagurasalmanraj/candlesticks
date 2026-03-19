@@ -41,6 +41,7 @@ init_oauth(app)
 
 # ── Symbol map — must load before blueprints, works under both python app.py and gunicorn ──
 from utils.symbol_map import load_symbol_map
+
 load_symbol_map()
 
 # ── Register blueprints ──────────────────────────────────────────
@@ -53,6 +54,7 @@ from routes.strategy import strategy_bp
 from routes.ml import ml_bp
 from routes.live import live_bp
 from routes.logos import logos_bp
+
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(market_bp)
