@@ -130,3 +130,71 @@ def api_instruments():
             cur.execute(sql, [f"{q}%", f"{q}%", q, f"{q}%"])
             rows = cur.fetchall()
     return jsonify({"instruments": rows})
+
+
+@instruments_bp.route("/api/options/contracts", methods=["GET"])
+def api_options_contracts():
+    """
+    Option contract search (CE/PE + OPTIDX/OPTSTK).
+    Query is resolved server-side against v_search_universe (already synced from upstox_instruments.json.gz).
+    """
+    q = request.args.get("q", "").strip().upper()
+    underlying = request.args.get("underlying", "").strip().upper()
+    expiry = request.args.get("expiry", "").strip()  # YYYY-MM-DD (optional)
+    opt_type = request.args.get("type", "").strip().upper()  # CE / PE (optional)
+
+    # Require at least some signal to avoid heavy scans
+    if len(q) < 2 and len(underlying) < 2:
+        return jsonify({"contracts": []})
+
+    where = [
+        "is_tradeable = true",
+        "segment = 'NSE_FO'",
+        "instrument_type IN ('CE','PE','OPTIDX','OPTSTK')",
+    ]
+    params = []
+
+    if len(q) >= 2:
+        where.append("(trading_symbol ILIKE %s OR underlying ILIKE %s)")
+        params.extend([f"{q}%", f"{q}%"])
+
+    if len(underlying) >= 2:
+        where.append("underlying ILIKE %s")
+        params.append(f"{underlying}%")
+
+    if expiry:
+        where.append("expiry = %s")
+        params.append(expiry)
+
+    if opt_type in ("CE", "PE"):
+        where.append("instrument_type = %s")
+        params.append(opt_type)
+
+    sql = f"""
+        SELECT trading_symbol AS symbol, name, exchange, segment, instrument_type,
+               underlying, strike_price, expiry, lot_size, minimum_lot,
+               qty_multiplier, instrument_key, exchange_token, tick_size
+        FROM v_search_universe
+        WHERE {" AND ".join(where)}
+        ORDER BY
+            CASE
+                WHEN trading_symbol = %s THEN 0
+                WHEN trading_symbol ILIKE %s THEN 1
+                WHEN underlying ILIKE %s THEN 2
+                ELSE 3
+            END,
+            expiry DESC,
+            strike_price ASC
+        LIMIT 80
+    """
+
+    # For ORDER BY params, reuse q/underlying best-effort
+    best = q if len(q) >= 2 else underlying
+    params.extend([best, f"{best}%", f"{best}%"])
+
+    with get_db_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+
+    return jsonify({"contracts": rows})

@@ -1,7 +1,15 @@
-import { Loader2, BarChart3, Wand2, Sparkles } from "lucide-react";
-
 import React, { useState, useEffect, useRef } from "react";
-import { useTheme } from "../context/ThemeContext";
+import { LAYOUT, useTheme } from "../context/ThemeContext";
+
+import SearchTrainCard from "./lstm/SearchTrainCard";
+import TrainingResults from "./lstm/TrainingResults";
+import ConversionCard from "./lstm/ConversionCard";
+import OfflineLabelingCard from "./lstm/OfflineLabelingCard";
+import OfflineOutcomesCard from "./lstm/OfflineOutcomesCard";
+import RulePerformanceCard from "./lstm/RulePerformanceCard";
+import EquityCurveCard from "./lstm/EquityCurveCard";
+import PaperTradingCard from "./lstm/PaperTradingCard";
+import OptionsContractSearchCard from "./lstm/OptionsContractSearchCard";
 
 
 
@@ -11,11 +19,10 @@ import { useTheme } from "../context/ThemeContext";
 
 export default function MLTrainingPage() {
     const { theme } = useTheme();
-    const isLight = theme === "light";
 
     const [symbol, setSymbol] = useState("");
     const [filtered, setFiltered] = useState([]);
-    const [timeframe, setTimeframe] = useState("5m");
+    const [timeframe, setTimeframe] = useState("1m");
     const [task] = useState("classification");
     const [trainSplit] = useState(0.8);
 
@@ -47,8 +54,6 @@ export default function MLTrainingPage() {
 
     const [marginPerShare, setMarginPerShare] = useState(21.68);
 
-    const didFetchRef = useRef(false);
-
     const [equityRunId, setEquityRunId] = useState(null);
     const [equityCurve, setEquityCurve] = useState([]);
     const [equityLoading, setEquityLoading] = useState(false);
@@ -66,58 +71,145 @@ export default function MLTrainingPage() {
     const [ruleStatsLoading, setRuleStatsLoading] = useState(false);
     const [searchResults, setSearchResults] = useState([]);
     const [trainResults, setTrainResults] = useState(null);
+    const [modelRunId, setModelRunId] = useState(null);
 
     const [search, setSearch] = useState("");
 
     const [searching, setSearching] = useState(false);
 
-    const panelStyle = {
-        backgroundColor: "var(--bg-secondary)",
-        border: "1px solid var(--border-color)",
-        borderRadius: "12px",
-    };
+    // Options contract search
+    const [contractQuery, setContractQuery] = useState("");
+    const [contractSearching, setContractSearching] = useState(false);
+    const [contractResults, setContractResults] = useState([]);
+    const [selectedContract, setSelectedContract] = useState(null);
+
+    const searchAbortRef = useRef(null);
+    const contractAbortRef = useRef(null);
+    const latestSearchRef = useRef("");
+    const latestContractQueryRef = useRef("");
+    const justSelectedRef = useRef(false);  // prevents search re-firing after selection
+
+    // (panelStyle no longer needed; extracted into card components)
 
 
 
     useEffect(() => {
-        if (!search || search.length < 2) {
+        const query = (search || "").trim();
+        latestSearchRef.current = query;
+
+        if (query.length < 2) {
             setSearchResults([]);
-            didFetchRef.current = false;
+            setSearching(false);
             return;
         }
 
-        if (didFetchRef.current) return;
-        didFetchRef.current = true;
+        // Skip search if this change came from selecting an instrument
+        if (justSelectedRef.current) {
+            justSelectedRef.current = false;
+            return;
+        }
+
+        if (searchAbortRef.current) {
+            searchAbortRef.current.abort();
+        }
 
         const controller = new AbortController();
+        searchAbortRef.current = controller;
+
         const t = setTimeout(async () => {
             try {
                 setSearching(true);
-                const res = await fetch(
-                    `/api/instruments?q=${encodeURIComponent(search)}`,
-                    { signal: controller.signal }
-                );
+                const res = await fetch(`/api/instruments?q=${encodeURIComponent(query)}`, {
+                    signal: controller.signal,
+                });
                 const data = await res.json();
 
-                setSearchResults(
-                    Array.isArray(data.instruments) ? data.instruments : []
-                );
+                if (latestSearchRef.current !== query) return; // stale response
+
+                const uniqueInstruments = Array.isArray(data.instruments)
+                    ? Array.from(
+                          new Map(
+                              data.instruments
+                                  .filter((item) => item && item.instrument_key)
+                                  .map((item) => [item.instrument_key, item])
+                          ).values()
+                      )
+                    : [];
+
+                setSearchResults(uniqueInstruments);
             } catch (e) {
                 if (e.name !== "AbortError") {
                     console.error(e);
                     setSearchResults([]);
                 }
             } finally {
-                setSearching(false);
-                didFetchRef.current = false;
+                if (latestSearchRef.current === query) {
+                    setSearching(false);
+                }
             }
-        }, 200);
+        }, 220);
 
         return () => {
-            controller.abort();
             clearTimeout(t);
+            controller.abort();
         };
     }, [search]);
+
+    useEffect(() => {
+        const q = (contractQuery || "").trim().toUpperCase();
+        latestContractQueryRef.current = q;
+
+        if (q.length < 2) {
+            setContractResults([]);
+            setContractSearching(false);
+            return;
+        }
+
+        if (contractAbortRef.current) {
+            contractAbortRef.current.abort();
+        }
+
+        const controller = new AbortController();
+        contractAbortRef.current = controller;
+
+        const t = setTimeout(async () => {
+            try {
+                setContractSearching(true);
+                const res = await fetch(`/api/options/contracts?q=${encodeURIComponent(q)}`, {
+                    signal: controller.signal,
+                });
+                const data = await res.json();
+
+                if (latestContractQueryRef.current !== q) return;
+
+                const uniqueContracts = Array.isArray(data.contracts)
+                    ? Array.from(
+                          new Map(
+                              data.contracts
+                                  .filter((c) => c && c.instrument_key)
+                                  .map((c) => [c.instrument_key, c])
+                          ).values()
+                      )
+                    : [];
+
+                setContractResults(uniqueContracts);
+            } catch (e) {
+                if (e.name !== "AbortError") {
+                    console.error(e);
+                    setContractResults([]);
+                }
+            } finally {
+                if (latestContractQueryRef.current === q) {
+                    setContractSearching(false);
+                }
+            }
+        }, 220);
+
+        return () => {
+            clearTimeout(t);
+            controller.abort();
+        };
+    }, [contractQuery]);
 
 
 
@@ -174,6 +266,7 @@ export default function MLTrainingPage() {
 
         setLoading(true);
         setTrainResults(null);
+        setModelRunId(null);
 
         try {
             const res = await fetch("/api/train-pipeline", {
@@ -188,6 +281,8 @@ export default function MLTrainingPage() {
             if (data.status !== "SUCCESS") {
                 throw new Error("Training failed");
             }
+
+            setModelRunId(data.model_run_id || null);
 
             const results = [];
 
@@ -301,17 +396,22 @@ export default function MLTrainingPage() {
         setLabelResult(null);
 
         try {
+            // 10 minute timeout — 89k rows takes 3-4 minutes to process
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 600000);
+
             const res = await fetch("/api/offline/label-market-context", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    symbol,
-                    timeframe,
-                    windowSize
-                })
-
+                body: JSON.stringify({ symbol, timeframe, windowSize }),
+                signal: controller.signal,
             });
+            clearTimeout(timeoutId);
 
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text.startsWith("<") ? "Server error (check Flask logs)" : text);
+            }
             const data = await res.json();
             setLabelResult(data);
 
@@ -342,9 +442,14 @@ export default function MLTrainingPage() {
         });
 
         try {
+            // 10 minute timeout for heavy computation
+            const controller2 = new AbortController();
+            const timeoutId2 = setTimeout(() => controller2.abort(), 600000);
+
             const res = await fetch("/api/offline/calc-strategy-outcomes", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                signal: controller2.signal,
                 body: JSON.stringify({
                     symbol,
                     timeframe
@@ -353,19 +458,18 @@ export default function MLTrainingPage() {
                 })
             });
 
+            clearTimeout(timeoutId2);
+
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text.startsWith("<") ? "Server error (check Flask logs)" : text);
+            }
+
             let data;
             try {
                 data = await res.json();
             } catch {
-                throw new Error("Server did not return JSON");
-            }
-
-            if (!res.ok) {
-                setOutcomeResult({
-                    error: data.error || "Computation failed",
-                    details: data
-                });
-                return;
+                throw new Error("Server did not return JSON — request may have timed out");
             }
 
             setOutcomeResult(data);
@@ -373,7 +477,7 @@ export default function MLTrainingPage() {
         } catch (e) {
             console.error(e);
             setOutcomeResult({
-                error: "Request failed",
+                error: e.name === "AbortError" ? "Request timed out after 10 minutes" : "Request failed",
                 message: e.message
             });
         } finally {
@@ -412,7 +516,7 @@ export default function MLTrainingPage() {
     // Paper Trade Simulation (ONE SHOT)
     const runPaperTrading = async () => {
         if (!symbol) return alert("Select stock first");
-        if (!trainResults?.model_run_id) return alert("Train model first");
+        if (!modelRunId) return alert("Train model first");
 
         setPaperLoading(true);
         setPaperResult(null);
@@ -430,7 +534,7 @@ export default function MLTrainingPage() {
                 body: JSON.stringify({
                     symbol,
                     timeframe,
-                    model_run_id: trainResults.model_run_id,
+                    model_run_id: modelRunId,
                     margin_per_share: marginPerShare,
                     starting_capital: 10000,
                     risk_pct: riskPct,
@@ -491,7 +595,7 @@ export default function MLTrainingPage() {
     };
 
     const compareThresholds = async () => {
-        if (!symbol || !trainResults?.model_run_id) {
+        if (!symbol || !modelRunId) {
             alert("Train model first");
             return;
         }
@@ -506,7 +610,7 @@ export default function MLTrainingPage() {
                 body: JSON.stringify({
                     symbol,
                     timeframe,
-                    model_run_id: trainResults.model_run_id,
+                    model_run_id: modelRunId,
                     starting_capital: 10000,
                     risk_pct: riskPct,
                     rr_ratio: rrRatio,
@@ -526,678 +630,219 @@ export default function MLTrainingPage() {
     };
 
 
+    // Pipeline step tracker
+    const steps = [
+        { id: 1, label: "Search & Train",   done: !!modelRunId },
+        { id: 2, label: "Data Pipeline",    done: !!convertMessage },
+        { id: 3, label: "Label Context",    done: !!(labelResult && !labelResult.error) },
+        { id: 4, label: "Outcomes",         done: !!(outcomeResult && outcomeResult.status === "SUCCESS") },
+        { id: 5, label: "Paper Trade",      done: !!(paperResult && !paperResult.error) },
+    ];
+
     return (
-        <div
-            className="w-full text-sm"
-            style={{
-                backgroundColor: "var(--bg-primary)",
-                color: "var(--text-primary)"
-            }}
-        >
-            <div
-                className="w-full max-w-4xl mx-auto p-6 space-y-5"
-                style={{
-                    backgroundColor: "var(--bg-secondary)",
-                    border: "1px solid var(--border-color)",
-                    borderRadius: "10px"
-                }}
-            >
+        <div style={{
+            minHeight: "calc(100vh - var(--navbar-height))",
+            background: "var(--bg-primary)",
+            color: "var(--text-primary)",
+            fontFamily: "var(--font-body)",
+        }}>
+            <style>{`
+                .ml-page {
+                    max-width: 1400px;
+                    margin: 0 auto;
+                    padding: 20px var(--content-padding, 20px);
+                    display: flex;
+                    flex-direction: column;
+                    gap: 16px;
+                }
+                /* Pipeline bar */
+                .ml-pipeline {
+                    display: flex;
+                    align-items: stretch;
+                    background: var(--bg-secondary);
+                    border: 1px solid var(--border-color);
+                    border-radius: 10px;
+                    overflow: hidden;
+                }
+                .ml-step {
+                    flex: 1;
+                    display: flex;
+                    align-items: center;
+                    gap: 7px;
+                    padding: 10px 14px;
+                    font-size: 0.72rem;
+                    font-weight: 600;
+                    color: var(--text-muted);
+                    border-right: 1px solid var(--border-subtle);
+                    white-space: nowrap;
+                    transition: all 0.15s ease;
+                }
+                .ml-step:last-child { border-right: none; }
+                .ml-step.done   { color: var(--accent-up); }
+                .ml-step.active { color: var(--text-primary); }
+                .ml-step-num {
+                    width: 20px; height: 20px;
+                    border-radius: 50%;
+                    border: 1.5px solid currentColor;
+                    display: flex; align-items: center; justify-content: center;
+                    font-size: 0.6rem; font-weight: 700; flex-shrink: 0;
+                }
+                .ml-step.done .ml-step-num {
+                    background: var(--accent-up);
+                    border-color: var(--accent-up);
+                    color: #fff;
+                }
+                /* Two-column layout */
+                .ml-layout {
+                    display: grid;
+                    grid-template-columns: 300px 1fr;
+                    gap: 16px;
+                    align-items: start;
+                }
+                /* Left rail */
+                .ml-rail {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 10px;
+                    min-width: 0;
+                }
+                /* Right area */
+                .ml-right {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 14px;
+                    min-width: 0;
+                }
+                .ml-row-2 {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 14px;
+                }
+                @media (max-width: 1100px) {
+                    .ml-layout { grid-template-columns: 1fr; }
+                    .ml-row-2  { grid-template-columns: 1fr; }
+                }
+                @media (max-width: 700px) {
+                    .ml-pipeline { flex-wrap: wrap; }
+                    .ml-step     { flex: none; width: 50%; border-bottom: 1px solid var(--border-subtle); }
+                }
+            `}</style>
 
-                {/* HEADER */}
-                <div className="flex items-center gap-2">
-                    <BarChart3 size={18} />
-                    <h1 className="text-lg font-semibold tracking-wide">
-                        AI Trading Model Trainer
-                    </h1>
-                </div>
+            <div className="ml-page">
 
-                {/* SEARCH INPUT */}
-                <input
-                    placeholder="Search stocks…"
-                    value={search}
-                    onChange={(e) => handleSearch(e.target.value)}
-                    className="w-full h-11 px-3 rounded-md text-sm"
-                    style={{
-                        backgroundColor: "var(--bg-tertiary)",
-                        border: "1px solid var(--border-color)",
-                        color: "var(--text-primary)"
-                    }}
-                />
-
-
-                {/* SEARCH RESULTS */}
-                {searchResults.length > 0 && (
-                    <ul
-                        className="mt-1 max-h-60 overflow-y-auto rounded-md"
-                        style={{
-                            backgroundColor: "var(--bg-secondary)",
-                            border: "1px solid var(--border-color)"
-                        }}
-                    >
-                        {searchResults.map(inst => (
-                            <li
-                                key={inst.instrument_key}
-                                onClick={() => {
-                                    setSymbol(inst.symbol);
-                                    setSearch(inst.symbol);
-                                    setSearchResults([]);
-                                }}
-                                className="px-3 py-2 cursor-pointer"
-                            >
-
-                                <div className="text-sm font-medium">
-                                    {inst.symbol}
-                                </div>
-
-                                <div
-                                    className="text-xs"
-                                    style={{ color: "var(--text-secondary)" }}
-                                >
-                                    {inst.name} · {inst.segment}
-                                </div>
-                            </li>
-                        ))}
-                    </ul>
-                )}
-
-
-
-
-                {/* TIMEFRAME + TRAIN */}
-                <div className="space-y-4 max-w-xl">
-
-                    {/* TIMEFRAME SELECT */}
-                    <select
-                        className="w-full h-11 px-3 rounded-md text-sm"
-                        style={{
-                            backgroundColor: "var(--bg-tertiary)",
-                            border: "1px solid var(--border-color)",
-                            color: "var(--text-primary)"
-                        }}
-                        value={timeframe}
-                        onChange={(e) => setTimeframe(e.target.value)}
-                    >
-                        {["1m", "3m", "5m", "15m", "30m", "1D"].map(tf => (
-                            <option key={tf}>{tf}</option>
-                        ))}
-                    </select>
-
-                    {/* TRAIN BUTTON */}
-                    <button
-                        type="button"
-                        onClick={handleTrain}
-                        disabled={loading}
-                        className="h-11 px-6 rounded-md shadow-sm inline-flex items-center justify-center gap-2 text-sm font-medium"
-                        style={{ backgroundColor: "var(--accent-up)", color: "#fff" }}
-                    >
-                        {loading ? (
-                            <Loader2 className="animate-spin w-4 h-4" />
-                        ) : (
-                            <Wand2 className="w-4 h-4" />
-                        )}
-                        Train Models
-                    </button>
-
-                </div>
-
-                {trainResults && (
-                    <div className="mt-6 space-y-3 max-w-xl">
-                        <div className="text-sm font-semibold tracking-wide">
-                            Rule Intelligence
-                        </div>
-
-                        {trainResults.filter(r => r.type === "edge_gate").length === 0 && (
-                            <div className="text-xs text-muted">
-                                No rule-based models trained for this symbol.
-                            </div>
-                        )}
-
-                        {trainResults
-                            .filter(r => r.type === "edge_gate")
-                            .sort((a, b) => (b.auc ?? 0) - (a.auc ?? 0))   // ⭐ optional but good
-                            .map(result => {
-                                const auc = result.auc ?? 0;
-                                const statusColor =
-                                    auc >= 0.6 ? "var(--accent-up)"
-                                        : auc >= 0.55 ? "#f0ad4e"
-                                            : "var(--accent-down)";
-
-                                const statusLabel =
-                                    auc >= 0.6 ? "ACTIVE"
-                                        : auc >= 0.55 ? "WEAK"
-                                            : "DISABLED";
-
-                                return (
-                                    <div
-                                        key={result.key}
-                                        className="flex justify-between items-center px-4 py-3 rounded-md text-sm"
-                                        style={{
-                                            backgroundColor: "var(--bg-tertiary)",
-                                            border: "1px solid var(--border-color)"
-                                        }}
-                                    >
-                                        <div>
-                                            <div className="font-medium">
-                                                {result.label.replace(" · Edge Gate", "")}
-                                            </div>
-                                            <div
-                                                className="text-xs"
-                                                style={{ color: "var(--text-secondary)" }}
-                                            >
-                                                AUC: {typeof result.auc === "number"
-                                                    ? result.auc.toFixed(3)
-                                                    : "—"}
-                                            </div>
-                                        </div>
-
-                                        <div
-                                            className="px-3 py-1 rounded-full text-[11px] font-semibold"
-                                            style={{
-                                                backgroundColor: `${statusColor}22`,
-                                                color: statusColor
-                                            }}
-                                        >
-                                            {statusLabel}
-                                        </div>
-                                    </div>
-                                );
-                            })}
-                    </div>
-                )}
-                {trainResults && (
-                    <div className="mt-8 space-y-3 max-w-xl">
-                        <div className="text-sm font-semibold tracking-wide">
-                            Market Context Models
-                        </div>
-
-                        {trainResults.filter(r =>
-                            r.type === "context_expectancy" || r.type === "edge_decay"
-                        ).length === 0 && (
-                                <div className="text-xs text-muted">
-                                    No market context models available.
-                                </div>
-                            )}
-
-                        {trainResults
-                            .filter(r =>
-                                r.type === "context_expectancy" ||
-                                r.type === "edge_decay"
-                            )
-                            .map(result => (
-                                <div
-                                    key={result.key}
-                                    className="px-4 py-3 rounded-md text-sm"
-                                    style={{
-                                        backgroundColor: "var(--bg-tertiary)",
-                                        border: "1px solid var(--border-color)"
-                                    }}
-                                >
-                                    <div className="font-medium">
-                                        {result.label}
-                                    </div>
-
-                                    <div
-                                        className="text-xs mt-1"
-                                        style={{ color: "var(--text-secondary)" }}
-                                    >
-                                        RMSE: {typeof result.rmse === "number"
-                                            ? result.rmse.toFixed(3)
-                                            : "—"}
-                                    </div>
-                                </div>
-                            ))}
-                    </div>
-                )}
-
-
-
-                {/* Tick Conversion */}
-                <div
-                    className="mt-8 p-5 space-y-3 max-w-xl"
-                    style={panelStyle}
-                >
-
-                    <h2 className="text-sm font-semibold tracking-wide">
-                        Tick to Candle Conversion (1m)
-                    </h2>
-
-                    <button
-                        onClick={handleConvertTicks}
-                        disabled={convertLoading}
-                        className="h-10 px-6 rounded-md text-sm font-medium inline-flex items-center justify-center whitespace-nowrap"
-                        style={{
-                            backgroundColor: "var(--accent-up)",
-                            color: "#ffffff"
-                        }}
-                    >
-                        {convertLoading ? "Converting…" : "Convert Ticks"}
-                    </button>
-
-                    {convertMessage && (
-                        <div
-                            className="text-xs px-3 py-2 rounded-md"
-                            style={{
-                                backgroundColor: "var(--bg-tertiary)",
-                                border: "1px solid var(--border-color)",
-                                color: "var(--text-secondary)"
-                            }}
-                        >
-                            {convertMessage}
-                        </div>
-                    )}
-                </div>
-
-                {/* ================= OFFLINE MARKET LABELING ================= */}
-                <div
-                    className="mt-8 p-5 space-y-4 max-w-xl"
-                    style={panelStyle}
-                >
-
-                    <h2 className="text-sm font-semibold tracking-wide">
-                        Offline Market Context Labeling
-                    </h2>
-
-                    <p
-                        className="text-xs leading-relaxed"
-                        style={{ color: "var(--text-secondary)" }}
-                    >
-                        Label historical candles with market structure and regime.
-                        <br />
-                        <span className="italic">
-                            (Offline only — no future data leakage)
-                        </span>
-                    </p>
-
-                    <input
-                        type="number"
-                        value={windowSize}
-                        onChange={(e) => setWindowSize(+e.target.value)}
-                        className="w-full h-10 px-3 rounded-md text-sm"
-                        style={{
-                            backgroundColor: "var(--bg-tertiary)",
-                            border: "1px solid var(--border-color)",
-                            color: "var(--text-primary)"
-                        }}
-                        placeholder="Context window size"
-                    />
-
-                    <button
-                        onClick={handleOfflineLabeling}
-                        disabled={labelLoading}
-                        className="h-10 px-6 rounded-md inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap"
-                        style={{
-                            backgroundColor: "var(--accent-up)",
-                            color: "#ffffff"
-                        }}
-                    >
-                        {labelLoading ? (
-                            <Loader2 className="animate-spin w-4 h-4" />
-                        ) : (
-                            "Run Offline Labeling"
-                        )}
-                    </button>
-
-                    {labelResult && (
-                        <pre
-                            className="text-xs px-3 py-2 rounded-md overflow-x-auto"
-                            style={{
-                                backgroundColor: "var(--bg-tertiary)",
-                                border: "1px solid var(--border-color)",
-                                color: "var(--text-secondary)"
-                            }}
-                        >
-                            {JSON.stringify(labelResult, null, 2)}
-                        </pre>
-                    )}
-                </div>
-
-
-                {/* ================= OFFLINE SUCCESS OUTCOMES ================= */}
-                <div
-                    className="mt-8 p-5 space-y-4 max-w-xl"
-                    style={panelStyle}
-                >
-                    <h2 className="text-sm font-semibold tracking-wide">
-                        Offline Success Outcome Evaluation
-                    </h2>
-
-                    <p
-                        className="text-xs leading-relaxed"
-                        style={{ color: "var(--text-secondary)" }}
-                    >
-                        Evaluate how rule signals would have resolved
-                        using phase-locked future candles.
-                        <br />
-                        <span className="italic">
-                            (Offline only — lookahead is fixed by market phase)
-                        </span>
-                    </p>
-
-                    <button
-                        type="button"
-                        onClick={handleOfflineSuccess}
-                        disabled={outcomeLoading}
-                        className="h-10 px-6 rounded-md inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap"
-                        style={{
-                            backgroundColor: outcomeLoading
-                                ? "var(--bg-tertiary)"
-                                : "var(--accent-up)",
-                            color: outcomeLoading
-                                ? "var(--text-secondary)"
-                                : "#ffffff"
-                        }}
-                    >
-                        {outcomeLoading ? (
-                            <>
-                                <Loader2 className="animate-spin w-4 h-4" />
-                                Computing…
-                            </>
-                        ) : (
-                            "Compute Success Outcomes"
-                        )}
-                    </button>
-
-                    {outcomeResult && (
-                        <div
-                            className="text-xs px-3 py-2 rounded-md"
-                            style={{
-                                backgroundColor: "var(--bg-tertiary)",
-                                border: "1px solid var(--border-color)",
-                                color: "var(--text-secondary)"
-                            }}
-                        >
-                            {outcomeResult.error ? (
-                                <div>{outcomeResult.error}</div>
-                            ) : (
-                                <pre className="whitespace-pre-wrap">
-                                    {JSON.stringify(outcomeResult, null, 2)}
-                                </pre>
-                            )}
-                        </div>
-                    )}
-                </div>
-
-
-                {/* ================= RULE PERFORMANCE ================= */}
-                <div
-                    className="mt-8 p-5 space-y-4 max-w-xl"
-                    style={panelStyle}
-                >
-
-                    <div className="flex justify-between items-center">
-                        <h2 className="text-sm font-semibold tracking-wide">
-                            Rule Performance (Market Context)
-                        </h2>
-
-                        <button
-                            onClick={fetchRuleStats}
-                            className="h-8 px-3 rounded-md text-xs font-medium inline-flex items-center"
-                            style={{
-                                backgroundColor: "var(--bg-tertiary)",
-                                border: "1px solid var(--border-color)",
-                                color: "var(--text-primary)"
-                            }}
-                        >
-                            Refresh
-                        </button>
-                    </div>
-
-                    {ruleStatsLoading && (
-                        <div className="text-xs" style={{ color: "var(--text-secondary)" }}>
-                            Loading rule statistics…
-                        </div>
-                    )}
-
-                    {ruleStats?.as_of && (
-                        <div className="text-xs" style={{ color: "var(--text-secondary)" }}>
-                            Evaluated as of: {ruleStats.as_of}
-                        </div>
-                    )}
-
-                    {ruleStats?.rules && ruleStats.rules.map(rule => (
-                        <div
-                            key={rule.name}
-                            className="px-3 py-2 rounded-md flex justify-between items-center"
-                            style={{
-                                backgroundColor: "var(--bg-tertiary)",
-                                border: "1px solid var(--border-color)"
-                            }}
-                        >
-                            <div className="space-y-0.5">
-                                <div className="text-sm font-medium">
-                                    {rule.name}
-                                </div>
-
-                                <div
-                                    className="text-xs"
-                                    style={{ color: "var(--text-secondary)" }}
-                                >
-                                    Success: {(rule.success_rate * 100).toFixed(1)}% ·
-                                    Failure: {(rule.failure_rate * 100).toFixed(1)}%
-                                </div>
-
-                                <div
-                                    className="text-[11px]"
-                                    style={{ color: "var(--text-secondary)" }}
-                                >
-                                    Evaluated at: {rule.evaluated_at}
-                                </div>
-                            </div>
-
-                            <div
-                                className="px-3 py-1 rounded-full text-[11px] font-medium whitespace-nowrap"
-                                style={{
-                                    backgroundColor:
-                                        rule.status === "WORKING"
-                                            ? "rgba(0,199,111,0.15)"
-                                            : rule.status === "NOT_WORKING"
-                                                ? "rgba(255,77,79,0.15)"
-                                                : "rgba(255,193,7,0.15)",
-                                    color:
-                                        rule.status === "WORKING"
-                                            ? "var(--accent-up)"
-                                            : rule.status === "NOT_WORKING"
-                                                ? "var(--accent-down)"
-                                                : "var(--text-primary)"
-                                }}
-                            >
-                                {rule.status}
-                            </div>
+                {/* ── Pipeline progress ── */}
+                <div className="ml-pipeline">
+                    {steps.map(s => (
+                        <div key={s.id} className={`ml-step ${s.done ? "done" : "active"}`}>
+                            <span className="ml-step-num">{s.done ? "✓" : s.id}</span>
+                            {s.label}
                         </div>
                     ))}
-
-                    {!ruleStatsLoading && !ruleStats && (
-                        <div className="text-xs" style={{ color: "var(--text-secondary)" }}>
-                            No rule diagnostics available yet.
-                        </div>
-                    )}
                 </div>
 
-                {/* ================= EQUITY CURVE ================= */}
-                <div
-                    className="mt-8 p-5 space-y-4 max-w-xl"
-                    style={panelStyle}
-                >
+                {/* ── Main layout ── */}
+                <div className="ml-layout">
 
-                    <h2 className="text-sm font-semibold tracking-wide">
-                        Paper Trading Equity Curve
-                    </h2>
+                    {/* LEFT RAIL — action cards, workflow order */}
+                    <div className="ml-rail">
 
-                    {equityLoading && (
-                        <div
-                            className="text-xs"
-                            style={{ color: "var(--text-secondary)" }}
-                        >
-                            Loading equity curve…
-                        </div>
-                    )}
-
-                    {!equityLoading && equityCurve.length === 0 && (
-                        <div
-                            className="text-xs"
-                            style={{ color: "var(--text-secondary)" }}
-                        >
-                            No equity data available.
-                        </div>
-                    )}
-
-                    {!equityLoading && equityCurve.length > 0 && (
-                        <div
-                            className="max-h-64 overflow-y-auto rounded-md"
-                            style={{
-                                backgroundColor: "var(--bg-tertiary)",
-                                border: "1px solid var(--border-color)"
+                        {/* Step 1: Search + Train */}
+                        <SearchTrainCard
+                            theme={theme}
+                            symbol={symbol}
+                            modelRunId={modelRunId}
+                            search={search}
+                            searching={searching}
+                            onSearchChange={handleSearch}
+                            searchResults={searchResults}
+                            onSelectInstrument={(inst) => {
+                                justSelectedRef.current = true;
+                                setSymbol(inst.symbol);
+                                setSearch(inst.symbol);
+                                setSearchResults([]);
+                                if (searchAbortRef.current) searchAbortRef.current.abort();
                             }}
-                        >
-                            {equityCurve.map((p, idx) => (
-                                <div
-                                    key={idx}
-                                    className="flex justify-between items-center px-3 py-1.5 text-xs"
-                                    style={{
-                                        borderBottom:
-                                            idx !== equityCurve.length - 1
-                                                ? "1px solid var(--border-color)"
-                                                : "none"
-                                    }}
-                                >
-                                    <span
-                                        style={{ color: "var(--text-secondary)" }}
-                                    >
-                                        {new Date(p.time).toLocaleString()}
-                                    </span>
+                            timeframe={timeframe}
+                            onTimeframeChange={setTimeframe}
+                            loading={loading}
+                            onTrain={handleTrain}
+                            compareLoading={compareLoading}
+                            onCompareThresholds={compareThresholds}
+                        />
 
-                                    <span
-                                        className="font-mono"
-                                        style={{
-                                            color:
-                                                p.capital >= 10000
-                                                    ? "var(--accent-up)"
-                                                    : "var(--accent-down)"
-                                        }}
-                                    >
-                                        ₹{p.capital.toFixed(2)}
-                                    </span>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
+                        {/* Step 2: Data Pipeline (live tick → candle) */}
+                        <ConversionCard
+                            symbol={symbol}
+                            convertLoading={convertLoading}
+                            convertMessage={convertMessage}
+                            onConvertTicks={handleConvertTicks}
+                        />
 
+                        {/* Step 3: Label market context */}
+                        <OfflineLabelingCard
+                            symbol={symbol}
+                            windowSize={windowSize}
+                            onWindowSizeChange={setWindowSize}
+                            labelLoading={labelLoading}
+                            onRunLabeling={handleOfflineLabeling}
+                            labelResult={labelResult}
+                        />
 
-                {/* ================= PAPER TRADING SIMULATION ================= */}
-                <div
-                    className="mt-8 p-5 space-y-4 max-w-xl"
-                    style={panelStyle}
-                >
-                    <h2 className="text-sm font-semibold tracking-wide">
-                        Paper Trading Simulation
-                    </h2>
+                        {/* Step 4: Compute outcomes */}
+                        <OfflineOutcomesCard
+                            symbol={symbol}
+                            outcomeLoading={outcomeLoading}
+                            onComputeOutcomes={handleOfflineSuccess}
+                            outcomeResult={outcomeResult}
+                        />
 
-                    {/* PARAMETERS */}
-                    <div className="grid grid-cols-2 gap-4 text-xs">
-                        {[
-                            { label: "Risk Model", value: "Phase Adaptive" },
-                            { label: "RR Model", value: "Phase Adaptive" },
-                            { label: "Max Trades / Day", value: "5" },
-                            { label: "Capital Stop", value: "₹7,000" },
-                        ].map((item) => (
-                            <div
-                                key={item.label}
-                                className="p-3 rounded-md"
-                                style={{
-                                    backgroundColor: "var(--bg-tertiary)",
-                                    border: "1px solid var(--border-color)",
-                                }}
-                            >
-                                <div style={{ color: "var(--text-secondary)" }}>
-                                    {item.label}
-                                </div>
-                                <div className="font-medium">
-                                    {item.value}
-                                </div>
-                            </div>
-                        ))}
                     </div>
 
-                    {/* THRESHOLD */}
-                    <div className="space-y-1">
-                        <label
-                            className="block text-xs"
-                            style={{ color: "var(--text-secondary)" }}
-                        >
-                            ML Threshold
-                        </label>
-                        <select
-                            value={threshold}
-                            onChange={(e) => setThreshold(Number(e.target.value))}
-                            className="w-full h-10 px-3 rounded-md text-sm"
-                            style={{
-                                backgroundColor: "var(--bg-tertiary)",
-                                border: "1px solid var(--border-color)",
-                                color: "var(--text-primary)",
-                            }}
-                        >
-                            <option value={0.5}>0.5</option>
-                            <option value={0.6}>0.6</option>
-                            <option value={0.7}>0.7</option>
-                        </select>
-                    </div>
+                    {/* RIGHT — results and analysis */}
+                    <div className="ml-right">
 
-                    {/* RUN PAPER TRADING */}
-                    <button
-                        onClick={runPaperTrading}
-                        disabled={paperLoading || !trainResults?.model_run_id}
-                        className="h-10 px-6 rounded-md inline-flex items-center justify-center gap-2 text-sm font-medium whitespace-nowrap"
-                        style={{
-                            backgroundColor:
-                                paperLoading || !trainResults?.model_run_id
-                                    ? "var(--border-color)"
-                                    : "var(--accent-up)",
-                            color: "#ffffff",
-                        }}
-                    >
-                        {paperLoading ? (
-                            <Loader2 className="animate-spin w-4 h-4" />
-                        ) : !trainResults?.model_run_id ? (
-                            "Train Model First"
-                        ) : (
-                            "Run Paper Trading"
-                        )}
-                    </button>
+                        {/* Training results */}
+                        <TrainingResults trainResults={trainResults} />
 
-                    {/* SUMMARY */}
-                    {paperResult && (
-                        <div
-                            className="p-4 rounded-md text-xs"
-                            style={{
-                                backgroundColor: "var(--bg-tertiary)",
-                                border: "1px solid var(--border-color)",
-                            }}
-                        >
-                            {paperResult.error ? (
-                                <div style={{ color: "var(--accent-down)" }}>
-                                    {paperResult.error}
-                                </div>
-                            ) : (
-                                <>
-                                    <h3 className="text-sm font-semibold mb-2">
-                                        Simulation Summary
-                                    </h3>
-                                    <div className="grid grid-cols-2 gap-2">
-                                        <div>Start Capital: ₹10,000</div>
-                                        <div>Final Capital: ₹{paperResult.final_capital}</div>
-                                        <div>Total Trades: {paperResult.total_trades}</div>
-                                        <div>
-                                            Win Rate: {(paperResult.win_rate * 100).toFixed(1)}%
-                                        </div>
-                                        <div>
-                                            Max Drawdown: {paperResult.max_drawdown_pct}%
-                                        </div>
-                                    </div>
-                                </>
-                            )}
+                        {/* Rule performance + options search */}
+                        <div className="ml-row-2">
+                            <RulePerformanceCard
+                                symbol={symbol}
+                                ruleStatsLoading={ruleStatsLoading}
+                                ruleStats={ruleStats}
+                                onRefresh={fetchRuleStats}
+                            />
+                            <OptionsContractSearchCard
+                                query={contractQuery}
+                                onQueryChange={setContractQuery}
+                                loading={contractSearching}
+                                results={contractResults}
+                                selected={selectedContract}
+                                onSelect={setSelectedContract}
+                            />
                         </div>
-                    )}
+
+                        {/* Equity curve */}
+                        <EquityCurveCard
+                            equityLoading={equityLoading}
+                            equityCurve={equityCurve}
+                        />
+
+                        {/* Paper trading */}
+                        <PaperTradingCard
+                            riskPct={riskPct}
+                            rrRatio={rrRatio}
+                            threshold={threshold}
+                            onThresholdChange={setThreshold}
+                            paperLoading={paperLoading}
+                            modelRunId={modelRunId}
+                            onRunPaperTrading={runPaperTrading}
+                            paperProgress={paperProgress}
+                            paperPercent={paperPercent}
+                            paperResult={paperResult}
+                        />
+
+                    </div>
                 </div>
             </div>
         </div>
