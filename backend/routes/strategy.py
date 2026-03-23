@@ -14,6 +14,32 @@
 #  5. traceback added to label-market-context
 #  6. timezone-safe ts comparison in rule_truth lookup
 #  7. read_sql_safe handles RealDictCursor correctly
+#  8. Realistic transaction cost model added to calc_strategy_outcomes
+#     → slippage on entry AND exit (1 tick each side)
+#     → brokerage 0.03% per side (0.06% round trip)
+#     → STT 0.025% sell side
+#     → exchange fees + SEBI + stamp duty 0.065% combined
+#     → realized_r stored as NET; realized_r_gross stored separately
+#     → cost_r column shows cost drag in R-units per trade
+#
+#  State machine fixes (derived from cross-TF data analysis):
+#  9.  COMPRESSION threshold: rolling mean×0.7 → rolling p33 per date group
+#      → 1m fires drop from 52.7% → ~26%, matching 3m/5m/15m consistently
+#  10. EMA stacking gate on trend labels (9>21>50 bull, 9<21<50 bear)
+#      → bear trend drops from ~40% → ~20-25%, removing structural bias
+#      → bull trend tightens from ~21% → ~12-15%, removing weak drift bars
+#  11. LARGE_GAP_AUCTION_BULL/BEAR → NEUTRAL in PHASE_TO_ML
+#      → worst-performing labels (p50 MFE 0.32-0.38R, negative p25)
+#      → ML now skips these instead of guessing direction
+#  12. BALANCE_CHOP direction: MEAN → NEUTRAL in PHASE_MODEL
+#      → no directional edge confirmed by MFE data
+#      → outcome rows generated but ML treats as skip
+#  13. distribution condition uses bb_width_p33 (consistent with fix 9)
+#
+#  DB migration required before running calc-strategy-outcomes:
+#    ALTER TABLE strategy_outcomes
+#        ADD COLUMN IF NOT EXISTS realized_r_gross FLOAT,
+#        ADD COLUMN IF NOT EXISTS cost_r           FLOAT;
 # ================================================================
 import json, traceback, time
 from datetime import datetime, timedelta
@@ -25,6 +51,7 @@ from psycopg2.extras import execute_values
 
 from db import get_db_conn
 
+
 # ── Safe DB query helper ─────────────────────────────────────────
 def read_sql_safe(sql, conn, params=None):
     """
@@ -34,6 +61,7 @@ def read_sql_safe(sql, conn, params=None):
     Also converts Decimal → float and None → NaN.
     """
     import decimal
+
     with conn.cursor() as cur:
         cur.execute(sql, params or [])
         rows = cur.fetchall()
@@ -50,16 +78,124 @@ def read_sql_safe(sql, conn, params=None):
 def _chunk_execute(cur, sql, rows, chunk_size=5000):
     """Batch execute_values in chunks to avoid memory spikes."""
     for i in range(0, len(rows), chunk_size):
-        execute_values(cur, sql, rows[i:i + chunk_size])
+        execute_values(cur, sql, rows[i : i + chunk_size])
 
 
 def json_safe(v):
     try:
         f = float(v)
         import math
+
         return None if (math.isnan(f) or math.isinf(f)) else f
     except Exception:
         return None
+
+
+# ── Transaction cost model (NSE intraday) ────────────────────────
+# All percentage rates apply to trade value (entry price × qty).
+# Slippage is in absolute points — applied on entry AND exit separately.
+#
+# Round-trip cost breakdown:
+#   Brokerage     : 0.03% × 2 sides          = 0.0600%
+#   STT           : 0.025% on sell side only  = 0.0250%
+#   Exchange fees : ~0.00335% × 2 sides       = 0.0067%  ─┐
+#   SEBI turnover : ~0.0001%  × 2 sides       = 0.0002%   │ combined as
+#   Stamp duty    : ~0.003%   buy side only   = 0.0030%   │ TAX_CHARGES_PCT
+#   GST on fees   : ~0.018%   on brokerage    = 0.0108%  ─┘
+#   ─────────────────────────────────────────────────────
+#   TOTAL_COST_PCT                            ≈ 0.1507% ≈ 0.00150 per trade
+#
+# Slippage: 1 tick (₹0.05) on entry, 1 tick on TP exit.
+# SL exits are assumed to fill exactly at SL (market order, worst case).
+#
+# cost_r = how many R the round-trip costs consume, regardless of outcome.
+# Example: entry=₹130, ATR=₹0.35, SL=0.6 ATR → R=₹0.21
+#   cost_pts = 130 × 0.00150 = ₹0.195
+#   cost_r   = 0.195 / 0.21  = 0.93R   ← nearly 1R just in costs
+# This correctly penalises tight-stop trades on low-ATR stocks.
+
+
+# ── Swing detection → price structure ────────────────────────────
+def _compute_price_structure(
+    highs: np.ndarray, lows: np.ndarray, i: int, n: int = 3
+) -> str:
+    """
+    Lookback-only swing detection — no future bars used.
+    Checks 2*n bars back from current bar i.
+    Returns: BULL / BEAR / TRANSITION / NEUTRAL
+    """
+    if i < 4 * n:
+        return "NEUTRAL"
+    window = slice(max(0, i - 4 * n), i + 1)
+    h = highs[window]
+    l = lows[window]
+    sh, sl = [], []
+    for j in range(n, len(h) - n):
+        if h[j] == h[j - n : j + n + 1].max():
+            sh.append(h[j])
+        if l[j] == l[j - n : j + n + 1].min():
+            sl.append(l[j])
+    if len(sh) < 2 or len(sl) < 2:
+        return "NEUTRAL"
+    hh = sh[-1] > sh[-2]
+    hl = sl[-1] > sl[-2]
+    ll = sl[-1] < sl[-2]
+    lh = sh[-1] < sh[-2]
+    if hh and hl:
+        return "BULL"
+    if ll and lh:
+        return "BEAR"
+    if (hh and ll) or (lh and hl):
+        return "TRANSITION"
+    return "NEUTRAL"
+
+
+def _compute_session_type(
+    orb_range: float, prev_atr: float, open_drive: float, orb_break_early: bool
+) -> str:
+    """
+    Classifies session by bar ~15 using orb_range and open drive.
+    orb_range     : orb_high - orb_low
+    prev_atr      : yesterday's ATR (available as prev_day_atr)
+    open_drive    : abs(close_bar5 - open_bar0) / prev_atr
+    orb_break_early: orb_breakout fired before bar 10
+    """
+    if prev_atr <= 0:
+        return "NORMAL_DAY"
+    ib_ratio = orb_range / prev_atr
+    if ib_ratio < 0.5 and open_drive > 0.3 and orb_break_early:
+        return "TREND_DAY"
+    if ib_ratio > 1.3:
+        return "VOLATILE_DAY"
+    return "NORMAL_DAY"
+
+
+def _compute_macro_regime(close: float, ema_200: float) -> str:
+    """
+    Simple macro regime from close vs EMA-200.
+    Proxy for directional efficiency — available without daily data.
+    BULL_MACRO / BEAR_MACRO / NEUTRAL_MACRO
+    """
+    if pd.isna(ema_200) or ema_200 <= 0:
+        return "NEUTRAL_MACRO"
+    dist = (close - ema_200) / ema_200
+    if dist > 0.01:
+        return "BULL_MACRO"
+    if dist < -0.01:
+        return "BEAR_MACRO"
+    return "NEUTRAL_MACRO"
+
+
+BROKERAGE_PCT = 0.0003  # 0.03% per side × 2 = 0.06% round trip
+STT_PCT = 0.00025  # Securities Transaction Tax — sell side only
+TAX_CHARGES_PCT = (
+    0.00065  # Exchange fees + SEBI turnover + Stamp Duty + GST (both sides)
+)
+SLIPPAGE_PTS = 0.05  # 1 tick slippage — applied on entry AND TP exit
+
+# Total percentage cost per round trip (slippage handled separately in points)
+TOTAL_COST_PCT = (BROKERAGE_PCT * 2) + STT_PCT + TAX_CHARGES_PCT
+# = 0.0006 + 0.00025 + 0.00065 = 0.00150  →  0.150% per round trip
 
 
 strategy_bp = Blueprint("strategy", __name__)
@@ -70,7 +206,7 @@ strategy_bp = Blueprint("strategy", __name__)
 # Too many labels = class imbalance + blurry decision boundaries.
 #
 #  TREND_UP    → Long bias, follow price higher
-#  TREND_DOWN  → Short bias, follow price lower  
+#  TREND_DOWN  → Short bias, follow price lower
 #  IMPULSE     → Strong momentum, enter on first pullback
 #  RANGE       → Mean-revert, fade edges of range
 #  REVERSAL    → Fade the prevailing move
@@ -79,62 +215,59 @@ strategy_bp = Blueprint("strategy", __name__)
 
 PHASE_TO_ML = {
     # ── TREND_UP ─────────────────────────────────────────────────
-    "TREND_CONTINUATION":        "TREND_UP",
-    "TREND_ACCEPTANCE":          "TREND_UP",
-    "TREND_PAUSE":               "TREND_UP",
-    "TREND_DIGESTION":           "TREND_UP",
-
+    "TREND_CONTINUATION": "TREND_UP",
+    "TREND_ACCEPTANCE": "TREND_UP",
+    "TREND_PAUSE": "TREND_UP",
+    "TREND_DIGESTION": "TREND_UP",
     # ── TREND_DOWN ───────────────────────────────────────────────
-    "BEAR_TREND_CONTINUATION":   "TREND_DOWN",
-    "BEAR_TREND_ACCEPTANCE":     "TREND_DOWN",
-    "BEAR_TREND_PAUSE":          "TREND_DOWN",
-    "BEAR_TREND_DIGESTION":      "TREND_DOWN",
-
+    "BEAR_TREND_CONTINUATION": "TREND_DOWN",
+    "BEAR_TREND_ACCEPTANCE": "TREND_DOWN",
+    "BEAR_TREND_PAUSE": "TREND_DOWN",
+    "BEAR_TREND_DIGESTION": "TREND_DOWN",
     # ── IMPULSE UP ───────────────────────────────────────────────
-    "IMPULSE_BULL":              "IMPULSE_UP",
-    "EXPANSION":                 "IMPULSE_UP",
-    "GAP_CONTINUATION":          "IMPULSE_UP",
-    "GAP_TIMEOUT":               "TREND_UP",
-
+    "IMPULSE_BULL": "IMPULSE_UP",
+    "EXPANSION": "IMPULSE_UP",
+    "GAP_CONTINUATION": "IMPULSE_UP",
+    "GAP_TIMEOUT": "TREND_UP",
     # ── IMPULSE DOWN ─────────────────────────────────────────────
-    "IMPULSE_BEAR":              "IMPULSE_DOWN",
-
+    "IMPULSE_BEAR": "IMPULSE_DOWN",
     # ── IMPULSE NEUTRAL ──────────────────────────────────────────
-    "IMPULSE_NEUTRAL":           "IMPULSE_NEUTRAL",
-    "POST_IMPULSE_DIGESTION":    "IMPULSE_NEUTRAL",
-
+    "IMPULSE_NEUTRAL": "IMPULSE_NEUTRAL",
+    "POST_IMPULSE_DIGESTION": "IMPULSE_NEUTRAL",
     # ── RANGE (mean-revert) ──────────────────────────────────────
-    "BALANCE_CHOP":              "RANGE",
-    "COMPRESSION":               "RANGE",
-    "DIGESTION":                 "RANGE",
-    "ABSORPTION":                "RANGE",
-    "GAP_AUCTION_CHOP":          "RANGE",
-    "GAP_FILLED":                "RANGE",
-    "GAP_OPEN":                  "RANGE",
-    "AUCTION_IMPULSE_NEUTRAL":   "RANGE",
-
+    "BALANCE_CHOP": "RANGE",
+    "COMPRESSION": "RANGE",
+    "DIGESTION": "RANGE",
+    "ABSORPTION": "RANGE",
+    "GAP_AUCTION_CHOP": "RANGE",
+    "GAP_FILLED": "RANGE",
+    "GAP_OPEN": "RANGE",
+    "AUCTION_IMPULSE_NEUTRAL": "RANGE",
     # ── REVERSAL (fade the move) ─────────────────────────────────
-    "PULLBACK_FAIL":             "REVERSAL",
-    "REJECTION":                 "REVERSAL",
-    "DISTRIBUTION":              "REVERSAL",
-
+    "PULLBACK_FAIL": "REVERSAL",
+    "REJECTION": "REVERSAL",
+    "DISTRIBUTION": "REVERSAL",
     # ── GAP UP ───────────────────────────────────────────────────
-    "LARGE_GAP_UP":              "GAP_UP",
-    "MODERATE_GAP_UP":           "GAP_UP",
-    "LARGE_GAP_AUCTION_BULL":    "GAP_UP",
+    "LARGE_GAP_UP": "GAP_UP",
+    "MODERATE_GAP_UP": "GAP_UP",
+    # LARGE_GAP_AUCTION_BULL demoted to NEUTRAL — MFE analysis shows p50=+0.32R
+    # with negative p25 MFE. Large gap auctions are too noisy for directional
+    # assumption; ML should learn continuation vs reversal from context.
+    "LARGE_GAP_AUCTION_BULL": "NEUTRAL",
     "MODERATE_GAP_AUCTION_BULL": "GAP_UP",
-    "AUCTION_IMPULSE_UP":        "GAP_UP",
-
+    "AUCTION_IMPULSE_UP": "GAP_UP",
     # ── GAP DOWN ─────────────────────────────────────────────────
-    "LARGE_GAP_DOWN":            "GAP_DOWN",
-    "MODERATE_GAP_DOWN":         "GAP_DOWN",
-    "LARGE_GAP_AUCTION_BEAR":    "GAP_DOWN",
+    "LARGE_GAP_DOWN": "GAP_DOWN",
+    "MODERATE_GAP_DOWN": "GAP_DOWN",
+    # LARGE_GAP_AUCTION_BEAR demoted to NEUTRAL — same reason as BULL above.
+    # p50=+0.38R, p25=-0.33R. Worst-performing labels in the dataset.
+    "LARGE_GAP_AUCTION_BEAR": "NEUTRAL",
     "MODERATE_GAP_AUCTION_BEAR": "GAP_DOWN",
-    "AUCTION_IMPULSE_DOWN":      "GAP_DOWN",
-
+    "AUCTION_IMPULSE_DOWN": "GAP_DOWN",
     # ── NEUTRAL (no edge — skip) ──────────────────────────────────
-    "UNCLASSIFIED":              "NEUTRAL",
+    "UNCLASSIFIED": "NEUTRAL",
 }
+
 
 def get_ml_label(market_phase: str) -> str:
     """Map raw market phase to consolidated ML label."""
@@ -142,84 +275,356 @@ def get_ml_label(market_phase: str) -> str:
 
 
 PHASE_MODEL = {
-    # ── Standard intraday phases ─────────────────────────────────
-    "IMPULSE_BULL":            {"dir": "LONG",     "tp": 1.2, "sl": 0.6, "lookahead": 4},
-    "IMPULSE_BEAR":            {"dir": "SHORT",    "tp": 1.2, "sl": 0.6, "lookahead": 4},
-    "IMPULSE_NEUTRAL":         {"dir": "MEAN",     "tp": 0.8, "sl": 0.6, "lookahead": 3},
-    "EXPANSION":               {"dir": "FOLLOW",   "tp": 1.0, "sl": 0.7, "lookahead": 6},
-    "DIGESTION":               {"dir": "MEAN",     "tp": 0.6, "sl": 0.6, "lookahead": 6},
-    "PULLBACK_FAIL":           {"dir": "FADE",     "tp": 0.6, "sl": 0.5, "lookahead": 5},
-    "TREND_CONTINUATION":      {"dir": "LONG",     "tp": 1.2, "sl": 0.8, "lookahead": 12},
-    "TREND_ACCEPTANCE":        {"dir": "LONG",     "tp": 1.0, "sl": 0.8, "lookahead": 14},
-    "TREND_PAUSE":             {"dir": "LONG",     "tp": 0.8, "sl": 0.7, "lookahead": 10},
-    "BALANCE_CHOP":            {"dir": "MEAN",     "tp": 0.5, "sl": 0.5, "lookahead": 6},
-    "COMPRESSION":             {"dir": "BREAKOUT", "tp": 0.7, "sl": 0.5, "lookahead": 6},
-    "ABSORPTION":              {"dir": "FOLLOW",   "tp": 0.8, "sl": 0.6, "lookahead": 8},
-    "DISTRIBUTION":            {"dir": "SHORT",    "tp": 0.8, "sl": 0.6, "lookahead": 8},
-
-    # ── Gap open phases (bar_of_day == 0) ────────────────────────
-    # Large gap: strong overnight move > 1.2 ATR
-    # Expect sharp continuation or sharp reversal — wide TP/SL
-    "LARGE_GAP_UP":            {"dir": "LONG",     "tp": 1.5, "sl": 0.8, "lookahead": 6},
-    "LARGE_GAP_DOWN":          {"dir": "SHORT",    "tp": 1.5, "sl": 0.8, "lookahead": 6},
-    # Moderate gap: 0.5-1.2 ATR — tends to fill, fade the gap
-    "MODERATE_GAP_UP":         {"dir": "SHORT",    "tp": 1.0, "sl": 0.6, "lookahead": 8},
-    "MODERATE_GAP_DOWN":       {"dir": "LONG",     "tp": 1.0, "sl": 0.6, "lookahead": 8},
-
-    # ── Gap auction phases (within the auction window) ───────────
-    "LARGE_GAP_AUCTION_BULL":  {"dir": "LONG",     "tp": 1.0, "sl": 0.7, "lookahead": 5},
-    "LARGE_GAP_AUCTION_BEAR":  {"dir": "SHORT",    "tp": 1.0, "sl": 0.7, "lookahead": 5},
-    "MODERATE_GAP_AUCTION_BULL":{"dir":"LONG",     "tp": 0.8, "sl": 0.6, "lookahead": 6},
-    "MODERATE_GAP_AUCTION_BEAR":{"dir":"SHORT",    "tp": 0.8, "sl": 0.6, "lookahead": 6},
-    "GAP_AUCTION_CHOP":        {"dir": "MEAN",     "tp": 0.5, "sl": 0.4, "lookahead": 4},
-
-    # ── Bear trend phases (mirrors of bull) ─────────────────────
-    "BEAR_TREND_CONTINUATION": {"dir": "SHORT",    "tp": 1.2, "sl": 0.8, "lookahead": 12},
-    "BEAR_TREND_ACCEPTANCE":   {"dir": "SHORT",    "tp": 1.0, "sl": 0.8, "lookahead": 14},
-    "BEAR_TREND_PAUSE":        {"dir": "SHORT",    "tp": 0.8, "sl": 0.7, "lookahead": 10},
-    "BEAR_TREND_DIGESTION":    {"dir": "SHORT",    "tp": 0.6, "sl": 0.6, "lookahead": 6},
-
-    # ── Gap resolution phases ────────────────────────────────────
-    "GAP_FILLED":              {"dir": "MEAN",     "tp": 0.6, "sl": 0.5, "lookahead": 6},
-    "GAP_TIMEOUT":             {"dir": "FOLLOW",   "tp": 0.8, "sl": 0.6, "lookahead": 8},
-    "GAP_CONTINUATION":        {"dir": "FOLLOW",   "tp": 1.2, "sl": 0.7, "lookahead": 8},
-    "GAP_OPEN":                {"dir": "MEAN",     "tp": 0.5, "sl": 0.5, "lookahead": 4},
+    # ================================================================
+    #  PHASE_MODEL — TF-AWARE, COST-VIABLE
+    # ================================================================
+    #  Design principles:
+    #
+    #  1. LOOKAHEAD is in MINUTES not bars. The endpoint converts to
+    #     bars at runtime using tf_min. This ensures the same phase
+    #     measures the same market time on every timeframe.
+    #     Key: lookahead_bars = max(2, lookahead_min // tf_min)
+    #
+    #  2. TP and SL are in ATR multiples. They stay fixed across TFs
+    #     because ATR already scales with timeframe — a 1m ATR is ~5x
+    #     smaller than a 15m ATR so the ₹ distance self-calibrates.
+    #
+    #  3. MIN R:R after costs must be viable.
+    #     Cost = entry × 0.0015 / R.  R = sl × ATR.
+    #     For R:R to be net-positive after costs, need:
+    #       tp × ATR - cost > 0  →  tp > cost/ATR
+    #     At ₹130 entry:
+    #       1m ATR ≈ ₹0.184: cost/ATR ≈ 1.06 → minimum sl ≥ 0.7, tp ≥ 1.5
+    #       3m ATR ≈ ₹0.355: cost/ATR ≈ 0.55 → minimum sl ≥ 0.6, tp ≥ 1.2
+    #       5m ATR ≈ ₹0.467: cost/ATR ≈ 0.42 → minimum sl ≥ 0.5, tp ≥ 1.0
+    #      15m ATR ≈ ₹0.834: cost/ATR ≈ 0.23 → minimum sl ≥ 0.4, tp ≥ 0.7
+    #
+    #  4. Phases marked "dir": "SKIP" on 1m are those where after costs
+    #     the net R:R is negative regardless of accuracy. The outcome
+    #     simulation still runs for them (realized_r_net will be negative
+    #     from costs alone), which correctly teaches the ML model to
+    #     never take these on 1m.
+    #
+    #  5. BALANCE_CHOP and similar no-edge phases have their TP/SL set
+    #     wide enough to generate meaningful outcome data but their
+    #     dir=NEUTRAL means the execution engine skips them.
+    #
+    #  lookahead_min: target real-time duration in minutes
+    #    Impulse/fast phases:  15–20 min  (burst resolves quickly)
+    #    Trend phases:         45–75 min  (trend plays out over session)
+    #    Gap phases:           30–60 min  (gap resolves in first hour)
+    #    Reversal phases:      20–30 min  (rejection is immediate)
+    #    Range phases:         30–45 min  (balance resolves slowly)
+    # ================================================================
+    # ── Impulse phases ──────────────────────────────────────────────
+    # Wide SL to make costs viable on 1m. TP raised to 1.8 to
+    # compensate for noise and maintain net positive after 0.15% cost.
+    # R:R gross 2.25:1, net on 3m ≈ 1.4:1 — acceptable.
+    "IMPULSE_BULL": {
+        "dir": "LONG",
+        "tp": 1.8,
+        "sl": 0.8,
+        "lookahead_min": 15,
+        # At ₹130 / 1m ATR: R=₹0.147, cost=1.33R, net_tp=0.47R — marginal but kept
+        # because impulse has highest p75 MFE (2.5R+). Model filters bad ones.
+    },
+    "IMPULSE_BEAR": {
+        "dir": "SHORT",
+        "tp": 1.8,
+        "sl": 0.8,
+        "lookahead_min": 15,
+    },
+    "IMPULSE_NEUTRAL": {
+        "dir": "MEAN",
+        "tp": 1.0,
+        "sl": 0.7,
+        "lookahead_min": 15,
+        # Direction unknown — outcome used for training classification only
+    },
+    "EXPANSION": {
+        "dir": "FOLLOW",
+        "tp": 1.5,
+        "sl": 0.8,
+        "lookahead_min": 20,
+        # Expansion follows an impulse — slightly more time, still fast
+    },
+    "POST_IMPULSE_DIGESTION": {
+        "dir": "FOLLOW",
+        "tp": 1.0,
+        "sl": 0.7,
+        "lookahead_min": 20,
+    },
+    # ── Trend phases — bull ─────────────────────────────────────────
+    # Trend phases need wider stops than impulse — the pullback within
+    # trend is deeper than a single bar's noise.
+    # R:R deliberately kept modest (1.5–1.8) because consistency matters
+    # more than magnitude for trend trading.
+    "TREND_CONTINUATION": {
+        "dir": "LONG",
+        "tp": 1.8,
+        "sl": 1.0,
+        "lookahead_min": 60,
+        # R:R 1.8 gross. On 3m: R=₹0.355, cost=0.55R, net≈1.25R ✓
+    },
+    "TREND_ACCEPTANCE": {
+        "dir": "LONG",
+        "tp": 1.5,
+        "sl": 1.0,
+        "lookahead_min": 75,
+        # Acceptance is slower — give it 75 min to prove itself
+    },
+    "TREND_PAUSE": {
+        "dir": "LONG",
+        "tp": 1.2,
+        "sl": 0.9,
+        "lookahead_min": 45,
+        # Pause within trend — tighter window, less ambition
+    },
+    "TREND_DIGESTION": {
+        "dir": "LONG",
+        "tp": 1.0,
+        "sl": 0.8,
+        "lookahead_min": 30,
+        # Short digestion before continuation
+    },
+    # ── Trend phases — bear (mirrors of bull) ───────────────────────
+    "BEAR_TREND_CONTINUATION": {
+        "dir": "SHORT",
+        "tp": 1.8,
+        "sl": 1.0,
+        "lookahead_min": 60,
+    },
+    "BEAR_TREND_ACCEPTANCE": {
+        "dir": "SHORT",
+        "tp": 1.5,
+        "sl": 1.0,
+        "lookahead_min": 75,
+    },
+    "BEAR_TREND_PAUSE": {
+        "dir": "SHORT",
+        "tp": 1.2,
+        "sl": 0.9,
+        "lookahead_min": 45,
+    },
+    "BEAR_TREND_DIGESTION": {
+        "dir": "SHORT",
+        "tp": 1.0,
+        "sl": 0.8,
+        "lookahead_min": 30,
+        # Previous: tp=0.6, sl=0.6 → 1:1 R:R, net negative. Fixed.
+    },
+    # ── Range and balance phases ────────────────────────────────────
+    "BALANCE_CHOP": {
+        "dir": "NEUTRAL",
+        "tp": 1.0,
+        "sl": 0.8,
+        "lookahead_min": 30,
+        # No directional trade. Outcome recorded for ML to learn from.
+        # Outcome will show ~0 or negative realized_r (cost dominated).
+        # That is the correct signal: model learns to skip.
+    },
+    "COMPRESSION": {
+        "dir": "BREAKOUT",
+        "tp": 1.5,
+        "sl": 0.8,
+        "lookahead_min": 30,
+        # Breakout from squeeze — direction unknown at signal bar.
+        # Outcome measures first directional move, which is informative.
+    },
+    "DIGESTION": {
+        "dir": "MEAN",
+        "tp": 1.0,
+        "sl": 0.8,
+        "lookahead_min": 20,
+    },
+    # ── Gap open phases (bar_of_day == 0) ───────────────────────────
+    # Large gap > 1.2 ATR overnight: continuation bias, wide target.
+    # TP raised to 2.0 (was 1.5) — data shows p75 MFE > 2.2R for LARGE_GAP.
+    # SL widened to 1.0 (was 0.8) — gap bars are volatile, tight stops get hit.
+    "LARGE_GAP_UP": {
+        "dir": "LONG",
+        "tp": 2.0,
+        "sl": 1.0,
+        "lookahead_min": 30,
+        # 30 min = first auction window. Resolve or continue by then.
+    },
+    "LARGE_GAP_DOWN": {
+        "dir": "SHORT",
+        "tp": 2.0,
+        "sl": 1.0,
+        "lookahead_min": 30,
+    },
+    # Moderate gap 0.5–1.2 ATR: fade bias (tends to fill), asymmetric.
+    # TP raised to 1.2 (was 1.0), SL kept at 0.7 — fade needs tighter stop
+    # because if gap continues instead of filling it runs hard against you.
+    "MODERATE_GAP_UP": {
+        "dir": "SHORT",
+        "tp": 1.2,
+        "sl": 0.7,
+        "lookahead_min": 45,
+        # 45 min to fade — moderate gaps usually fill in first 45 min
+    },
+    "MODERATE_GAP_DOWN": {
+        "dir": "LONG",
+        "tp": 1.2,
+        "sl": 0.7,
+        "lookahead_min": 45,
+    },
+    # ── Gap auction phases ──────────────────────────────────────────
+    # Large gap auction: poor edge confirmed by MFE data (p50=0.32–0.38R).
+    # Kept in PHASE_MODEL so outcome rows are generated, but wider params
+    # allow the true edge (or lack of it) to be measured without artificial
+    # constraints. ML maps these to NEUTRAL — no live trades.
+    "LARGE_GAP_AUCTION_BULL": {
+        "dir": "LONG",
+        "tp": 1.5,
+        "sl": 1.0,
+        "lookahead_min": 20,
+    },
+    "LARGE_GAP_AUCTION_BEAR": {
+        "dir": "SHORT",
+        "tp": 1.5,
+        "sl": 1.0,
+        "lookahead_min": 20,
+    },
+    "MODERATE_GAP_AUCTION_BULL": {
+        "dir": "LONG",
+        "tp": 1.2,
+        "sl": 0.7,
+        "lookahead_min": 20,
+    },
+    "MODERATE_GAP_AUCTION_BEAR": {
+        "dir": "SHORT",
+        "tp": 1.2,
+        "sl": 0.7,
+        "lookahead_min": 20,
+    },
+    "GAP_AUCTION_CHOP": {
+        "dir": "MEAN",
+        "tp": 1.0,
+        "sl": 0.7,
+        "lookahead_min": 15,
+    },
+    # ── Gap resolution ──────────────────────────────────────────────
+    "GAP_FILLED": {
+        "dir": "MEAN",
+        "tp": 1.0,
+        "sl": 0.7,
+        "lookahead_min": 20,
+        # Gap filled — now in balance, follow the new direction
+    },
+    "GAP_TIMEOUT": {
+        "dir": "FOLLOW",
+        "tp": 1.2,
+        "sl": 0.8,
+        "lookahead_min": 30,
+        # Gap timed out — gap direction won, follow continuation
+    },
+    "GAP_CONTINUATION": {
+        "dir": "FOLLOW",
+        "tp": 2.0,
+        "sl": 0.9,
+        "lookahead_min": 30,
+        # Strong gap continuation — high conviction, wide target
+    },
+    "GAP_OPEN": {
+        "dir": "MEAN",
+        "tp": 1.0,
+        "sl": 0.7,
+        "lookahead_min": 15,
+    },
+    # ── Reversal / structural phases ────────────────────────────────
+    # Reversal phases need tight stops — if rejection fails it runs hard.
+    # R:R raised to make it viable after costs.
+    "PULLBACK_FAIL": {
+        "dir": "FADE",
+        "tp": 1.5,
+        "sl": 0.7,
+        "lookahead_min": 20,
+        # Previous: tp=0.6, sl=0.5 → near 1:1 gross, net negative. Fixed.
+    },
+    "REJECTION": {
+        "dir": "FADE",
+        "tp": 1.5,
+        "sl": 0.7,
+        "lookahead_min": 20,
+    },
+    "ABSORPTION": {
+        "dir": "FOLLOW",
+        "tp": 1.5,
+        "sl": 0.8,
+        "lookahead_min": 40,
+        # Absorption at VWAP — follow the accumulated direction
+    },
+    "DISTRIBUTION": {
+        "dir": "SHORT",
+        "tp": 1.5,
+        "sl": 0.8,
+        "lookahead_min": 40,
+        # Distribution at highs — short the exhaustion
+    },
 }
 
 
 # ── IMPROVEMENT 4: vectorized exit simulation ────────────────────
-def _simulate_exit_vectorized(entry: float, tp: float, sl: float,
-                               highs: np.ndarray, lows: np.ndarray,
-                               closes: np.ndarray, n: int):
+def _simulate_exit_vectorized(
+    entry: float,
+    tp: float,
+    sl: float,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    n: int,
+):
     """
     Replace itertuples() inner loop with numpy operations.
     Finds first bar where high >= tp (TP hit) or low <= sl (SL hit).
     Returns (exit_reason, exit_price, exit_after, mfe, mae).
     """
     mfe = np.maximum.accumulate(highs[:n] - entry)
-    mae = np.minimum.accumulate(lows[:n]  - entry)
+    mae = np.minimum.accumulate(lows[:n] - entry)
 
-    sl_hits = np.where(lows[:n]  <= sl)[0]
+    sl_hits = np.where(lows[:n] <= sl)[0]
     tp_hits = np.where(highs[:n] >= tp)[0]
 
     sl_idx = sl_hits[0] if len(sl_hits) else n
     tp_idx = tp_hits[0] if len(tp_hits) else n
 
     if sl_idx == n and tp_idx == n:
-        return "TIME_EXIT", closes[n-1], n, float(mfe[-1]), float(mae[-1])
+        return "TIME_EXIT", closes[n - 1], n, float(mfe[-1]), float(mae[-1])
     if sl_idx <= tp_idx:
-        return "SL_HIT",   sl,           sl_idx + 1, float(mfe[sl_idx]), float(mae[sl_idx])
-    return     "TP_HIT",   tp,           tp_idx + 1, float(mfe[tp_idx]), float(mae[tp_idx])
+        return "SL_HIT", sl, sl_idx + 1, float(mfe[sl_idx]), float(mae[sl_idx])
+    return "TP_HIT", tp, tp_idx + 1, float(mfe[tp_idx]), float(mae[tp_idx])
 
 
 # ── IMPROVEMENT 1: numpy-based state machine ─────────────────────
-def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
-                        gap_auction_entry, gap_auction_resolved, gap_auction_failed,
-                        trend_valid, trend_digestion, trend_pause, trend_acceptance,
-                        bear_trend_valid, bear_trend_digestion, bear_trend_pause, bear_trend_acceptance,
-                        compression,
-                        absorption, distribution, absorption_break, distribution_break,
-                        vol_ma20, GAP_AUCTION_MAX_BARS):
+def _run_state_machine(
+    df,
+    bullish_impulse,
+    bearish_impulse,
+    neutral_impulse,
+    gap_auction_entry,
+    gap_auction_resolved,
+    gap_auction_failed,
+    trend_valid,
+    trend_digestion,
+    trend_pause,
+    trend_acceptance,
+    bear_trend_valid,
+    bear_trend_digestion,
+    bear_trend_pause,
+    bear_trend_acceptance,
+    compression,
+    balance_chop,
+    absorption,
+    distribution,
+    absorption_break,
+    distribution_break,
+    vol_ma20,
+    GAP_AUCTION_MAX_BARS,
+    swing_n=3,
+    obv_window=10,
+):
     # GAP_AUCTION_MAX_BARS is now a dict keyed by session_context string.
     # gap_fill_pct and is_gap_session are read directly from df.
     # State machine is the SOLE label assigner — no pre-classification above.
@@ -232,91 +637,185 @@ def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
     n = len(df)
 
     # Extract numpy arrays once — avoid repeated pandas overhead
-    bar_of_day       = df["bar_of_day"].to_numpy()
-    close_arr        = df["close"].to_numpy(dtype=float)
-    low_arr          = df["low"].to_numpy(dtype=float)
-    high_arr         = df["high"].to_numpy(dtype=float)
-    vol_arr          = df["volume"].to_numpy(dtype=float)
-    vol_ma20_arr     = vol_ma20.to_numpy(dtype=float)
-    range_eff_arr    = df["range_efficiency"].to_numpy(dtype=float)
-    atr_exp_arr      = df["atr_expanding"].to_numpy(dtype=int)
-    vol_exp_arr      = df["volume_expansion"].to_numpy(dtype=int)
+    bar_of_day = df["bar_of_day"].to_numpy()
+    close_arr = df["close"].to_numpy(dtype=float)
+    low_arr = df["low"].to_numpy(dtype=float)
+    high_arr = df["high"].to_numpy(dtype=float)
+    vol_arr = df["volume"].to_numpy(dtype=float)
+    vol_ma20_arr = vol_ma20.to_numpy(dtype=float)
+    range_eff_arr = df["range_efficiency"].to_numpy(dtype=float)
+    atr_exp_arr = df["atr_expanding"].to_numpy(dtype=int)
+    vol_exp_arr = df["volume_expansion"].to_numpy(dtype=int)
 
-    bull_arr  = bullish_impulse.to_numpy()
-    bear_arr  = bearish_impulse.to_numpy()
-    neut_arr  = neutral_impulse.to_numpy()
+    bull_arr = bullish_impulse.to_numpy()
+    bear_arr = bearish_impulse.to_numpy()
+    neut_arr = neutral_impulse.to_numpy()
     gap_entry = gap_auction_entry.to_numpy()
-    gap_res   = gap_auction_resolved.to_numpy()
-    gap_fail  = gap_auction_failed.to_numpy()
-    tv_arr    = trend_valid.to_numpy()
-    td_arr    = trend_digestion.to_numpy()
-    tp_arr    = trend_pause.to_numpy()
-    ta_arr    = trend_acceptance.to_numpy()
-    btv_arr   = bear_trend_valid.to_numpy()
-    btd_arr   = bear_trend_digestion.to_numpy()
-    btp_arr   = bear_trend_pause.to_numpy()
-    bta_arr   = bear_trend_acceptance.to_numpy()
-    cmp_arr   = compression.to_numpy()
-    ab_arr    = absorption.to_numpy()
-    dist_arr  = distribution.to_numpy()
-    ab_brk    = absorption_break.to_numpy()
-    db_brk    = distribution_break.to_numpy()
+    gap_res = gap_auction_resolved.to_numpy()
+    gap_fail = gap_auction_failed.to_numpy()
+    tv_arr = trend_valid.to_numpy()
+    td_arr = trend_digestion.to_numpy()
+    tp_arr = trend_pause.to_numpy()
+    ta_arr = trend_acceptance.to_numpy()
+    btv_arr = bear_trend_valid.to_numpy()
+    btd_arr = bear_trend_digestion.to_numpy()
+    btp_arr = bear_trend_pause.to_numpy()
+    bta_arr = bear_trend_acceptance.to_numpy()
+    cmp_arr = compression.to_numpy()
+    chop_arr = balance_chop.to_numpy()  # FIX: now a real gate
+    ab_arr = absorption.to_numpy()
+    dist_arr = distribution.to_numpy()
+    ab_brk = absorption_break.to_numpy()
+    db_brk = distribution_break.to_numpy()
     ema_slope_arr = df["ema_21_slope"].to_numpy(dtype=float)
 
-    # Extract gap arrays needed for improved gap handling
-    is_gap_session_arr = df["is_gap_session"].to_numpy(dtype=bool)
-    session_context_arr= df["session_context"].tolist()  # LARGE_GAP_SESSION etc.
-    gap_fill_pct_arr   = df["gap_fill_pct"].to_numpy(dtype=float)
-    gap_atr_arr        = df["gap_atr"].to_numpy(dtype=float)
-    bar_date_arr       = df["date"].tolist()
+    # ── New state arrays ─────────────────────────────────────────
+    # macd_hist: expanding = momentum genuine; shrinking = exhaustion
+    macd_hist_arr = (
+        df["macd_hist"].to_numpy(dtype=float)
+        if "macd_hist" in df.columns
+        else np.zeros(n)
+    )
+    macd_expanding = np.zeros(n, dtype=int)
+    for i in range(1, n):
+        macd_expanding[i] = int(abs(macd_hist_arr[i]) > abs(macd_hist_arr[i - 1]))
 
-    # Mutable state arrays
-    market_phase        = df["market_phase"].tolist()
-    session_context     = df["session_context"].tolist()
-    # FIX 7: gap_resolved resets per day — tracked as (date, resolved) pair
-    gap_resolved        = np.zeros(n, dtype=int)
+    # rsi zone: oversold <35, neutral 35-65, overbought >65
+    rsi_arr = (
+        df["rsi_14"].to_numpy(dtype=float)
+        if "rsi_14" in df.columns
+        else np.full(n, 50.0)
+    )
+
+    # obv slope: rising OBV = accumulation, falling = distribution
+    # obv_window is TF-calibrated (~30 real minutes on each TF):
+    #   1m=30 bars, 3m=10 bars, 5m=6 bars, 15m=2 bars
+    obv_arr = df["obv"].to_numpy(dtype=float) if "obv" in df.columns else np.zeros(n)
+    obv_slope = np.zeros(n, dtype=float)
+    for i in range(obv_window, n):
+        obv_slope[i] = obv_arr[i] - obv_arr[i - obv_window]
+
+    # ema_200 for macro regime
+    ema200_arr = (
+        df["ema_200"].to_numpy(dtype=float) if "ema_200" in df.columns else np.zeros(n)
+    )
+
+    # prev_day_atr, orb_range for session type
+    prev_atr_arr = (
+        df["prev_day_atr"].to_numpy(dtype=float)
+        if "prev_day_atr" in df.columns
+        else np.ones(n)
+    )
+    orb_high_arr = (
+        df["orb_high"].to_numpy(dtype=float)
+        if "orb_high" in df.columns
+        else np.zeros(n)
+    )
+    orb_low_arr = (
+        df["orb_low"].to_numpy(dtype=float) if "orb_low" in df.columns else np.zeros(n)
+    )
+    orb_brk_arr = (
+        df["orb_breakout"].to_numpy(dtype=int)
+        if "orb_breakout" in df.columns
+        else np.zeros(n, dtype=int)
+    )
+
+    # Extract gap arrays
+    is_gap_session_arr = df["is_gap_session"].to_numpy(dtype=bool)
+    session_context_arr = df["session_context"].tolist()
+    gap_fill_pct_arr = df["gap_fill_pct"].to_numpy(dtype=float)
+    gap_atr_arr = df["gap_atr"].to_numpy(dtype=float)
+    bar_date_arr = df["date"].tolist()
+
+    # Mutable output arrays
+    market_phase = df["market_phase"].tolist()
+    session_context = df["session_context"].tolist()
+    gap_resolved = np.zeros(n, dtype=int)
     gap_auction_started = np.zeros(n, dtype=int)
-    gap_auction_active  = np.zeros(n, dtype=int)
-    # FIX 4: store the ORIGINAL auction start bar, not propagated value
-    gap_auction_origin  = np.zeros(n, dtype=int)  # bar_of_day when auction started
+    gap_auction_active = np.zeros(n, dtype=int)
+    gap_auction_origin = np.zeros(n, dtype=int)
     post_impulse_active = np.zeros(n, dtype=int)
-    impulse_dir         = [None] * n
-    current_gap_date    = None  # track which date's gap is being auctioned
+    impulse_dir = [None] * n
+    current_gap_date = None
+
+    # ── New output state columns ──────────────────────────────────
+    price_structure_arr = ["NEUTRAL"] * n
+    session_type_arr = ["NORMAL_DAY"] * n
+    macro_regime_arr = ["NEUTRAL_MACRO"] * n
+    trend_exhaustion = np.zeros(n, dtype=int)
+    current_session_type = "NORMAL_DAY"  # updated at bar_of_day==0
+    obv_slope_arr = obv_slope  # already computed above
 
     for i in range(1, n):
         today = bar_date_arr[i]
 
+        # ── Compute per-bar state variables ──────────────────────
+        # price_structure from swing detection (lookback only — no future)
+        price_structure_arr[i] = _compute_price_structure(high_arr, low_arr, i, swing_n)
+
+        # macro_regime from close vs ema_200
+        macro_regime_arr[i] = _compute_macro_regime(close_arr[i], ema200_arr[i])
+
+        # trend_exhaustion: macd_hist shrinking + RSI extreme
+        if i >= 3:
+            macd_shrinking = abs(macd_hist_arr[i]) < abs(macd_hist_arr[i - 1]) and abs(
+                macd_hist_arr[i - 1]
+            ) < abs(macd_hist_arr[i - 2])
+            rsi_extreme = rsi_arr[i] > 70 or rsi_arr[i] < 30
+            trend_exhaustion[i] = int(macd_shrinking and rsi_extreme)
+        else:
+            trend_exhaustion[i] = 0
+
         # ── FIX 7: Reset gap state on new day ───────────────────
-        if today != bar_date_arr[i-1]:
+        if today != bar_date_arr[i - 1]:
             # New trading day — gap_resolved resets so each day gets its own gap auction
-            gap_resolved[i]        = 0
+            gap_resolved[i] = 0
             gap_auction_started[i] = 0
-            gap_auction_active[i]  = 0
-            gap_auction_origin[i]  = 0
-            current_gap_date       = None
+            gap_auction_active[i] = 0
+            gap_auction_origin[i] = 0
+            current_gap_date = None
             # Post-impulse does NOT reset across days (trend can carry overnight)
-            post_impulse_active[i] = post_impulse_active[i-1]
-            impulse_dir[i]         = impulse_dir[i-1]
+            post_impulse_active[i] = post_impulse_active[i - 1]
+            impulse_dir[i] = impulse_dir[i - 1]
+
+            # Compute session_type at bar_of_day==0 for this new day
+            # Uses orb_range (orb_high - orb_low) which is set in the DB
+            # and the open drive from this bar onwards
+            orb_range = float(orb_high_arr[i]) - float(orb_low_arr[i])
+            prev_atr = float(prev_atr_arr[i])
+            open_drive = (
+                abs(close_arr[i] - close_arr[i - 1]) / prev_atr if prev_atr > 0 else 0
+            )
+            orb_early = bool(orb_brk_arr[i])
+            current_session_type = _compute_session_type(
+                orb_range, prev_atr, open_drive, orb_early
+            )
         else:
             # Same day — propagate gap state forward
-            gap_resolved[i]        = gap_resolved[i-1]
-            gap_auction_started[i] = gap_auction_started[i-1]
-            gap_auction_active[i]  = gap_auction_active[i-1]
-            gap_auction_origin[i]  = gap_auction_origin[i-1]
+            gap_resolved[i] = gap_resolved[i - 1]
+            gap_auction_started[i] = gap_auction_started[i - 1]
+            gap_auction_active[i] = gap_auction_active[i - 1]
+            gap_auction_origin[i] = gap_auction_origin[i - 1]
+
+        session_type_arr[i] = current_session_type
 
         # ── FIX 3: Gap auction entry only at bar_of_day==0 ──────
         # Previously fired on ANY bar where session_context=="GAP".
         # Auction can only START at the opening bar — not mid-session.
-        if (is_gap_session_arr[i] and gap_resolved[i] == 0
-                and gap_auction_started[i] == 0 and bar_of_day[i] == 0):
+        if (
+            is_gap_session_arr[i]
+            and gap_resolved[i] == 0
+            and gap_auction_started[i] == 0
+            and bar_of_day[i] == 0
+        ):
             gap_auction_started[i] = 1
-            gap_auction_active[i]  = 1
-            gap_auction_origin[i]  = bar_of_day[i]  # FIX 4: store origin once
-            current_gap_date       = today
+            gap_auction_active[i] = 1
+            gap_auction_origin[i] = bar_of_day[i]  # FIX 4: store origin once
+            current_gap_date = today
             # Assign phase based on gap size and direction
             is_large = session_context_arr[i] == "LARGE_GAP_SESSION"
-            if   gap_atr_arr[i] > 0:
-                market_phase[i] = "LARGE_GAP_UP"   if is_large else "MODERATE_GAP_UP"
+            if gap_atr_arr[i] > 0:
+                market_phase[i] = "LARGE_GAP_UP" if is_large else "MODERATE_GAP_UP"
             elif gap_atr_arr[i] < 0:
                 market_phase[i] = "LARGE_GAP_DOWN" if is_large else "MODERATE_GAP_DOWN"
             else:
@@ -327,19 +826,20 @@ def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
         if gap_auction_active[i] == 1 and gap_resolved[i] == 0:
             # FIX 4: bars_elapsed uses origin bar stored at auction start
             bars_elapsed = bar_of_day[i] - gap_auction_origin[i]
-            is_large     = session_context_arr[i] == "LARGE_GAP_SESSION"
+            is_large = session_context_arr[i] == "LARGE_GAP_SESSION"
 
             # Per-type auction window — large gaps resolve in 45 min,
             # moderate in 75 min, small in 30 min
             sess_key = session_context_arr[i]
-            max_bars = GAP_AUCTION_MAX_BARS.get(sess_key,
-                       GAP_AUCTION_MAX_BARS.get("MODERATE_GAP_SESSION", 75))
+            max_bars = GAP_AUCTION_MAX_BARS.get(
+                sess_key, GAP_AUCTION_MAX_BARS.get("MODERATE_GAP_SESSION", 75)
+            )
 
             # gap_fill_pct: 0=gap open, 1=gap filled, <0=gap extended/continued
             # gap_nearly_filled: price has returned >= 80% toward prev_day_close
             # gap_extended: price moved >= 50% further AWAY (strong continuation)
             gap_nearly_filled = gap_fill_pct_arr[i] >= 0.80
-            gap_extended      = gap_fill_pct_arr[i] <= -0.50
+            gap_extended = gap_fill_pct_arr[i] <= -0.50
 
             if gap_nearly_filled or bars_elapsed >= max_bars:
                 # Gap resolved — either price filled or time ran out
@@ -347,21 +847,29 @@ def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
                 # a strong candle at bar 1 or 2 should NOT close the auction,
                 # only actual price returning to prev_day_close counts.
                 gap_auction_active[i] = 0
-                gap_resolved[i]       = 1
-                session_context[i]    = "BALANCE"
-                market_phase[i]       = "GAP_FILLED" if gap_nearly_filled else "GAP_TIMEOUT"
+                gap_resolved[i] = 1
+                session_context[i] = "BALANCE"
+                market_phase[i] = "GAP_FILLED" if gap_nearly_filled else "GAP_TIMEOUT"
             elif gap_extended:
                 # Price moved strongly AWAY from prev_day_close — gap continuation
                 gap_auction_active[i] = 0
-                gap_resolved[i]       = 1
-                session_context[i]    = "BALANCE"
-                market_phase[i]       = "GAP_CONTINUATION"
+                gap_resolved[i] = 1
+                session_context[i] = "BALANCE"
+                market_phase[i] = "GAP_CONTINUATION"
             else:
                 # Still in auction — classify by impulse within the auction
-                if   bull_arr[i]:
-                    market_phase[i] = "LARGE_GAP_AUCTION_BULL" if is_large else "MODERATE_GAP_AUCTION_BULL"
+                if bull_arr[i]:
+                    market_phase[i] = (
+                        "LARGE_GAP_AUCTION_BULL"
+                        if is_large
+                        else "MODERATE_GAP_AUCTION_BULL"
+                    )
                 elif bear_arr[i]:
-                    market_phase[i] = "LARGE_GAP_AUCTION_BEAR" if is_large else "MODERATE_GAP_AUCTION_BEAR"
+                    market_phase[i] = (
+                        "LARGE_GAP_AUCTION_BEAR"
+                        if is_large
+                        else "MODERATE_GAP_AUCTION_BEAR"
+                    )
                 else:
                     market_phase[i] = "GAP_AUCTION_CHOP"
             continue
@@ -374,46 +882,65 @@ def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
         # ── Post-impulse state ───────────────────────────────────
         impulse_allowed = gap_auction_active[i] == 0
 
-        if impulse_allowed and bull_arr[i-1]:
-            post_impulse_active[i] = 1; impulse_dir[i] = "BULL"
-        elif impulse_allowed and bear_arr[i-1]:
-            post_impulse_active[i] = 1; impulse_dir[i] = "BEAR"
-        elif impulse_allowed and neut_arr[i-1]:
-            post_impulse_active[i] = 1; impulse_dir[i] = "NEUTRAL"
+        if impulse_allowed and bull_arr[i - 1]:
+            post_impulse_active[i] = 1
+            impulse_dir[i] = "BULL"
+        elif impulse_allowed and bear_arr[i - 1]:
+            post_impulse_active[i] = 1
+            impulse_dir[i] = "BEAR"
+        elif impulse_allowed and neut_arr[i - 1]:
+            post_impulse_active[i] = 1
+            impulse_dir[i] = "NEUTRAL"
         else:
-            post_impulse_active[i] = post_impulse_active[i-1]
-            impulse_dir[i]         = impulse_dir[i-1]
+            post_impulse_active[i] = post_impulse_active[i - 1]
+            impulse_dir[i] = impulse_dir[i - 1]
 
         if post_impulse_active[i] == 1:
             idir = impulse_dir[i]
-            re   = range_eff_arr[i]
-            ae   = atr_exp_arr[i]
-            vol  = vol_arr[i]
-            vma  = vol_ma20_arr[i]
+            re = range_eff_arr[i]
+            ae = atr_exp_arr[i]
+            vol = vol_arr[i]
+            vma = vol_ma20_arr[i]
 
             # Pullback fail
-            if (re < 0.25 and ae == 0 and
-                ((idir == "BULL" and close_arr[i] < close_arr[i-1]) or
-                 (idir == "BEAR" and close_arr[i] > close_arr[i-1]))):
-                market_phase[i] = "PULLBACK_FAIL"; continue
+            if (
+                re < 0.25
+                and ae == 0
+                and (
+                    (idir == "BULL" and close_arr[i] < close_arr[i - 1])
+                    or (idir == "BEAR" and close_arr[i] > close_arr[i - 1])
+                )
+            ):
+                market_phase[i] = "PULLBACK_FAIL"
+                continue
 
             # Absorption after impulse
             if vol > vma and ae == 0 and re < 0.35:
-                market_phase[i] = "ABSORPTION"; continue
+                market_phase[i] = "ABSORPTION"
+                continue
 
             # Structural rejection
-            if ((idir == "BULL" and close_arr[i] < low_arr[i-1]) or
-                (idir == "BEAR" and close_arr[i] > high_arr[i-1]) or
-                (idir == "NEUTRAL" and re < 0.20)):
+            if (
+                (idir == "BULL" and close_arr[i] < low_arr[i - 1])
+                or (idir == "BEAR" and close_arr[i] > high_arr[i - 1])
+                or (idir == "NEUTRAL" and re < 0.20)
+            ):
                 market_phase[i] = "REJECTION"
-                post_impulse_active[i] = 0; continue
+                post_impulse_active[i] = 0
+                continue
 
             # Expansion / continuation
-            if (ae == 1 and re > 0.50 and
-                ((idir == "BULL" and close_arr[i] > high_arr[i-1]) or
-                 (idir == "BEAR" and close_arr[i] < low_arr[i-1]))):
+            if (
+                ae == 1
+                and re > 0.50
+                and (
+                    (idir == "BULL" and close_arr[i] > high_arr[i - 1])
+                    or (idir == "BEAR" and close_arr[i] < low_arr[i - 1])
+                )
+            ):
                 market_phase[i] = "EXPANSION"
-                post_impulse_active[i] = 0; continue
+                post_impulse_active[i] = 0
+                continue
 
             # If still strong (RE>0.45, ATR expanding) but didn't break prev high,
             # it's a brief pause before continuation — not full digestion
@@ -427,7 +954,7 @@ def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
         # This is the ONLY place labels are assigned — no pre-classification above.
         # Every bar flows through here with full awareness of market state.
 
-        prev = market_phase[i-1]
+        prev = market_phase[i - 1]
         re = range_eff_arr[i]
         ae = atr_exp_arr[i]
         # ── Priority 1: Impulse detection (highest priority, context-independent) ──
@@ -443,8 +970,13 @@ def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
             market_phase[i] = "COMPRESSION"
 
         # ── Priority 3: Bull trend propagation ──────────────────────
-        elif prev in ("IMPULSE_BULL", "TREND_CONTINUATION", "TREND_ACCEPTANCE",
-                      "TREND_PAUSE", "TREND_DIGESTION"):
+        elif prev in (
+            "IMPULSE_BULL",
+            "TREND_CONTINUATION",
+            "TREND_ACCEPTANCE",
+            "TREND_PAUSE",
+            "TREND_DIGESTION",
+        ):
             if tv_arr[i]:
                 market_phase[i] = "TREND_CONTINUATION"
             elif td_arr[i]:
@@ -464,8 +996,13 @@ def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
                 market_phase[i] = "BALANCE_CHOP"
 
         # ── Priority 3b: Bear trend propagation ──────────────────────
-        elif prev in ("IMPULSE_BEAR", "BEAR_TREND_CONTINUATION", "BEAR_TREND_ACCEPTANCE",
-                      "BEAR_TREND_PAUSE", "BEAR_TREND_DIGESTION"):
+        elif prev in (
+            "IMPULSE_BEAR",
+            "BEAR_TREND_CONTINUATION",
+            "BEAR_TREND_ACCEPTANCE",
+            "BEAR_TREND_PAUSE",
+            "BEAR_TREND_DIGESTION",
+        ):
             if btv_arr[i]:
                 market_phase[i] = "BEAR_TREND_CONTINUATION"
             elif btd_arr[i]:
@@ -490,30 +1027,50 @@ def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
             market_phase[i] = "DISTRIBUTION"
 
         # ── Priority 5: Fresh classification (no prior trend context) ──
+        # BALANCE_CHOP now requires the real chop_arr gate — no longer a catch-all.
+        # Exhaustion detected via trend_exhaustion[i] upgrades distribution/absorption.
         else:
-            if dist_arr[i]:
+            ps = price_structure_arr[i]
+            if dist_arr[i] or (trend_exhaustion[i] and ema_slope_arr[i] > 0):
                 market_phase[i] = "DISTRIBUTION"
-            elif ab_arr[i]:
+            elif ab_arr[i] or (trend_exhaustion[i] and ema_slope_arr[i] < 0):
                 market_phase[i] = "ABSORPTION"
             elif ta_arr[i]:
                 market_phase[i] = "TREND_ACCEPTANCE"
             elif bta_arr[i]:
                 market_phase[i] = "BEAR_TREND_ACCEPTANCE"
             elif ae == 1 and re > 0.40:
-                market_phase[i] = ("TREND_ACCEPTANCE" if ema_slope_arr[i] > 0
-                                   else "BEAR_TREND_ACCEPTANCE")
+                market_phase[i] = (
+                    "TREND_ACCEPTANCE"
+                    if ema_slope_arr[i] > 0
+                    else "BEAR_TREND_ACCEPTANCE"
+                )
             elif re > 0.60:
-                market_phase[i] = ("TREND_ACCEPTANCE" if ema_slope_arr[i] > 0
-                                   else "BEAR_TREND_ACCEPTANCE")
-            else:
+                market_phase[i] = (
+                    "TREND_ACCEPTANCE"
+                    if ema_slope_arr[i] > 0
+                    else "BEAR_TREND_ACCEPTANCE"
+                )
+            elif chop_arr[i]:
+                # FIX: genuine balance — RE low, ATR not expanding, near VWAP, slope flat
                 market_phase[i] = "BALANCE_CHOP"
+            else:
+                # True unclassified — no condition matched
+                market_phase[i] = "UNCLASSIFIED"
 
-    df["market_phase"]      = market_phase
-    df["session_context"]   = session_context
-    df["gap_resolved"]      = gap_resolved
-    df["gap_auction_active"]= gap_auction_active
-    df["post_impulse_active"]= post_impulse_active
-    df["impulse_dir"]       = impulse_dir
+    df["market_phase"] = market_phase
+    df["session_context"] = session_context
+    df["gap_resolved"] = gap_resolved
+    df["gap_auction_active"] = gap_auction_active
+    df["post_impulse_active"] = post_impulse_active
+    df["impulse_dir"] = impulse_dir
+    # ── New state columns written back to df ─────────────────────
+    df["price_structure"] = price_structure_arr
+    df["session_type"] = session_type_arr
+    df["macro_regime"] = macro_regime_arr
+    df["trend_exhaustion"] = trend_exhaustion
+    df["obv_slope"] = obv_slope_arr
+    df["macd_expanding"] = macd_expanding
     return df
 
 
@@ -521,32 +1078,100 @@ def _run_state_machine(df, bullish_impulse, bearish_impulse, neutral_impulse,
 def _build_market_rows(df, symbol, exchange, timeframe, now):
     """
     Replace iterrows() with direct column access.
-    iterrows() returns a Series per row — 100x slower than column vectors.
-    ts converted to Python datetime — psycopg2 cannot serialize numpy.datetime64.
+    Now includes new state columns: price_structure, session_type,
+    macro_regime, trend_exhaustion, obv_slope, macd_expanding.
     """
-    num_cols = ["ema_21_slope","vwap_dist_pct","day_high_dist","day_low_dist",
-                "orb_dist_pct","gap_pct","minute_of_day","volume_expansion",
-                "atr_expanding","range_efficiency","vwap_acceptance",
-                "momentum_decay","candle_overlap","vix","vix_change",
-                "gap_atr"]
-    arr       = df[num_cols].values
-    ts_list   = [pd.Timestamp(t).to_pydatetime() for t in df["ts"].values]
+    num_cols = [
+        "ema_21_slope",
+        "vwap_dist_pct",
+        "day_high_dist",
+        "day_low_dist",
+        "orb_dist_pct",
+        "gap_pct",
+        "minute_of_day",
+        "volume_expansion",
+        "atr_expanding",
+        "range_efficiency",
+        "vwap_acceptance",
+        "momentum_decay",
+        "candle_overlap",
+        "vix",
+        "vix_change",
+        "gap_atr",
+        # New state features
+        "trend_exhaustion",
+        "obv_slope",
+        "macd_expanding",
+        "vol_ratio",
+    ]
+    arr = df[num_cols].values
+    ts_list = [pd.Timestamp(t).to_pydatetime() for t in df["ts"].values]
     phase_arr = df["market_phase"].values
-    vix_reg   = df["vix_regime"].values
-    gap_dir   = df["gap_dir"].values
-    gap_reg   = df["gap_regime"].values
+    vix_reg = df["vix_regime"].values
+    gap_dir = df["gap_dir"].values
+    gap_reg = df["gap_regime"].values
 
-    ml_labels  = [get_ml_label(p) for p in phase_arr]
-    tf_role_arr = df["tf_role"].values if "tf_role" in df.columns else ["MICRO"] * len(ts_list)
+    ml_labels = [get_ml_label(p) for p in phase_arr]
+    tf_role_arr = (
+        df["tf_role"].values if "tf_role" in df.columns else ["MICRO"] * len(ts_list)
+    )
+
+    ps_arr = (
+        df["price_structure"].values
+        if "price_structure" in df.columns
+        else ["NEUTRAL"] * len(ts_list)
+    )
+    st_arr = (
+        df["session_type"].values
+        if "session_type" in df.columns
+        else ["NORMAL_DAY"] * len(ts_list)
+    )
+    mr_arr = (
+        df["macro_regime"].values
+        if "macro_regime" in df.columns
+        else ["NEUTRAL_MACRO"] * len(ts_list)
+    )
 
     return [
-        (symbol, exchange, timeframe,
-         ts_list[i], phase_arr[i], ml_labels[i], str(tf_role_arr[i]),
-         arr[i,0],  arr[i,1],  arr[i,2],  arr[i,3],
-         arr[i,4],  arr[i,5],  arr[i,6],  arr[i,7],
-         arr[i,8],  arr[i,9],  arr[i,10], arr[i,11],
-         arr[i,12], arr[i,13], arr[i,14], vix_reg[i],
-         arr[i,15], gap_dir[i], gap_reg[i], now)
+        (
+            symbol,
+            exchange,
+            timeframe,
+            ts_list[i],
+            phase_arr[i],
+            ml_labels[i],
+            str(tf_role_arr[i]),
+            # arr cols 0-15: original numeric features
+            arr[i, 0],
+            arr[i, 1],
+            arr[i, 2],
+            arr[i, 3],
+            arr[i, 4],
+            arr[i, 5],
+            arr[i, 6],
+            arr[i, 7],
+            arr[i, 8],
+            arr[i, 9],
+            arr[i, 10],
+            arr[i, 11],
+            arr[i, 12],
+            arr[i, 13],
+            arr[i, 14],
+            vix_reg[i],
+            arr[i, 15],
+            gap_dir[i],
+            gap_reg[i],
+            # arr cols 16-19: new state + adaptive vol features
+            int(arr[i, 16]),  # trend_exhaustion
+            float(arr[i, 17]),  # obv_slope
+            int(arr[i, 18]),  # macd_expanding
+            float(arr[i, 19]),  # vol_ratio
+            # categorical state columns
+            str(ps_arr[i]),  # price_structure
+            str(st_arr[i]),  # session_type
+            str(mr_arr[i]),  # macro_regime
+            now,
+        )
         for i in range(len(ts_list))
     ]
 
@@ -555,40 +1180,68 @@ def _build_rule_rows(df, symbol, exchange, timeframe, now):
     """Vectorized rule row building — 5 rules per candle."""
     rule_rows = []
     RULES = [
-        ("ORB",              df["ORB"] == 1),
-        ("EMA_TREND",        (df["ema_21_slope"] > 0) & (df["close"] > df["ema_21"])),
-        ("VWAP_TREND",       (df["vwap_dist_pct"] > 0) & (df["vwap_acceptance"] == 0)),
-        ("ATR_EXPANSION",    df["atr_expanding"] == 1),
-        ("VOLUME_EXPANSION", (df["volume_expansion"] == 1) & (df["range_efficiency"] > 0.35)),
+        ("ORB", df["ORB"] == 1),
+        ("EMA_TREND", (df["ema_21_slope"] > 0) & (df["close"] > df["ema_21"])),
+        ("VWAP_TREND", (df["vwap_dist_pct"] > 0) & (df["vwap_acceptance"] == 0)),
+        ("ATR_EXPANSION", df["atr_expanding"] == 1),
+        (
+            "VOLUME_EXPANSION",
+            (df["volume_expansion"] == 1) & (df["range_efficiency"] > 0.35),
+        ),
     ]
     # Build snapshot once per row — reuse across 5 rules
     snaps = [
-        json.dumps({
-            "orb_high": json_safe(r["orb_high"]), "orb_low": json_safe(r["orb_low"]),
-            "orb_breakout": int(r["orb_breakout"]), "orb_quality": int(r["orb_quality"]),
-            "orb_location": int(r["orb_location"]), "minute_of_day": int(r["minute_of_day"]),
-            "ema_21_slope": json_safe(r["ema_21_slope"]),
-            "vwap_dist_pct": json_safe(r["vwap_dist_pct"]),
-            "atr_expanding": int(r["atr_expanding"]),
-            "volume_expansion": int(r["volume_expansion"]),
-            "range_efficiency": json_safe(r["range_efficiency"]),
-        })
-        for _, r in df[["orb_high","orb_low","orb_breakout","orb_quality","orb_location",
-                         "minute_of_day","ema_21_slope","vwap_dist_pct","atr_expanding",
-                         "volume_expansion","range_efficiency"]].iterrows()
+        json.dumps(
+            {
+                "orb_high": json_safe(r["orb_high"]),
+                "orb_low": json_safe(r["orb_low"]),
+                "orb_breakout": int(r["orb_breakout"]),
+                "orb_quality": int(r["orb_quality"]),
+                "orb_location": int(r["orb_location"]),
+                "minute_of_day": int(r["minute_of_day"]),
+                "ema_21_slope": json_safe(r["ema_21_slope"]),
+                "vwap_dist_pct": json_safe(r["vwap_dist_pct"]),
+                "atr_expanding": int(r["atr_expanding"]),
+                "volume_expansion": int(r["volume_expansion"]),
+                "range_efficiency": json_safe(r["range_efficiency"]),
+            }
+        )
+        for _, r in df[
+            [
+                "orb_high",
+                "orb_low",
+                "orb_breakout",
+                "orb_quality",
+                "orb_location",
+                "minute_of_day",
+                "ema_21_slope",
+                "vwap_dist_pct",
+                "atr_expanding",
+                "volume_expansion",
+                "range_efficiency",
+            ]
+        ].iterrows()
     ]
     # Convert to Python datetimes — psycopg2 cannot serialize numpy.datetime64
-    ts_list   = [pd.Timestamp(t).to_pydatetime() for t in df["ts"].values]
+    ts_list = [pd.Timestamp(t).to_pydatetime() for t in df["ts"].values]
     phase_arr = df["market_phase"].values
 
     for rule_name, eligible_series in RULES:
         elig_arr = eligible_series.values
         for i in range(len(df)):
-            rule_rows.append((
-                symbol, exchange, timeframe,
-                ts_list[i], rule_name, bool(elig_arr[i]),
-                snaps[i], phase_arr[i], now,
-            ))
+            rule_rows.append(
+                (
+                    symbol,
+                    exchange,
+                    timeframe,
+                    ts_list[i],
+                    rule_name,
+                    bool(elig_arr[i]),
+                    snaps[i],
+                    phase_arr[i],
+                    now,
+                )
+            )
     return rule_rows
 
 
@@ -597,28 +1250,39 @@ def _build_rule_rows(df, symbol, exchange, timeframe, now):
 def offline_label_market_context():
     try:
         t0 = time.time()
-        data      = request.get_json() or {}
-        symbol    = (data.get("symbol")    or "").upper().strip()
-        exchange  = (data.get("exchange")  or "NSE").upper().strip()
+        data = request.get_json() or {}
+        symbol = (data.get("symbol") or "").upper().strip()
+        exchange = (data.get("exchange") or "NSE").upper().strip()
         timeframe = (data.get("timeframe") or "").lower().strip()
-        lookahead = int(data.get("lookahead",  20))
-        window    = int(data.get("windowSize", 30))
+        lookahead = int(data.get("lookahead", 20))
+        # `window` param is kept for backward compatibility but no longer drives WARMUP.
+        # WARMUP is now derived from TF_CONFIG (ROLL_20, SWING_N, OBV_WINDOW).
+        # Passing windowSize in the request has no effect on warmup trimming.
 
         if not symbol or not timeframe:
             return jsonify({"error": "symbol and timeframe required"}), 400
 
         with get_db_conn() as conn:
-            df = read_sql_safe("""
+            df = read_sql_safe(
+                """
                 SELECT i.*, v.vix
                 FROM indicators i
                 LEFT JOIN india_vix v
                   ON (i.ts AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date = v.trade_date
                 WHERE i.symbol=%s AND i.exchange=%s AND i.timeframe=%s
                 ORDER BY i.ts ASC
-            """, conn, params=[symbol, exchange, timeframe])
+            """,
+                conn,
+                params=[symbol, exchange, timeframe],
+            )
 
-        if df.empty or len(df) < lookahead + window:
-            return jsonify({"error": f"Not enough indicator data — got {len(df)} rows"}), 400
+        # Minimum row guard — ROLL_20 not yet known so use a safe floor.
+        # The precise WARMUP is computed and enforced after TF_CONFIG is unpacked.
+        if df.empty or len(df) < max(lookahead, 50):
+            return (
+                jsonify({"error": f"Not enough indicator data — got {len(df)} rows"}),
+                400,
+            )
 
         df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
         # Sort by ts after parsing — timezone conversion can subtly reorder
@@ -626,7 +1290,7 @@ def offline_label_market_context():
         # strict chronological order — wrong order = wrong phase labels.
         df = df.sort_values("ts").reset_index(drop=True)
 
-        TF_MINUTES = {"1m":1,"3m":3,"5m":5,"15m":15}
+        TF_MINUTES = {"1m": 1, "3m": 3, "5m": 5, "15m": 15}
         tf_min = TF_MINUTES.get(timeframe)
         if not tf_min:
             return jsonify({"error": f"Unsupported timeframe {timeframe}"}), 400
@@ -654,19 +1318,104 @@ def offline_label_market_context():
         #       Lookaheads short (1m phases resolve quickly).
         # ================================================================
 
+        # ================================================================
+        #  TIMEFRAME-AWARE CONFIGURATION — REAL-TIME ANCHORED
+        #  ─────────────────────────────────────────────────────────────
+        #  Every window is now chosen so it spans the same market TIME
+        #  across timeframes rather than the same bar count.
+        #
+        #  Target durations (NSE session = 375 min):
+        #    ROLL_5  (slope, range expansion): ~15 min of price history
+        #    ROLL_10 (ATR reference, momentum): ~30 min
+        #    ROLL_20 (volume baseline): ~60 min
+        #    VOL_BASELINE: 1 full session (375 min) for vol regime detection
+        #    SWING_N: ~15 min per side for swing high/low detection
+        #    OBV_WINDOW: ~30 min for OBV slope
+        #
+        #  Roles in the multi-TF system:
+        #  15m — EXECUTION: trend direction, phase decision, entry signal
+        #   5m — CONFIRMATION: validates 15m signal
+        #   3m — CONFIRMATION: structure and momentum confirmation
+        #   1m — MICROSTRUCTURE: entry precision, absorption, order-flow
+        # ================================================================
+
         TF_CONFIG = {
             # (ROLL_5, ROLL_10, ROLL_20, IMPULSE_WINDOW_BARS,
             #  VOLUME_MULT, RE_IMPULSE_MIN, RE_TREND_MIN, RE_CHOP_MAX,
-            #  VWAP_DIST_IMPULSE, GAP_LARGE_BARS, GAP_MOD_BARS, GAP_SMALL_BARS)
-            "1m":  (5,  10, 20, 300, 1.5, 0.60, 0.35, 0.25, 0.004,  45,  75, 30),
-            "3m":  (4,   8, 16, 100, 1.4, 0.55, 0.30, 0.22, 0.005,  15,  25, 10),
-            "5m":  (3,   6, 12,  60, 1.3, 0.50, 0.28, 0.20, 0.006,   9,  15,  6),
-            "15m": (3,   5,  8,  20, 1.2, 0.45, 0.25, 0.18, 0.008,   3,   5,  2),
+            #  VWAP_DIST_IMPULSE, GAP_LARGE_BARS, GAP_MOD_BARS, GAP_SMALL_BARS,
+            #  SWING_N, OBV_WINDOW, VOL_BASELINE)
+            #
+            # All windows are duration-anchored:
+            #   ROLL_5  = 15min ÷ tf_min  (min 2)
+            #   ROLL_10 = 30min ÷ tf_min  (min 3)
+            #   ROLL_20 = 60min ÷ tf_min  (min 6)
+            #   SWING_N = 15min ÷ tf_min  (min 2) — bars each side
+            #   OBV_WIN = 30min ÷ tf_min  (min 2)
+            #   VOL_BASELINE = 375min ÷ tf_min (1 full session)
+            #   GAP windows = 45/75/30 min ÷ tf_min
+            #
+            #  1m: 15/30/60 min windows. ROLL_5 raised from 5→15 bars
+            #      (old 5-bar slope = 5 min, too noisy for meaningful direction)
+            #  3m: 5/10/20 bars = 15/30/60 min. Same as before — already correct.
+            #  5m: 3/6/12 bars = 15/30/60 min. IMPULSE_WINDOW raised to 75 (full session)
+            # 15m: 3/5/8 bars = 45/75/120 min. ROLL_20 raised to 10 bars (150 min)
+            #      for a more stable 15m volume baseline.
+            #      VOLUME_MULT raised 1.2→1.3 (15m vol spikes are rarer, need stronger gate)
+            "1m": (
+                15,
+                30,
+                60,
+                375,
+                1.5,
+                0.60,
+                0.35,
+                0.25,
+                0.004,
+                45,
+                75,
+                30,
+                5,
+                30,
+                375,
+            ),
+            "3m": (
+                5,
+                10,
+                20,
+                125,
+                1.4,
+                0.55,
+                0.30,
+                0.22,
+                0.005,
+                15,
+                25,
+                10,
+                5,
+                10,
+                125,
+            ),
+            "5m": (3, 6, 12, 75, 1.3, 0.50, 0.28, 0.20, 0.006, 9, 15, 6, 3, 6, 75),
+            "15m": (3, 5, 10, 25, 1.3, 0.45, 0.25, 0.18, 0.008, 3, 5, 2, 2, 2, 25),
         }
 
-        (ROLL_5, ROLL_10, ROLL_20, IMPULSE_WINDOW_BARS,
-         VOLUME_MULT, RE_IMPULSE_MIN, RE_TREND_MIN, RE_CHOP_MAX,
-         VWAP_DIST_IMPULSE, GAP_BARS_LARGE, GAP_BARS_MOD, GAP_BARS_SMALL) = TF_CONFIG[timeframe]
+        (
+            ROLL_5,
+            ROLL_10,
+            ROLL_20,
+            IMPULSE_WINDOW_BARS,
+            VOLUME_MULT,
+            RE_IMPULSE_MIN,
+            RE_TREND_MIN,
+            RE_CHOP_MAX,
+            VWAP_DIST_IMPULSE,
+            GAP_BARS_LARGE,
+            GAP_BARS_MOD,
+            GAP_BARS_SMALL,
+            SWING_N,
+            OBV_WINDOW,
+            VOL_BASELINE,
+        ) = TF_CONFIG[timeframe]
 
         # ── Phase model lookahead also scales with timeframe ──────────
         # 15m trend phase should look 12 bars ahead (= 3h of data)
@@ -676,9 +1425,9 @@ def offline_label_market_context():
         # trains independently and learns its own outcome distribution.
 
         GAP_AUCTION_MAX_BARS = {
-            "LARGE_GAP_SESSION":    GAP_BARS_LARGE,
+            "LARGE_GAP_SESSION": GAP_BARS_LARGE,
             "MODERATE_GAP_SESSION": GAP_BARS_MOD,
-            "NO_GAP":               GAP_BARS_SMALL,
+            "NO_GAP": GAP_BARS_SMALL,
         }
 
         # ── Convert ts to IST before any time-based calculations ──
@@ -693,69 +1442,81 @@ def offline_label_market_context():
 
         # ── Feature engineering ───────────────────────────────────
         # bar_of_day: 0 = 09:15, 1 = 09:16, etc. (uses IST time)
-        df["bar_of_day"] = (df["ts_ist"].dt.hour * 60 + df["ts_ist"].dt.minute - 555) // tf_min
-        df["date"]       = df["ts_ist"].dt.date
+        df["bar_of_day"] = (
+            df["ts_ist"].dt.hour * 60 + df["ts_ist"].dt.minute - 555
+        ) // tf_min
+        df["date"] = df["ts_ist"].dt.date
 
-        df["vwap_dist_pct"]  = (df["close"] - df["vwap"]) / df["vwap"]
-        df["day_high"]       = df.groupby("date")["high"].cummax()
-        df["day_low"]        = df.groupby("date")["low"].cummin()
-        df["day_high_dist"]  = (df["day_high"] - df["close"]) / df["day_high"]
-        df["day_low_dist"]   = (df["close"] - df["day_low"])  / df["day_low"]
-        df["orb_range"]      = (df["orb_high"] - df["orb_low"]).replace(0, np.nan)
-        df["orb_mid"]        = (df["orb_high"] + df["orb_low"]) / 2
-        df["orb_dist_pct"]   = (df["close"] - df["orb_mid"]) / df["orb_range"]
+        df["vwap_dist_pct"] = (df["close"] - df["vwap"]) / df["vwap"]
+        df["day_high"] = df.groupby("date")["high"].cummax()
+        df["day_low"] = df.groupby("date")["low"].cummin()
+        df["day_high_dist"] = (df["day_high"] - df["close"]) / df["day_high"]
+        df["day_low_dist"] = (df["close"] - df["day_low"]) / df["day_low"]
+        df["orb_range"] = (df["orb_high"] - df["orb_low"]).replace(0, np.nan)
+        df["orb_mid"] = (df["orb_high"] + df["orb_low"]) / 2
+        df["orb_dist_pct"] = (df["close"] - df["orb_mid"]) / df["orb_range"]
 
-        daily_close          = df.groupby("date")["close"].last().shift(1)
+        daily_close = df.groupby("date")["close"].last().shift(1)
         df["prev_day_close"] = df["date"].map(daily_close)
 
-        prev_day_atr         = df.groupby("date")["atr_14"].last().shift(1)
-        df["prev_day_atr"]   = df["date"].map(prev_day_atr)
+        prev_day_atr = df.groupby("date")["atr_14"].last().shift(1)
+        df["prev_day_atr"] = df["date"].map(prev_day_atr)
 
         # ── Gap metrics: compute ONLY on bar_of_day==0 then ffill ──
         # Only the first bar of the day (09:15 IST) has a meaningful opening gap.
         # All other bars must inherit the day's gap via forward-fill.
         # Key: set NaN on non-open bars FIRST, then ffill, then fillna fallback.
-        is_open_bar = (df["bar_of_day"] == 0)
+        is_open_bar = df["bar_of_day"] == 0
 
         # Compute raw gap values — NaN on all non-open bars
-        open_of_day   = df["open"].where(is_open_bar)           # NaN except bar_0
-        gap_raw       = open_of_day - df["prev_day_close"]      # NaN except bar_0
-        gap_atr_raw   = gap_raw / df["prev_day_atr"].replace(0, np.nan)  # NaN except bar_0
+        open_of_day = df["open"].where(is_open_bar)  # NaN except bar_0
+        gap_raw = open_of_day - df["prev_day_close"]  # NaN except bar_0
+        gap_atr_raw = gap_raw / df["prev_day_atr"].replace(
+            0, np.nan
+        )  # NaN except bar_0
 
         # Assign to columns — NaN on non-open bars so ffill can propagate bar_0 value
-        df["gap_pct"]  = gap_raw / df["prev_day_close"].replace(0, np.nan)  # NaN non-open
+        df["gap_pct"] = gap_raw / df["prev_day_close"].replace(
+            0, np.nan
+        )  # NaN non-open
 
         # Classify gap direction and regime only where we have a real opening gap
         # Use gap_atr_raw directly (not df["gap_atr"]) so we get NaN on non-open bars
-        df["gap_atr"] = gap_atr_raw   # NaN on non-open bars — DO NOT fillna(0) yet
+        df["gap_atr"] = gap_atr_raw  # NaN on non-open bars — DO NOT fillna(0) yet
 
         # Use pandas .loc on open bars only — avoids np.where dtype coercion
         # which silently converts string columns to float NaN
-        df["gap_dir"]    = None   # object dtype from start
+        df["gap_dir"] = None  # object dtype from start
         df["gap_regime"] = None
-        df["gap_flag"]   = None
+        df["gap_flag"] = None
 
         open_mask = is_open_bar & gap_atr_raw.notna()
         df.loc[open_mask, "gap_dir"] = np.where(
-            gap_atr_raw[open_mask] > 0, "UP",
-            np.where(gap_atr_raw[open_mask] < 0, "DOWN", "NONE"))
+            gap_atr_raw[open_mask] > 0,
+            "UP",
+            np.where(gap_atr_raw[open_mask] < 0, "DOWN", "NONE"),
+        )
         df.loc[open_mask, "gap_regime"] = np.where(
-            gap_atr_raw[open_mask].abs() >= 1.2, "LARGE_GAP",
-            np.where(gap_atr_raw[open_mask].abs() >= 0.5, "MODERATE_GAP", "NO_GAP"))
-        df.loc[open_mask, "gap_flag"] = (df.loc[open_mask, "gap_pct"].abs() > 0.003).astype(int)
+            gap_atr_raw[open_mask].abs() >= 1.2,
+            "LARGE_GAP",
+            np.where(gap_atr_raw[open_mask].abs() >= 0.5, "MODERATE_GAP", "NO_GAP"),
+        )
+        df.loc[open_mask, "gap_flag"] = (
+            df.loc[open_mask, "gap_pct"].abs() > 0.003
+        ).astype(int)
 
         # Forward fill within each IST date — all bars inherit the day opening values.
         # transform(ffill) correctly handles object-dtype string columns with None gaps.
         for _col, _fill in [
-            ("gap_pct",    0),
-            ("gap_atr",    0),
-            ("gap_dir",    "NONE"),
+            ("gap_pct", 0),
+            ("gap_atr", 0),
+            ("gap_dir", "NONE"),
             ("gap_regime", "NO_GAP"),
-            ("gap_flag",   0),
+            ("gap_flag", 0),
         ]:
-            df[_col] = (df.groupby("date")[_col]
-                          .transform(lambda x: x.ffill())
-                          .fillna(_fill))
+            df[_col] = (
+                df.groupby("date")[_col].transform(lambda x: x.ffill()).fillna(_fill)
+            )
         df["gap_flag"] = df["gap_flag"].astype(int)
 
         # Gap fill tracking:
@@ -773,62 +1534,245 @@ def offline_label_market_context():
         #   (open - prev_day_close) is negative, numerator also flips sign.
         df["gap_fill_target"] = df["prev_day_close"]
         gap_open_size = (df["open"] - df["prev_day_close"]).replace(0, np.nan)
-        df["gap_fill_pct"]    = np.where(
+        df["gap_fill_pct"] = np.where(
             df["gap_atr"].abs() > 0,
             (1 - (df["close"] - df["prev_day_close"]) / gap_open_size),
-            0
+            0,
         ).clip(-3, 3)
 
-        df["ema_21_slope"]    = df["ema_21"].diff().rolling(ROLL_5).mean()
-        df["ema_50_slope"]    = df["ema_50"].diff().rolling(ROLL_5).mean()
-        df["atr_pct"]         = df["atr_14"] / df["close"]
-        df["bb_width"]        = (df["bollinger_upper"] - df["bollinger_lower"]) / df["bollinger_mid"]
-        df["range_expansion"] = (df["true_range"] > df["true_range"].rolling(ROLL_5).mean()).astype(int)
-        vol_ma20              = df["volume"].rolling(ROLL_20).mean()
-        df["volume_z"]        = (df["volume"] - vol_ma20) / df["volume"].rolling(ROLL_20).std()
-        df["effort_result"]   = df["volume"] * df["true_range"]
-        df["range_efficiency"]= (df["close"] - df["open"]).abs() / df["true_range"].replace(0, np.nan)
-        df["volume_expansion"]= (df["volume"] > vol_ma20 * VOLUME_MULT).astype(int)
-        df["atr_expanding"]   = (df["atr_14"] > df["atr_14"].rolling(ROLL_10).mean()).astype(int)
+        df["atr_pct"] = df["atr_14"] / df["close"]
+        df["bb_width"] = (df["bollinger_upper"] - df["bollinger_lower"]) / df[
+            "bollinger_mid"
+        ]
+
+        # ── Volatility regime detection (drives all adaptive sizing) ─
+        # vol_ratio = current ATR% / rolling baseline ATR% over 1 full session.
+        # This is symbol-independent because ATR% is already price-normalised.
+        # Clipped [0.5, 2.0] — beyond these extremes, don't over-adapt.
+        #
+        # vol_ratio > 1.3 → HIGH_VOL: market moving fast, use shorter windows
+        #                              and tighter thresholds to stay responsive
+        # vol_ratio < 0.8 → LOW_VOL:  market quiet, use longer windows
+        #                              to see genuine direction through noise
+        # 0.8 – 1.3       → NORMAL:   base windows and thresholds apply
+        atr_baseline = df["atr_pct"].rolling(VOL_BASELINE, min_periods=ROLL_20).mean()
+        vol_ratio = (
+            (df["atr_pct"] / atr_baseline.replace(0, np.nan)).clip(0.5, 2.0).fillna(1.0)
+        )
+        is_high_vol = vol_ratio > 1.3
+        is_low_vol = vol_ratio < 0.8
+
+        # Smooth vol_ratio over ROLL_5 bars so thresholds shift gradually,
+        # not frame-by-frame (prevents boundary flickering in label assignment)
+        vol_ratio_smooth = (
+            vol_ratio.rolling(ROLL_5, min_periods=2).mean().clip(0.6, 1.6)
+        )
+        df["vol_ratio"] = vol_ratio_smooth  # stored for ML feature
+
+        # ── Derived fast/slow window sizes ─────────────────────────
+        # Three tiers per signal family: fast (high-vol), base (normal), slow (low-vol)
+        roll_slope_fast = max(2, ROLL_5 // 2)  # half base
+        roll_slope_slow = min(
+            ROLL_5 * 2, ROLL_20
+        )  # double base, capped at vol baseline
+        roll_atr_fast = max(2, ROLL_10 // 2)
+        roll_atr_slow = min(ROLL_10 * 2, ROLL_20)
+        roll_vol_fast = max(ROLL_10, ROLL_20 // 2)  # shorter vol baseline in low-vol
+        roll_vol_slow = min(
+            ROLL_20 * 2, VOL_BASELINE
+        )  # longer vol baseline in high-vol
+
+        # ── EMA slope — adaptive: fast when volatile, slow when quiet ─
+        ema21_base = df["ema_21"].diff().rolling(ROLL_5).mean()
+        ema21_fast = df["ema_21"].diff().rolling(roll_slope_fast).mean()
+        ema21_slow = df["ema_21"].diff().rolling(roll_slope_slow).mean()
+        df["ema_21_slope"] = np.where(
+            is_high_vol, ema21_fast, np.where(is_low_vol, ema21_slow, ema21_base)
+        )
+
+        ema50_base = df["ema_50"].diff().rolling(ROLL_5).mean()
+        ema50_fast = df["ema_50"].diff().rolling(roll_slope_fast).mean()
+        ema50_slow = df["ema_50"].diff().rolling(roll_slope_slow).mean()
+        df["ema_50_slope"] = np.where(
+            is_high_vol, ema50_fast, np.where(is_low_vol, ema50_slow, ema50_base)
+        )
+
+        # ── Volume baseline — adaptive: LONGER in high-vol (stable ref) ─
+        # In high-vol periods recent volume has spiked, so a short window
+        # would inflate the baseline, making nothing look "elevated".
+        # Longer baseline preserves the pre-spike average.
+        vol_ma_base = df["volume"].rolling(ROLL_20).mean()
+        vol_ma_fast_s = df["volume"].rolling(roll_vol_fast).mean()
+        vol_ma_slow_s = df["volume"].rolling(roll_vol_slow).mean()
+        vol_ma20 = pd.Series(
+            np.where(
+                is_high_vol,
+                vol_ma_slow_s,  # longer in high vol
+                np.where(is_low_vol, vol_ma_fast_s, vol_ma_base),  # shorter in low vol
+            ),
+            index=df.index,
+        )
+
+        # ── ATR reference — adaptive: fast when volatile ─────────────
+        atr_ref_base = df["atr_14"].rolling(ROLL_10).mean()
+        atr_ref_fast = df["atr_14"].rolling(roll_atr_fast).mean()
+        atr_ref_slow = df["atr_14"].rolling(roll_atr_slow).mean()
+        atr_ref = pd.Series(
+            np.where(
+                is_high_vol,
+                atr_ref_fast,
+                np.where(is_low_vol, atr_ref_slow, atr_ref_base),
+            ),
+            index=df.index,
+        )
+
+        # ── Range expansion — adaptive ─────────────────────────────
+        re_base_ref = df["true_range"].rolling(ROLL_5).mean()
+        re_fast_ref = df["true_range"].rolling(roll_slope_fast).mean()
+        re_slow_ref = df["true_range"].rolling(roll_slope_slow).mean()
+        re_ref_sel = np.where(
+            is_high_vol, re_fast_ref, np.where(is_low_vol, re_slow_ref, re_base_ref)
+        )
+
+        # ── range_efficiency must exist before momentum decay uses it ──
+        # (full assignment happens below in the derived signals block,
+        #  but the adaptive rolling mean needs it here first)
+        df["range_efficiency"] = (df["close"] - df["open"]).abs() / df[
+            "true_range"
+        ].replace(0, np.nan)
+
+        # ── Momentum decay — adaptive ──────────────────────────────
+        re_ma_base = df["range_efficiency"].rolling(ROLL_10).mean()
+        re_ma_fast = df["range_efficiency"].rolling(roll_atr_fast).mean()
+        re_ma_slow = df["range_efficiency"].rolling(roll_atr_slow).mean()
+        re_ma_sel = np.where(
+            is_high_vol, re_ma_fast, np.where(is_low_vol, re_ma_slow, re_ma_base)
+        )
+
+        # ── Candle overlap — adaptive ──────────────────────────────
+        ov_fast = (
+            df["high"].rolling(roll_slope_fast).min()
+            < df["low"].rolling(roll_slope_fast).max()
+        )
+        ov_base = df["high"].rolling(ROLL_5).min() < df["low"].rolling(ROLL_5).max()
+        ov_slow = (
+            df["high"].rolling(roll_slope_slow).min()
+            < df["low"].rolling(roll_slope_slow).max()
+        )
+
+        # ── Adaptive thresholds ─────────────────────────────────────
+        # RE thresholds scale with smoothed vol_ratio:
+        #   High vol → higher thresholds (noisy bars look directional by chance)
+        #   Low vol  → lower thresholds  (genuine moves are smaller in absolute terms)
+        # Bounds prevent extreme adaptation: max 30% raise, max 30% lower
+        re_impulse_thr = (RE_IMPULSE_MIN * vol_ratio_smooth).clip(
+            RE_IMPULSE_MIN * 0.70, RE_IMPULSE_MIN * 1.30
+        )
+        re_trend_thr = (RE_TREND_MIN * vol_ratio_smooth).clip(
+            RE_TREND_MIN * 0.70, RE_TREND_MIN * 1.40
+        )
+        re_chop_thr = (RE_CHOP_MAX * vol_ratio_smooth).clip(
+            RE_CHOP_MAX * 0.70, RE_CHOP_MAX * 1.30
+        )
+
+        # Volume multiplier: higher in high-vol (baseline elevated by regime)
+        vol_mult_thr = (VOLUME_MULT * vol_ratio_smooth).clip(
+            VOLUME_MULT * 0.85, VOLUME_MULT * 1.40
+        )
+
+        # VWAP distance: wider in high-vol (price swings further from VWAP normally)
+        vwap_dist_thr = (VWAP_DIST_IMPULSE * vol_ratio_smooth).clip(
+            VWAP_DIST_IMPULSE * 0.80, VWAP_DIST_IMPULSE * 1.50
+        )
+
+        # ── Compute all derived signals with adaptive parameters ────
+        df["range_expansion"] = (df["true_range"] > re_ref_sel).astype(int)
+        df["volume_z"] = (df["volume"] - vol_ma20) / df["volume"].rolling(ROLL_20).std()
+        df["effort_result"] = df["volume"] * df["true_range"]
+        # range_efficiency already computed above (needed for adaptive momentum decay)
+        df["volume_expansion"] = (df["volume"] > vol_ma20 * vol_mult_thr).astype(int)
+        df["atr_expanding"] = (df["atr_14"] > atr_ref).astype(int)
         df["vwap_acceptance"] = (df["vwap_dist_pct"].abs() < 0.01).astype(int)
-        df["momentum_decay"]  = (df["range_efficiency"] < df["range_efficiency"].rolling(ROLL_10).mean()).astype(int)
-        df["candle_overlap"]  = (df["high"].rolling(ROLL_5).min() < df["low"].rolling(ROLL_5).max()).astype(int)
-        df["minute_of_day"]   = df["bar_of_day"] * tf_min
-        df["session_bucket"]  = np.select([df["minute_of_day"]<45, df["minute_of_day"]<300], [0,1], default=2)
-        df["expiry_proximity"]= (df["ts_ist"].dt.day >= (df["ts_ist"].dt.days_in_month - 2)).astype(int)
+        df["momentum_decay"] = (df["range_efficiency"] < re_ma_sel).astype(int)
+        df["candle_overlap"] = np.where(
+            is_high_vol, ov_fast, np.where(is_low_vol, ov_slow, ov_base)
+        ).astype(int)
+        df["minute_of_day"] = df["bar_of_day"] * tf_min
+        df["session_bucket"] = np.select(
+            [df["minute_of_day"] < 45, df["minute_of_day"] < 300], [0, 1], default=2
+        )
+        df["expiry_proximity"] = (
+            df["ts_ist"].dt.day >= (df["ts_ist"].dt.days_in_month - 2)
+        ).astype(int)
 
         if "vix" in df.columns:
             # ffill within each IST date so VIX from today fills all bars
             df["vix_level"] = df.groupby("date")["vix"].ffill().bfill()
         else:
             df["vix_level"] = 0.0
-        df["vix"]        = df["vix_level"]
+        df["vix"] = df["vix_level"]
         df["vix_change"] = df["vix_level"].diff().fillna(0)
-        df["vix_regime"] = np.select([df["vix_level"]<12, df["vix_level"]<18],
-                                      ["LOW_VOL","NORMAL_VOL"], default="HIGH_VOL")
-        df["news_flag"]  = 0
+        df["vix_regime"] = np.select(
+            [df["vix_level"] < 12, df["vix_level"] < 18],
+            ["LOW_VOL", "NORMAL_VOL"],
+            default="HIGH_VOL",
+        )
+        df["news_flag"] = 0
         if "adx_14" not in df.columns:
             df["adx_14"] = 0
+
+        # Initialise state-machine output columns to zero so the inf-replace
+        # loop below doesn't KeyError. _run_state_machine overwrites these
+        # with real computed values after it runs (line ~1527).
+        df["trend_exhaustion"] = 0
+        df["obv_slope"] = 0.0
+        df["macd_expanding"] = 0
 
         # Replace inf only — do NOT fillna yet. fillna(0) happens after
         # window trim so warmup NaNs are dropped, not filled with fake zeros.
         FEATURE_COLS = [
-            "vwap_dist_pct","day_high_dist","day_low_dist","orb_dist_pct","gap_pct",
-            "gap_flag","ema_21_slope","ema_50_slope","adx_14","atr_pct","bb_width",
-            "range_expansion","volume_z","effort_result","range_efficiency",
-            "volume_expansion","atr_expanding","vwap_acceptance","momentum_decay",
-            "candle_overlap","minute_of_day","session_bucket","expiry_proximity",
-            "vix_level","vix_change","news_flag",
+            "vwap_dist_pct",
+            "day_high_dist",
+            "day_low_dist",
+            "orb_dist_pct",
+            "gap_pct",
+            "gap_flag",
+            "ema_21_slope",
+            "ema_50_slope",
+            "adx_14",
+            "atr_pct",
+            "bb_width",
+            "range_expansion",
+            "volume_z",
+            "effort_result",
+            "range_efficiency",
+            "volume_expansion",
+            "atr_expanding",
+            "vwap_acceptance",
+            "momentum_decay",
+            "candle_overlap",
+            "minute_of_day",
+            "session_bucket",
+            "expiry_proximity",
+            "vix_level",
+            "vix_change",
+            "news_flag",
+            # New state features — included so inf/NaN are cleaned before write
+            "trend_exhaustion",
+            "obv_slope",
+            "macd_expanding",
+            # Adaptive vol regime feature — useful for ML
+            "vol_ratio",
         ]
         for c in FEATURE_COLS:
             df[c] = df[c].replace([np.inf, -np.inf], np.nan)
 
         # ── Phase pre-classification (vectorized) ─────────────────
-        df["market_phase"]        = "UNCLASSIFIED"
-        df["session_context"]     = None
-        df["gap_resolved"]        = 0
+        df["market_phase"] = "UNCLASSIFIED"
+        df["session_context"] = None
+        df["gap_resolved"] = 0
         df["gap_auction_started"] = 0
-        df["gap_auction_active"]  = 0
+        df["gap_auction_active"] = 0
 
         # FIX 2: Both LARGE_GAP and MODERATE_GAP need gap auction treatment.
         # Previously only LARGE_GAP triggered "GAP" session context —
@@ -836,44 +1780,61 @@ def offline_label_market_context():
         # Set session_context on bar_0 only, then ffill across the day.
         # Use .loc with string values — avoids np.where dtype coercion to float.
         open_mask = df["bar_of_day"] == 0
-        df.loc[open_mask & (df["gap_regime"] == "LARGE_GAP"),    "session_context"] = "LARGE_GAP_SESSION"
-        df.loc[open_mask & (df["gap_regime"] == "MODERATE_GAP"), "session_context"] = "MODERATE_GAP_SESSION"
-        df.loc[open_mask & ~df["gap_regime"].isin(["LARGE_GAP","MODERATE_GAP"]), "session_context"] = "BALANCE"
+        df.loc[open_mask & (df["gap_regime"] == "LARGE_GAP"), "session_context"] = (
+            "LARGE_GAP_SESSION"
+        )
+        df.loc[open_mask & (df["gap_regime"] == "MODERATE_GAP"), "session_context"] = (
+            "MODERATE_GAP_SESSION"
+        )
+        df.loc[
+            open_mask & ~df["gap_regime"].isin(["LARGE_GAP", "MODERATE_GAP"]),
+            "session_context",
+        ] = "BALANCE"
 
         # Use transform(ffill) — handles object-dtype string columns correctly.
         # groupby().ffill() silently skips None propagation on mixed object columns.
-        df["session_context"] = (df.groupby("date")["session_context"]
-                                    .transform(lambda x: x.ffill())
-                                    .fillna("BALANCE"))
+        df["session_context"] = (
+            df.groupby("date")["session_context"]
+            .transform(lambda x: x.ffill())
+            .fillna("BALANCE")
+        )
 
         # Convenience boolean — True for all bars on a gap day
         df["is_gap_session"] = df["session_context"].isin(
-            ["LARGE_GAP_SESSION", "MODERATE_GAP_SESSION"])
+            ["LARGE_GAP_SESSION", "MODERATE_GAP_SESSION"]
+        )
 
-        # BALANCE_CHOP: tight range, no ATR expansion, near VWAP, flat slope
-        # RE_CHOP_MAX and VWAP threshold scale with timeframe:
-        #   1m: RE<0.25, vwap<0.8%  — tight intraday chop
-        #   3m: RE<0.22, vwap<1.0%  — slightly wider acceptable chop
-        #   5m: RE<0.20, vwap<1.2%  — 5m bars naturally wider range
-        #  15m: RE<0.18, vwap<1.5%  — 15m chop looks different to 1m chop
-        vwap_chop_thresh = {"1m":0.008, "3m":0.010, "5m":0.012, "15m":0.015}[timeframe]
-        slope_flat_thresh= {"1m":0.0005,"3m":0.001, "5m":0.002, "15m":0.005}[timeframe]
-        balance_chop     = ((df["range_efficiency"]<RE_CHOP_MAX)&(df["atr_expanding"]==0)
-                            &(df["vwap_dist_pct"].abs()<vwap_chop_thresh)
-                            &(df["ema_21_slope"].abs()<slope_flat_thresh))
-        trend_acceptance = ((df["ema_21_slope"]>0)&(df["close"]>df["vwap"])
-                            &((df["range_efficiency"]>=0.20)|
-                              ((df["gap_regime"]=="LARGE_GAP")&(df["range_efficiency"]>=0.15)))
-                            &(df["atr_expanding"]==0))
-        # FIX: group by date before rolling so day-1 bars don't pollute
-        # day-2 morning compression/distribution signals
-        atr_pct_mean  = df.groupby("date")["atr_pct"].transform(
-            lambda x: x.rolling(ROLL_20, min_periods=1).mean())
-        bb_width_mean = df.groupby("date")["bb_width"].transform(
-            lambda x: x.rolling(ROLL_20, min_periods=1).mean())
-        compression      = ((df["atr_pct"]  < atr_pct_mean  * 0.7)
-                            &(df["bb_width"] < bb_width_mean * 0.7)
-                            &(df["range_efficiency"]<0.30))
+        # BALANCE_CHOP: uses adaptive RE threshold (re_chop_thr)
+        vwap_chop_thresh = {"1m": 0.008, "3m": 0.010, "5m": 0.012, "15m": 0.015}[
+            timeframe
+        ]
+        slope_flat_thresh = {"1m": 0.0005, "3m": 0.001, "5m": 0.002, "15m": 0.005}[
+            timeframe
+        ]
+        balance_chop = (
+            (df["range_efficiency"] < re_chop_thr)
+            & (df["atr_expanding"] == 0)
+            & (df["vwap_dist_pct"].abs() < vwap_chop_thresh)
+            & (df["ema_21_slope"].abs() < slope_flat_thresh)
+        )
+        trend_acceptance = (
+            (df["ema_21_slope"] > 0)
+            & (df["close"] > df["vwap"])
+            & (
+                (df["range_efficiency"] >= 0.20)
+                | ((df["gap_regime"] == "LARGE_GAP") & (df["range_efficiency"] >= 0.15))
+            )
+            & (df["atr_expanding"] == 0)
+        )
+        # Compression: p33 of BB width per date group (self-calibrating per symbol)
+        bb_width_p33 = df.groupby("date")["bb_width"].transform(
+            lambda x: x.rolling(ROLL_20, min_periods=5).quantile(0.33)
+        )
+        compression = (
+            (df["bb_width"] < bb_width_p33)
+            & (df["range_efficiency"] < re_chop_thr)  # adaptive RE gate
+            & (df["atr_expanding"] == 0)
+        )
 
         # ── Vectorized signals (inputs to state machine — NOT labels) ──────
         # These are boolean Series computed efficiently across all rows.
@@ -883,20 +1844,35 @@ def offline_label_market_context():
         # TREND_ACCEPTANCE in isolation may actually be TREND_CONTINUATION or
         # BALANCE_CHOP depending on what preceded it.
 
-        # RE_IMPULSE_MIN and VWAP_DIST_IMPULSE scale with timeframe:
-        # 15m bars already have absorbed intraday noise so lower RE still
-        # represents a genuine directional move. 1m needs tighter filter.
-        base_impulse = ((df["volume_expansion"]==1)&(df["atr_expanding"]==1)
-                        &(df["range_efficiency"]>RE_IMPULSE_MIN)&(df["momentum_decay"]==0)
-                        &(df["vwap_dist_pct"].abs()>VWAP_DIST_IMPULSE))
-        base_impulse &= ((df["bar_of_day"]<IMPULSE_WINDOW_BARS)|
-                          (df["volume"]>vol_ma20*2))
+        # ── Impulse detection with adaptive thresholds ──────────────
+        # re_impulse_thr and vwap_dist_thr are Series that scale with
+        # vol_ratio_smooth — tighter in high-vol (noisier), looser in low-vol
+        base_impulse = (
+            (df["volume_expansion"] == 1)
+            & (df["atr_expanding"] == 1)
+            & (df["range_efficiency"] > re_impulse_thr)
+            & (df["momentum_decay"] == 0)
+            & (df["vwap_dist_pct"].abs() > vwap_dist_thr)
+        )
+        base_impulse &= (df["bar_of_day"] < IMPULSE_WINDOW_BARS) | (
+            df["volume"] > vol_ma20 * 2
+        )
 
-        bullish_impulse = (base_impulse&(df["close"]>df["open"])&(df["close"]>df["ema_21"])
-                           &(df["ema_21_slope"]>0)&(df["vwap_dist_pct"]>0))
-        bearish_impulse = (base_impulse&(df["close"]<df["open"])&(df["close"]<df["ema_21"])
-                           &(df["ema_21_slope"]<0)&(df["vwap_dist_pct"]<0))
-        neutral_impulse = base_impulse&~bullish_impulse&~bearish_impulse
+        bullish_impulse = (
+            base_impulse
+            & (df["close"] > df["open"])
+            & (df["close"] > df["ema_21"])
+            & (df["ema_21_slope"] > 0)
+            & (df["vwap_dist_pct"] > 0)
+        )
+        bearish_impulse = (
+            base_impulse
+            & (df["close"] < df["open"])
+            & (df["close"] < df["ema_21"])
+            & (df["ema_21_slope"] < 0)
+            & (df["vwap_dist_pct"] < 0)
+        )
+        neutral_impulse = base_impulse & ~bullish_impulse & ~bearish_impulse
 
         # Keep market_phase as UNCLASSIFIED for ALL bars — state machine assigns everything
         # (gap auction entry bars will be set in state machine at bar_of_day==0)
@@ -904,80 +1880,167 @@ def offline_label_market_context():
         # FIX 6: gap_auction_entry now uses is_gap_session (covers both
         # LARGE and MODERATE gap sessions). Resolution uses gap_fill_pct
         # which is gap-specific, not generic candle metrics.
-        gap_auction_entry    = df["is_gap_session"] & (df["bar_of_day"] == 0)
+        gap_auction_entry = df["is_gap_session"] & (df["bar_of_day"] == 0)
         # gap_auction_resolved intentionally removed — a strong candle does NOT
         # resolve a gap. Only gap_fill_pct >= 0.80 or timeout ends the auction.
-        gap_auction_resolved = pd.Series(False, index=df.index)  # unused, kept for signature
-        gap_auction_failed   = ((df["range_efficiency"]<0.20)
-                                &(df["volume"]<vol_ma20)&(df["vwap_acceptance"]==1))
+        gap_auction_resolved = pd.Series(
+            False, index=df.index
+        )  # unused, kept for signature
+        gap_auction_failed = (
+            (df["range_efficiency"] < 0.20)
+            & (df["volume"] < vol_ma20)
+            & (df["vwap_acceptance"] == 1)
+        )
         # ABSORPTION: price near VWAP, above-avg volume, small range
         # volume_expansion==1 required — absorption needs significant volume
         # to indicate large players absorbing supply/demand at this level.
-        absorption           = ((df["close"]>df["vwap"])&(df["volume_expansion"]==1)
-                                &(df["atr_expanding"]==0)&(df["range_efficiency"]<0.35)
-                                &(df["vwap_acceptance"]==1))
-        # DISTRIBUTION: same as absorption but at highs (bb_width expanding)
-        # already inherits volume_expansion==1 from absorption condition above
-        distribution         = absorption&(df["bb_width"]>bb_width_mean)
-        # ── Bull trend signals (thresholds scale with timeframe) ────
-        # RE_TREND_MIN: minimum directional efficiency to call it a trend bar
-        #   1m=0.35 (35% of range must be directional)
-        #  15m=0.25 (15m bars absorb more noise — lower threshold still meaningful)
-        trend_valid          = ((df["ema_21_slope"]>0)&(df["close"]>df["vwap"])
-                                &(df["range_efficiency"]>RE_TREND_MIN))
-        trend_pause          = ((df["ema_21_slope"]>0)&(df["close"]>df["ema_21"])
-                                &(df["range_efficiency"]>=RE_CHOP_MAX)
-                                &(df["range_efficiency"]<RE_TREND_MIN)
-                                &(df["volume"]>vol_ma20))
-        trend_digestion      = ((df["range_efficiency"]>=RE_CHOP_MAX*0.6)
-                                &(df["range_efficiency"]<RE_TREND_MIN)
-                                &(df["atr_expanding"]==0)&(df["close"]>df["vwap"])
-                                &(df["ema_21_slope"]>0))
-        trend_acceptance     = ((df["ema_21_slope"]>0)&(df["close"]>df["vwap"])
-                                &((df["range_efficiency"]>=RE_CHOP_MAX)|
-                                  ((df["gap_regime"]=="LARGE_GAP")&(df["range_efficiency"]>=RE_CHOP_MAX*0.6)))
-                                &(df["atr_expanding"]==0))
+        absorption = (
+            (df["close"] > df["vwap"])
+            & (df["volume_expansion"] == 1)
+            & (df["atr_expanding"] == 0)
+            & (df["range_efficiency"] < 0.35)
+            & (df["vwap_acceptance"] == 1)
+        )
+        # DISTRIBUTION: same as absorption but at highs (bb_width expanding above p33)
+        # bb_width_p33 replaces the old bb_width_mean reference — consistent with
+        # the updated compression threshold that now uses p33 as its anchor.
+        distribution = absorption & (df["bb_width"] > bb_width_p33)
+        # ── Bull trend signals with adaptive RE threshold ─────────────
+        # re_trend_thr is a Series — element-wise comparison works fine.
+        ema_stacked_bull = (df["ema_9"] > df["ema_21"]) & (df["ema_21"] > df["ema_50"])
+        trend_valid = (
+            (df["ema_21_slope"] > 0)
+            & (df["close"] > df["vwap"])
+            & (df["range_efficiency"] > re_trend_thr)
+            & ema_stacked_bull
+        )
+        trend_pause = (
+            (df["ema_21_slope"] > 0)
+            & (df["close"] > df["ema_21"])
+            & (df["range_efficiency"] >= re_chop_thr)
+            & (df["range_efficiency"] < re_trend_thr)
+            & (df["volume"] > vol_ma20)
+        )
+        trend_digestion = (
+            (df["range_efficiency"] >= re_chop_thr * 0.6)
+            & (df["range_efficiency"] < re_trend_thr)
+            & (df["atr_expanding"] == 0)
+            & (df["close"] > df["vwap"])
+            & (df["ema_21_slope"] > 0)
+        )
+        trend_acceptance = (
+            (df["ema_21_slope"] > 0)
+            & (df["close"] > df["vwap"])
+            & (
+                (df["range_efficiency"] >= re_chop_thr)
+                | (
+                    (df["gap_regime"] == "LARGE_GAP")
+                    & (df["range_efficiency"] >= re_chop_thr * 0.6)
+                )
+            )
+            & (df["atr_expanding"] == 0)
+        )
 
-        # ── Bear trend signals (mirror — all thresholds same as bull) ──
-        bear_trend_valid     = ((df["ema_21_slope"]<0)&(df["close"]<df["vwap"])
-                                &(df["range_efficiency"]>RE_TREND_MIN))
-        bear_trend_pause     = ((df["ema_21_slope"]<0)&(df["close"]<df["ema_21"])
-                                &(df["range_efficiency"]>=RE_CHOP_MAX)
-                                &(df["range_efficiency"]<RE_TREND_MIN)
-                                &(df["volume"]>vol_ma20))
-        bear_trend_digestion = ((df["range_efficiency"]>=RE_CHOP_MAX*0.6)
-                                &(df["range_efficiency"]<RE_TREND_MIN)
-                                &(df["atr_expanding"]==0)&(df["close"]<df["vwap"])
-                                &(df["ema_21_slope"]<0))
-        bear_trend_acceptance= ((df["ema_21_slope"]<0)&(df["close"]<df["vwap"])
-                                &(df["range_efficiency"]>=RE_CHOP_MAX*0.6)
-                                &(df["atr_expanding"]==0))
+        # ── Bear trend signals — mirrors of bull, same adaptive thresholds ─
+        ema_stacked_bear = (df["ema_9"] < df["ema_21"]) & (df["ema_21"] < df["ema_50"])
+        bear_trend_valid = (
+            (df["ema_21_slope"] < 0)
+            & (df["close"] < df["vwap"])
+            & (df["range_efficiency"] > re_trend_thr)
+            & ema_stacked_bear
+        )
+        bear_trend_pause = (
+            (df["ema_21_slope"] < 0)
+            & (df["close"] < df["ema_21"])
+            & (df["range_efficiency"] >= re_chop_thr)
+            & (df["range_efficiency"] < re_trend_thr)
+            & (df["volume"] > vol_ma20)
+        )
+        bear_trend_digestion = (
+            (df["range_efficiency"] >= re_chop_thr * 0.6)
+            & (df["range_efficiency"] < re_trend_thr)
+            & (df["atr_expanding"] == 0)
+            & (df["close"] < df["vwap"])
+            & (df["ema_21_slope"] < 0)
+        )
+        bear_trend_acceptance = (
+            (df["ema_21_slope"] < 0)
+            & (df["close"] < df["vwap"])
+            & (df["range_efficiency"] >= re_chop_thr * 0.6)
+            & (df["atr_expanding"] == 0)
+        )
 
-        absorption_break     = (df["range_efficiency"]>0.45)|(df["atr_expanding"]==1)
-        distribution_break   = (df["close"]>df["vwap"])|(df["range_efficiency"]>0.45)
+        absorption_break = (df["range_efficiency"] > 0.45) | (df["atr_expanding"] == 1)
+        distribution_break = (df["close"] > df["vwap"]) | (
+            df["range_efficiency"] > 0.45
+        )
 
         # ── IMPROVEMENT 1: numpy state machine ───────────────────
         df = _run_state_machine(
-            df, bullish_impulse, bearish_impulse, neutral_impulse,
-            gap_auction_entry, gap_auction_resolved, gap_auction_failed,
-            trend_valid, trend_digestion, trend_pause, trend_acceptance,
-            bear_trend_valid, bear_trend_digestion, bear_trend_pause, bear_trend_acceptance,
+            df,
+            bullish_impulse,
+            bearish_impulse,
+            neutral_impulse,
+            gap_auction_entry,
+            gap_auction_resolved,
+            gap_auction_failed,
+            trend_valid,
+            trend_digestion,
+            trend_pause,
+            trend_acceptance,
+            bear_trend_valid,
+            bear_trend_digestion,
+            bear_trend_pause,
+            bear_trend_acceptance,
             compression,
-            absorption, distribution, absorption_break, distribution_break,
-            vol_ma20, GAP_AUCTION_MAX_BARS,
+            balance_chop,
+            absorption,
+            distribution,
+            absorption_break,
+            distribution_break,
+            vol_ma20,
+            GAP_AUCTION_MAX_BARS,
+            swing_n=SWING_N,
+            obv_window=OBV_WINDOW,
         )
 
         # ── ORB quality (vectorized) ─────────────────────────────
-        df["orb_breakout"] = ((df["close"]>df["orb_high"])&(df["bar_of_day"]<=int(90/tf_min))).astype(int)
-        df["orb_quality"]  = ((df["volume_expansion"]==1)&(df["atr_expanding"]==1)&(df["range_efficiency"]>0.45)).astype(int)
-        df["orb_location"] = ((df["close"]>df["ema_21"])&(df["vwap_dist_pct"]>0)).astype(int)
-        df["ORB"]          = ((df["orb_breakout"]==1)&(df["orb_quality"]==1)&(df["orb_location"]==1)).astype(int)
+        df["orb_breakout"] = (
+            (df["close"] > df["orb_high"]) & (df["bar_of_day"] <= int(90 / tf_min))
+        ).astype(int)
+        df["orb_quality"] = (
+            (df["volume_expansion"] == 1)
+            & (df["atr_expanding"] == 1)
+            & (df["range_efficiency"] > 0.45)
+        ).astype(int)
+        df["orb_location"] = (
+            (df["close"] > df["ema_21"]) & (df["vwap_dist_pct"] > 0)
+        ).astype(int)
+        df["ORB"] = (
+            (df["orb_breakout"] == 1)
+            & (df["orb_quality"] == 1)
+            & (df["orb_location"] == 1)
+        ).astype(int)
 
         # ── Trim warmup rows FIRST — then fillna(0) ─────────────
-        # Trimming first ensures warmup NaNs are dropped, not replaced
-        # with fake zeros that would corrupt ML training data.
-        WARMUP = max(window, ROLL_20)
-        df  = df.iloc[WARMUP:].reset_index(drop=True)
+        # WARMUP must cover the longest rolling window used:
+        #   ROLL_20           — vol_ma20, bb_width_p33
+        #   4 * SWING_N       — swing detection needs 4*n lookback bars
+        #   OBV_WINDOW        — obv_slope lookback
+        #   roll_slope_slow   — slowest EMA slope window
+        #   roll_vol_slow     — longest volume baseline in low-vol regime
+        #
+        # VOL_BASELINE (1 session) intentionally NOT in WARMUP — it uses
+        # min_periods=ROLL_20 so it starts producing values after ROLL_20 bars.
+        # Including VOL_BASELINE would discard 1 full session as warmup.
+        #
+        # Real-time cost of WARMUP per TF:
+        #   1m : max(60, 20, 30, 30, 120) = 120 bars = 120 min
+        #   3m : max(20, 20, 10, 10,  40) = 40  bars = 120 min
+        #   5m : max(12, 12,  6,  6,  24) = 24  bars = 120 min
+        #  15m : max(10,  8,  2,  6,  20) = 20  bars = 300 min
+        WARMUP = max(ROLL_20, 4 * SWING_N, OBV_WINDOW, roll_slope_slow, roll_vol_slow)
+        df = df.iloc[WARMUP:].reset_index(drop=True)
 
         # Now fillna is safe — only genuine missing values remain
         for c in FEATURE_COLS:
@@ -988,10 +2051,12 @@ def offline_label_market_context():
         # ── IMPROVEMENT 2: vectorized row building ───────────────
         # Tag each bar with its TF role — used by ML pipeline to know
         # which model to train and how to combine signals across TFs
-        tf_role = {"1m": "MICRO", "3m": "CONFIRM", "5m": "CONFIRM", "15m": "EXECUTE"}[timeframe]
+        tf_role = {"1m": "MICRO", "3m": "CONFIRM", "5m": "CONFIRM", "15m": "EXECUTE"}[
+            timeframe
+        ]
         df["tf_role"] = tf_role
         market_rows = _build_market_rows(df, symbol, exchange, timeframe, now)
-        rule_rows   = _build_rule_rows(df, symbol, exchange, timeframe, now)
+        rule_rows = _build_rule_rows(df, symbol, exchange, timeframe, now)
 
         # ── IMPROVEMENT 3: chunked inserts ───────────────────────
         MARKET_SQL = """
@@ -1000,15 +2065,25 @@ def offline_label_market_context():
                 vwap_dist_pct,day_high_dist,day_low_dist,orb_dist_pct,gap_pct,minute_of_day,
                 volume_expansion,atr_expanding,range_efficiency,vwap_acceptance,
                 momentum_decay,candle_overlap,vix,vix_change,vix_regime,
-                gap_atr,gap_dir,gap_regime,created_at
+                gap_atr,gap_dir,gap_regime,
+                trend_exhaustion,obv_slope,macd_expanding,vol_ratio,
+                price_structure,session_type,macro_regime,
+                created_at
             ) VALUES %s
             ON CONFLICT (symbol,exchange,timeframe,ts) DO UPDATE SET
                 market_phase=EXCLUDED.market_phase,
                 ml_label=EXCLUDED.ml_label,
                 tf_role=EXCLUDED.tf_role,
                 ema_21_slope=EXCLUDED.ema_21_slope,
-                vwap_dist_pct=EXCLUDED.vwap_dist_pct, gap_atr=EXCLUDED.gap_atr,
-                gap_dir=EXCLUDED.gap_dir, gap_regime=EXCLUDED.gap_regime,
+                vwap_dist_pct=EXCLUDED.vwap_dist_pct,
+                gap_atr=EXCLUDED.gap_atr,
+                gap_dir=EXCLUDED.gap_dir,
+                gap_regime=EXCLUDED.gap_regime,
+                trend_exhaustion=EXCLUDED.trend_exhaustion,
+                vol_ratio=EXCLUDED.vol_ratio,
+                price_structure=EXCLUDED.price_structure,
+                session_type=EXCLUDED.session_type,
+                macro_regime=EXCLUDED.macro_regime,
                 created_at=EXCLUDED.created_at
         """
         RULE_SQL = """
@@ -1025,15 +2100,358 @@ def offline_label_market_context():
         with get_db_conn() as conn:
             with conn.cursor() as cur:
                 _chunk_execute(cur, MARKET_SQL, market_rows)
-                _chunk_execute(cur, RULE_SQL,   rule_rows)
+                _chunk_execute(cur, RULE_SQL, rule_rows)
 
         elapsed = round(time.time() - t0, 1)
-        return jsonify({
-            "status":      "SUCCESS",
-            "market_rows": len(market_rows),
-            "rule_rows":   len(rule_rows),
-            "elapsed_sec": elapsed,
-        })
+        return jsonify(
+            {
+                "status": "SUCCESS",
+                "market_rows": len(market_rows),
+                "rule_rows": len(rule_rows),
+                "elapsed_sec": elapsed,
+            }
+        )
+
+    except Exception:
+        traceback.print_exc()
+        return jsonify({"error": traceback.format_exc()}), 500
+
+
+# ── Phase parameter calibration ──────────────────────────────────
+# DB migration (run once before using):
+#
+#   CREATE TABLE IF NOT EXISTS phase_params (
+#       id              SERIAL PRIMARY KEY,
+#       symbol          TEXT    NOT NULL,
+#       exchange        TEXT    NOT NULL DEFAULT 'NSE',
+#       timeframe       TEXT    NOT NULL,
+#       market_phase    TEXT    NOT NULL,
+#       optimal_tp      FLOAT   NOT NULL,
+#       optimal_sl      FLOAT   NOT NULL,
+#       optimal_lookahead_min INT NOT NULL,
+#       samples         INT     NOT NULL,
+#       win_rate        FLOAT,
+#       avg_mfe_r       FLOAT,
+#       avg_mae_r       FLOAT,
+#       p25_mfe_r       FLOAT,
+#       p50_mfe_r       FLOAT,
+#       p75_mfe_r       FLOAT,
+#       p25_mae_r       FLOAT,
+#       p75_exit_after  INT,
+#       computed_at     TIMESTAMPTZ DEFAULT NOW(),
+#       UNIQUE (symbol, exchange, timeframe, market_phase)
+#   );
+
+_PHASE_PARAMS_CACHE: dict = (
+    {}
+)  # in-process cache: (symbol,exchange,tf) → {phase→params}
+
+
+def _load_phase_params(symbol: str, exchange: str, timeframe: str, conn) -> dict:
+    """
+    Load data-derived TP/SL/lookahead from phase_params table.
+    Falls back to PHASE_MODEL defaults for phases with insufficient data.
+    Result is cached in-process so repeated calls within the same request
+    do not hit the DB again.
+    """
+    cache_key = (symbol, exchange, timeframe)
+    if cache_key in _PHASE_PARAMS_CACHE:
+        return _PHASE_PARAMS_CACHE[cache_key]
+
+    try:
+        df = read_sql_safe(
+            """
+            SELECT market_phase, optimal_tp, optimal_sl, optimal_lookahead_min
+            FROM phase_params
+            WHERE symbol=%s AND exchange=%s AND timeframe=%s
+        """,
+            conn,
+            params=[symbol, exchange, timeframe],
+        )
+    except Exception:
+        # Table may not exist yet (first run before migration)
+        df = pd.DataFrame()
+
+    params = {}
+    if not df.empty:
+        for _, row in df.iterrows():
+            params[row["market_phase"]] = {
+                "tp": float(row["optimal_tp"]),
+                "sl": float(row["optimal_sl"]),
+                "lookahead_min": int(row["optimal_lookahead_min"]),
+            }
+
+    _PHASE_PARAMS_CACHE[cache_key] = params
+    return params
+
+
+@strategy_bp.route("/api/offline/calibrate-phase-params", methods=["POST"])
+def calibrate_phase_params():
+    """
+    Compute optimal TP, SL, and lookahead for every phase from historical
+    MFE/MAE outcomes already stored in strategy_outcomes.
+
+    HOW IT WORKS
+    ─────────────
+    For each market_phase with >= MIN_SAMPLES rows:
+
+      optimal_tp = p60(mfe_r)
+        The 60th percentile of maximum favourable excursion in R-units.
+        60% of historical trades reached this level — using it as TP gives
+        a ~60% TP hit rate which is consistent with profitable trading.
+        p50 is too conservative (50% hit rate, low R:R).
+        p75 is too greedy (25% hit rate, wins too small to offset losses).
+
+      optimal_sl = abs(p25(mae_r))
+        The 25th percentile of maximum adverse excursion (negated, in R-units).
+        75% of historical trades never exceeded this drawdown — so placing the
+        stop here avoids stopping out 75% of eventually-profitable trades.
+        p10 MAE is too tight — stops out good trades.
+        p40 MAE is too wide — accepts too much heat.
+
+      optimal_lookahead_min = p75(exit_after_candles) × tf_min
+        75th percentile of actual exit bar counts, converted to minutes.
+        75% of trades resolve within this time window.
+
+    CONSTRAINTS applied after derivation (keeps values execution-realistic):
+      tp >= max(1.0, sl × 1.3)     — R:R at least 1.3 before costs
+      sl between [0.5, 2.0]        — not too tight, not irrationally wide
+      lookahead_min between [15, 375] — minimum 15 min, max 1 session
+
+    BOOTSTRAP:
+      First call: no data → nothing written, returns empty dict.
+      After first calc-strategy-outcomes run: data exists → params computed.
+      Second calc-strategy-outcomes run: reads params → data-driven simulation.
+      Self-improving: each run generates better outcomes → better params.
+
+    POST body: { "symbol": "RELIANCE", "exchange": "NSE", "timeframe": "3m" }
+    """
+    try:
+        data = request.get_json() or {}
+        symbol = (data.get("symbol") or "").upper().strip()
+        exchange = (data.get("exchange") or "NSE").upper().strip()
+        timeframe = (data.get("timeframe") or "").lower().strip()
+        if not symbol or not timeframe:
+            return jsonify({"error": "symbol and timeframe required"}), 400
+
+        MIN_SAMPLES = int(data.get("min_samples", 30))
+        TP_PERCENTILE = float(data.get("tp_percentile", 60))  # p60 of mfe_r
+        SL_PERCENTILE = float(data.get("sl_percentile", 25))  # p25 of |mae_r|
+        LA_PERCENTILE = float(data.get("la_percentile", 75))  # p75 of exit_after
+
+        TF_MIN_MAP = {"1m": 1, "3m": 3, "5m": 5, "15m": 15}
+        tf_min = TF_MIN_MAP.get(timeframe, 1)
+
+        with get_db_conn() as conn:
+            # Diagnostic: count total rows first so error message is specific
+            total_df = read_sql_safe(
+                """
+                SELECT COUNT(*) AS total_rows,
+                       COUNT(mfe_r) AS has_mfe_r,
+                       COUNT(mae_r) AS has_mae_r,
+                       COUNT(exit_after_candles) AS has_exit_after
+                FROM strategy_outcomes
+                WHERE symbol=%s AND exchange=%s AND timeframe=%s
+            """,
+                conn,
+                params=[symbol, exchange, timeframe],
+            )
+
+            total_rows = (
+                int(total_df.iloc[0]["total_rows"]) if not total_df.empty else 0
+            )
+            has_mfe = int(total_df.iloc[0]["has_mfe_r"]) if not total_df.empty else 0
+
+            df = read_sql_safe(
+                """
+                SELECT market_phase,
+                       mfe_r, mae_r,
+                       exit_after_candles,
+                       realized_r
+                FROM strategy_outcomes
+                WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                  AND mfe_r IS NOT NULL
+                  AND mae_r IS NOT NULL
+                  AND exit_after_candles IS NOT NULL
+            """,
+                conn,
+                params=[symbol, exchange, timeframe],
+            )
+
+        if df.empty:
+            if total_rows == 0:
+                msg = (
+                    f"No rows in strategy_outcomes for {symbol}/{timeframe}. "
+                    "Most likely cause: calc-strategy-outcomes crashed before "
+                    "inserting rows (e.g. missing DB column). "
+                    "Run migration.sql, then re-run calc-strategy-outcomes."
+                )
+            elif has_mfe == 0:
+                msg = (
+                    f"{total_rows} rows exist but mfe_r is NULL in all of them. "
+                    "Re-run calc-strategy-outcomes to populate outcome columns."
+                )
+            else:
+                msg = (
+                    f"{total_rows} total rows, {has_mfe} have mfe_r populated, "
+                    "but none passed the NOT NULL filter. Re-run calc-strategy-outcomes."
+                )
+            return jsonify(
+                {
+                    "status": "NO_DATA",
+                    "message": msg,
+                    "total_rows": total_rows,
+                    "phases": {},
+                }
+            )
+
+        results = {}
+        upsert_rows = []
+        now = datetime.utcnow()
+
+        for phase, grp in df.groupby("market_phase"):
+            n = len(grp)
+            if n < MIN_SAMPLES:
+                results[phase] = {
+                    "status": "INSUFFICIENT_DATA",
+                    "samples": n,
+                    "min_required": MIN_SAMPLES,
+                    "fallback": "using PHASE_MODEL defaults",
+                }
+                continue
+
+            # ── Raw derivation ──────────────────────────────────
+            mfe_r_vals = grp["mfe_r"].dropna()
+            mae_r_vals = (
+                grp["mae_r"].dropna().abs()
+            )  # MAE is negative, work with magnitude
+            exit_vals = grp["exit_after_candles"].dropna()
+
+            p25_mfe = float(np.percentile(mfe_r_vals, 25))
+            p50_mfe = float(np.percentile(mfe_r_vals, 50))
+            p75_mfe = float(np.percentile(mfe_r_vals, 75))
+            raw_tp = float(np.percentile(mfe_r_vals, TP_PERCENTILE))
+
+            p25_mae = float(np.percentile(mae_r_vals, SL_PERCENTILE))
+            raw_sl = p25_mae  # p25 of absolute MAE values
+
+            p75_exit = float(np.percentile(exit_vals, LA_PERCENTILE))
+            raw_la_min = max(15, int(round(p75_exit * tf_min)))
+
+            win_rate = float((grp["realized_r"] > 0).mean())
+
+            # ── Apply constraints ───────────────────────────────
+            # SL: clip to [0.5, 2.0]
+            sl = float(np.clip(raw_sl, 0.3, 2.0))
+
+            # TP: must give at least 1.3 R:R, clip to [1.0, 4.0]
+            # Also: if raw_tp < 1.0 (phase has very poor MFE), set to 1.0
+            # because below 1.0 TP costs consume all profit.
+            tp = float(np.clip(max(raw_tp, sl * 1.3), 0.6, 4.0))
+
+            # Lookahead: clip to [15, 375] minutes
+            la_min = int(np.clip(raw_la_min, 15, 375))
+
+            # ── Sanity check: is net R:R viable at all? ─────────
+            # Compute approximate net R:R assuming ₹130 entry price
+            # and the timeframe's average ATR. Flag if negative.
+            # This doesn't block the write — it's informational only.
+            avg_atr = float(grp["mfe_r"].mean())  # crude proxy
+            viable = (tp / sl) >= 1.2  # gross R:R at least 1.2
+
+            results[phase] = {
+                "status": "CALIBRATED",
+                "samples": n,
+                "optimal_tp": round(tp, 3),
+                "optimal_sl": round(sl, 3),
+                "optimal_la_min": la_min,
+                "gross_rr": round(tp / sl, 2),
+                "win_rate": round(win_rate, 3),
+                "p25_mfe_r": round(p25_mfe, 3),
+                "p50_mfe_r": round(p50_mfe, 3),
+                "p75_mfe_r": round(p75_mfe, 3),
+                "p25_mae_r": round(p25_mae, 3),
+                "p75_exit_candles": int(p75_exit),
+                "viable": viable,
+                "note": "" if viable else "R:R below 1.2 — phase has weak edge",
+            }
+
+            upsert_rows.append(
+                (
+                    symbol,
+                    exchange,
+                    timeframe,
+                    phase,
+                    tp,
+                    sl,
+                    la_min,
+                    n,
+                    win_rate,
+                    float(mfe_r_vals.mean()),
+                    float(-mae_r_vals.mean()),
+                    p25_mfe,
+                    p50_mfe,
+                    p75_mfe,
+                    float(-p25_mae),
+                    int(p75_exit),
+                    now,
+                )
+            )
+
+        # ── Upsert into phase_params ────────────────────────────
+        if upsert_rows:
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    from psycopg2.extras import execute_values
+
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO phase_params (
+                            symbol,exchange,timeframe,market_phase,
+                            optimal_tp,optimal_sl,optimal_lookahead_min,
+                            samples,win_rate,avg_mfe_r,avg_mae_r,
+                            p25_mfe_r,p50_mfe_r,p75_mfe_r,p25_mae_r,
+                            p75_exit_after,computed_at
+                        ) VALUES %s
+                        ON CONFLICT (symbol,exchange,timeframe,market_phase)
+                        DO UPDATE SET
+                            optimal_tp=EXCLUDED.optimal_tp,
+                            optimal_sl=EXCLUDED.optimal_sl,
+                            optimal_lookahead_min=EXCLUDED.optimal_lookahead_min,
+                            samples=EXCLUDED.samples,
+                            win_rate=EXCLUDED.win_rate,
+                            avg_mfe_r=EXCLUDED.avg_mfe_r,
+                            avg_mae_r=EXCLUDED.avg_mae_r,
+                            p25_mfe_r=EXCLUDED.p25_mfe_r,
+                            p50_mfe_r=EXCLUDED.p50_mfe_r,
+                            p75_mfe_r=EXCLUDED.p75_mfe_r,
+                            p25_mae_r=EXCLUDED.p25_mae_r,
+                            p75_exit_after=EXCLUDED.p75_exit_after,
+                            computed_at=EXCLUDED.computed_at
+                    """,
+                        upsert_rows,
+                    )
+
+        # Invalidate in-process cache so next calc run picks up new values
+        _PHASE_PARAMS_CACHE.pop((symbol, exchange, timeframe), None)
+
+        calibrated = sum(1 for v in results.values() if v.get("status") == "CALIBRATED")
+        skipped = len(results) - calibrated
+
+        return jsonify(
+            {
+                "status": "SUCCESS",
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "phases_calibrated": calibrated,
+                "phases_skipped_insufficient_data": skipped,
+                "tp_percentile": TP_PERCENTILE,
+                "sl_percentile": SL_PERCENTILE,
+                "la_percentile": LA_PERCENTILE,
+                "phases": results,
+            }
+        )
 
     except Exception:
         traceback.print_exc()
@@ -1045,18 +2463,24 @@ def offline_label_market_context():
 def calc_strategy_outcomes():
     try:
         t0 = time.time()
-        data      = request.get_json() or {}
-        symbol    = (data.get("symbol")   or "").upper().strip()
+        data = request.get_json() or {}
+        symbol = (data.get("symbol") or "").upper().strip()
         timeframe = (data.get("timeframe") or "").lower().strip()
-        exchange  = (data.get("exchange")  or "NSE").upper().strip()
-        to_dt   = pd.to_datetime(data.get("to_date")   or datetime.utcnow(), utc=True)
-        from_dt = pd.to_datetime(data.get("from_date") or (to_dt - timedelta(days=180)), utc=True)
+        exchange = (data.get("exchange") or "NSE").upper().strip()
+        to_dt = pd.to_datetime(data.get("to_date") or datetime.utcnow(), utc=True)
+        # Default from_date: all available data — NOT hardcoded 180 days.
+        # The 180-day default silently dropped older labelled bars from outcome
+        # simulation whenever label-market-context had been run on > 6 months.
+        # Use from_date explicitly in the request to restrict the window.
+        # For ML training you want ALL outcomes, not just the last 6 months.
+        from_dt = pd.to_datetime(data.get("from_date") or "2000-01-01", utc=True)
 
         if not symbol or not timeframe:
             return jsonify({"error": "symbol and timeframe required"}), 400
 
         with get_db_conn() as conn:
-            df = read_sql_safe("""
+            df = read_sql_safe(
+                """
                 SELECT i.ts,i.open,i.high,i.low,i.close,i.atr_14,
                        mc.market_phase,mc.minute_of_day,
                        mc.ema_21_slope,mc.vwap_dist_pct,mc.range_efficiency
@@ -1067,20 +2491,32 @@ def calc_strategy_outcomes():
                 WHERE i.symbol=%s AND i.exchange=%s AND i.timeframe=%s
                   AND i.ts BETWEEN %s AND %s
                 ORDER BY i.ts
-            """, conn, params=[symbol, exchange, timeframe, from_dt, to_dt])
+            """,
+                conn,
+                params=[symbol, exchange, timeframe, from_dt, to_dt],
+            )
 
             if df.empty:
-                return jsonify({"error": "No data found — run label-market-context first"}), 400
+                return (
+                    jsonify(
+                        {"error": "No data found — run label-market-context first"}
+                    ),
+                    400,
+                )
 
             df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
             df = df.sort_values("ts").reset_index(drop=True)
 
-            rules_df = read_sql_safe("""
+            rules_df = read_sql_safe(
+                """
                 SELECT ts, strategy_id, rule_eligibility, condition_snapshot
                 FROM rule_evaluations
                 WHERE symbol=%s AND exchange=%s AND timeframe=%s
                   AND ts BETWEEN %s AND %s
-            """, conn, params=[symbol, exchange, timeframe, from_dt, to_dt])
+            """,
+                conn,
+                params=[symbol, exchange, timeframe, from_dt, to_dt],
+            )
 
         # ── IMPROVEMENT 6: timezone-safe rule_truth lookup ───────
         rules_df["ts"] = pd.to_datetime(rules_df["ts"], errors="coerce")
@@ -1091,28 +2527,83 @@ def calc_strategy_outcomes():
             df["ts"] = df["ts"].dt.tz_localize(None)
 
         rules_df["strategy_id"] = rules_df["strategy_id"].str.upper().str.strip()
-        rule_truth = (rules_df.drop_duplicates(["ts","strategy_id"], keep="last")
-                      .set_index(["ts","strategy_id"])["rule_eligibility"].to_dict())
-        snapshots  = (rules_df.dropna(subset=["condition_snapshot"]).drop_duplicates("ts")
-                      .set_index("ts")["condition_snapshot"]
-                      .apply(lambda x: x if isinstance(x, dict) else json.loads(x)).to_dict())
+        rule_truth = (
+            rules_df.drop_duplicates(["ts", "strategy_id"], keep="last")
+            .set_index(["ts", "strategy_id"])["rule_eligibility"]
+            .to_dict()
+        )
+        snapshots = (
+            rules_df.dropna(subset=["condition_snapshot"])
+            .drop_duplicates("ts")
+            .set_index("ts")["condition_snapshot"]
+            .apply(lambda x: x if isinstance(x, dict) else json.loads(x))
+            .to_dict()
+        )
 
         # ── IMPROVEMENT 4: vectorized exit simulation ────────────
-        highs   = df["high"].to_numpy(dtype=float)
-        lows    = df["low"].to_numpy(dtype=float)
-        closes  = df["close"].to_numpy(dtype=float)
-        opens   = df["open"].to_numpy(dtype=float)   # FIX 3: next-bar entry
-        atrs    = df["atr_14"].to_numpy(dtype=float)
-        phases  = df["market_phase"].tolist()
-        ts_arr  = df["ts"].values
-        N       = len(df)
+        highs = df["high"].to_numpy(dtype=float)
+        lows = df["low"].to_numpy(dtype=float)
+        closes = df["close"].to_numpy(dtype=float)
+        opens = df["open"].to_numpy(dtype=float)  # FIX 3: next-bar entry
+        atrs = df["atr_14"].to_numpy(dtype=float)
+        phases = df["market_phase"].tolist()
+        ts_arr = df["ts"].values
+        N = len(df)
+
+        # ── TF resolution for lookahead conversion ────────────────
+        TF_MIN_MAP = {"1m": 1, "3m": 3, "5m": 5, "15m": 15}
+        tf_min_val = TF_MIN_MAP.get(timeframe, 1)
+
+        # ── Load data-derived params (if calibrated) ──────────────
+        # calibrate-phase-params must have been run at least once to
+        # populate phase_params table. If not run yet, or if a phase
+        # has < MIN_SAMPLES, falls back to PHASE_MODEL hardcoded values.
+        #
+        # This implements the self-improving loop:
+        #   1st run: PHASE_MODEL defaults → outcomes written to DB
+        #   calibrate-phase-params: derives optimal tp/sl/la from outcomes
+        #   2nd run: data-derived params → better outcome measurement
+        #   Repeat: params converge toward true market behaviour
+        with get_db_conn() as conn:
+            data_params = _load_phase_params(symbol, exchange, timeframe, conn)
+
+        # Pre-compute effective params per phase (data-derived > hardcoded)
+        # Also compute lookahead bars (min 2, max 375)
+        _la_cache = {}
+        _cfg_cache = {}
+        for phase_name, default_cfg in PHASE_MODEL.items():
+            if phase_name in data_params:
+                # Data-derived — use calibrated values
+                dp = data_params[phase_name]
+                effective_cfg = {
+                    "dir": default_cfg["dir"],  # direction never changes
+                    "tp": dp["tp"],
+                    "sl": dp["sl"],
+                    "lookahead_min": dp["lookahead_min"],
+                    "source": "calibrated",
+                }
+            else:
+                # Fallback to hardcoded PHASE_MODEL
+                effective_cfg = dict(default_cfg)
+                effective_cfg["source"] = "default"
+
+            la_min = effective_cfg.get("lookahead_min", 30)
+            la_bars = max(2, min(375, la_min // tf_min_val))
+            _la_cache[phase_name] = la_bars
+            _cfg_cache[phase_name] = effective_cfg
 
         rows = []
-        now  = datetime.utcnow()
+        now = datetime.utcnow()
+        n_calibrated = sum(
+            1 for c in _cfg_cache.values() if c.get("source") == "calibrated"
+        )
 
         for i in range(N):
-            cfg = PHASE_MODEL.get(phases[i])
-            if not cfg or i + cfg["lookahead"] + 2 >= N:
+            cfg = _cfg_cache.get(phases[i])  # data-derived or hardcoded fallback
+            if not cfg:
+                continue
+            la = _la_cache.get(phases[i], 2)
+            if i + la + 2 >= N:
                 continue
             atr = atrs[i]
             if atr <= 0:
@@ -1122,70 +2613,141 @@ def calc_strategy_outcomes():
             # Close of bar i is unknowable until bar i closes; a live system
             # can only fill at bar i+1 open. Using closes[i] creates systematic
             # look-ahead bias: every trade has a slightly better entry than live.
-            entry = opens[i+1] if i+1 < N else closes[i]  # next bar open
-            tp    = entry - cfg["tp"]*atr if cfg["dir"]=="SHORT" else entry + cfg["tp"]*atr
-            sl    = entry + cfg["sl"]*atr if cfg["dir"]=="SHORT" else entry - cfg["sl"]*atr
-            la    = cfg["lookahead"]
+            raw_entry = opens[i + 1] if i + 1 < N else closes[i]  # next bar open
+            is_short = cfg["dir"] == "SHORT"
+
+            # ── Slippage-adjusted entry ───────────────────────────
+            # Long : market order fills ABOVE the open (buying pressure)
+            # Short: market order fills BELOW the open (selling pressure)
+            entry = (
+                raw_entry + SLIPPAGE_PTS if not is_short else raw_entry - SLIPPAGE_PTS
+            )
+
+            # ── TP and SL from slippage-adjusted entry ────────────
+            # TP exit also has slippage working against you:
+            #   Long  exit: you sell slightly BELOW your TP target
+            #   Short exit: you buy  slightly ABOVE your TP target
+            # SL is assumed to fill exactly at SL price (worst-case market order).
+            if is_short:
+                tp = (
+                    entry - cfg["tp"] * atr + SLIPPAGE_PTS
+                )  # sell TP fills higher (worse)
+                sl = entry + cfg["sl"] * atr  # buy stop fills at SL
+            else:
+                tp = (
+                    entry + cfg["tp"] * atr - SLIPPAGE_PTS
+                )  # sell TP fills lower (worse)
+                sl = entry - cfg["sl"] * atr  # stop loss fills at SL
 
             # Exit simulation starts from bar i+2 (first full bar after entry)
             exit_reason, exit_price, exit_after, mfe, mae = _simulate_exit_vectorized(
-                entry, tp, sl,
-                highs[i+2:i+2+la],
-                lows[i+2:i+2+la],
-                closes[i+2:i+2+la],
+                entry,
+                tp,
+                sl,
+                highs[i + 2 : i + 2 + la],
+                lows[i + 2 : i + 2 + la],
+                closes[i + 2 : i + 2 + la],
                 la,
             )
 
-            ts   = ts_arr[i]
-            R    = abs(entry - sl)
-            mfe_r      = mfe/R if R > 0 else 0
-            mae_r      = mae/R if R > 0 else 0
-            realized_r = (1.0  if exit_reason=="TP_HIT"
-                          else -1.0 if exit_reason=="SL_HIT"
-                          else (exit_price - entry)/R if R > 0 else 0)
+            ts = ts_arr[i]
+            R = abs(entry - sl)  # risk in price points
+            if R <= 0:
+                continue
+
+            mfe_r = mfe / R
+            mae_r = mae / R
+
+            # ── Gross R (price movement only, no costs) ───────────
+            if exit_reason == "TP_HIT":
+                # TP is already slippage-adjusted — use actual distance
+                realized_r_gross = abs(tp - entry) / R
+            elif exit_reason == "SL_HIT":
+                # SL is exactly -1R by construction
+                realized_r_gross = -1.0
+            else:
+                # TIME_EXIT: mark-to-market on last bar close
+                raw_pnl = (exit_price - entry) if not is_short else (entry - exit_price)
+                realized_r_gross = raw_pnl / R
+
+            # ── Transaction cost in R-units ───────────────────────
+            # Percentage costs scale with entry price (per share).
+            # Slippage is already embedded in entry and tp above.
+            # cost_r tells ML exactly how much edge is consumed by friction.
+            cost_pts = entry * TOTAL_COST_PCT  # ₹ cost per share, round trip
+            cost_r = cost_pts / R  # expressed as fraction of 1R
+
+            # ── Net R (what lands in your account after all costs) ─
+            realized_r_net = realized_r_gross - cost_r
+
             exit_speed = exit_after / la
-            timing     = "FAST" if exit_speed<=0.33 else "NORMAL" if exit_speed<=0.66 else "LATE"
+            timing = (
+                "FAST"
+                if exit_speed <= 0.33
+                else "NORMAL" if exit_speed <= 0.66 else "LATE"
+            )
 
             # Convert numpy Timestamp to Python datetime for psycopg2
-            ts_py  = pd.Timestamp(ts).to_pydatetime()
-            snap   = snapshots.get(ts_py, snapshots.get(ts, {}))
+            ts_py = pd.Timestamp(ts).to_pydatetime()
+            snap = snapshots.get(ts_py, snapshots.get(ts, {}))
 
-            row_mc  = df.iloc[i]
+            row_mc = df.iloc[i]
 
             def rt(key):
-                return bool(rule_truth.get((ts_py, key), rule_truth.get((ts, key), False)))
+                return bool(
+                    rule_truth.get((ts_py, key), rule_truth.get((ts, key), False))
+                )
 
-            rows.append((
-                symbol, exchange, timeframe,
-                ts_py,                          # Python datetime
-                str(phases[i]),                 # str
-                int(row_mc.minute_of_day),      # Python int
-                rt("ORB"), rt("EMA_TREND"),
-                rt("ATR_EXPANSION"), rt("VWAP_TREND"), rt("VOLUME_EXPANSION"),
-                float(row_mc.ema_21_slope),     # Python float
-                float(row_mc.vwap_dist_pct),
-                float(atr),
-                float(row_mc.range_efficiency),
-                int(snap.get("orb_quality", 0)),
-                int(snap.get("orb_location", 0)),
-                float(realized_r) if rt("ORB")              else None,
-                float(realized_r) if rt("EMA_TREND")        else None,
-                float(realized_r) if rt("ATR_EXPANSION")    else None,
-                float(realized_r) if rt("VWAP_TREND")       else None,
-                float(realized_r) if rt("VOLUME_EXPANSION") else None,
-                str(exit_reason),               # str
-                None,                           # exit_ts
-                float(mfe), float(mae),
-                int(la),                        # Python int
-                now,
-                float(mfe_r), float(mae_r), float(realized_r),
-                int(exit_after),                # Python int
-                float(exit_speed),
-                str(timing),                    # str
-            ))
+            rows.append(
+                (
+                    symbol,
+                    exchange,
+                    timeframe,
+                    ts_py,  # Python datetime
+                    str(phases[i]),  # market_phase
+                    int(row_mc.minute_of_day),  # Python int
+                    rt("ORB"),
+                    rt("EMA_TREND"),
+                    rt("ATR_EXPANSION"),
+                    rt("VWAP_TREND"),
+                    rt("VOLUME_EXPANSION"),
+                    float(row_mc.ema_21_slope),  # Python float
+                    float(row_mc.vwap_dist_pct),
+                    float(atr),
+                    float(row_mc.range_efficiency),
+                    int(snap.get("orb_quality", 0)),
+                    int(snap.get("orb_location", 0)),
+                    # Per-rule outcomes stored as NET R so rules are evaluated
+                    # after realistic friction — prevents overstating edge.
+                    float(realized_r_net) if rt("ORB") else None,
+                    float(realized_r_net) if rt("EMA_TREND") else None,
+                    float(realized_r_net) if rt("ATR_EXPANSION") else None,
+                    float(realized_r_net) if rt("VWAP_TREND") else None,
+                    float(realized_r_net) if rt("VOLUME_EXPANSION") else None,
+                    str(exit_reason),  # str
+                    None,  # exit_ts
+                    float(mfe),
+                    float(mae),
+                    int(la),  # Python int
+                    now,
+                    float(mfe_r),
+                    float(mae_r),
+                    float(realized_r_net),  # realized_r = NET (after all costs)
+                    int(exit_after),  # Python int
+                    float(exit_speed),
+                    str(timing),  # str
+                    float(realized_r_gross),  # gross R before transaction costs
+                    float(cost_r),  # cost drag in R-units
+                )
+            )
 
         if not rows:
-            return jsonify({"error": "No outcomes generated — check PHASE_MODEL coverage"}), 400
+            return (
+                jsonify(
+                    {"error": "No outcomes generated — check PHASE_MODEL coverage"}
+                ),
+                400,
+            )
 
         OUTCOME_SQL = """
             INSERT INTO strategy_outcomes (
@@ -1197,12 +2759,15 @@ def calc_strategy_outcomes():
                 orb_outcome,ema_trend_outcome,atr_expansion_outcome,
                 vwap_trend_outcome,volume_expansion_outcome,
                 exit_reason,exit_ts,mfe,mae,lookahead_candles,created_at,
-                mfe_r,mae_r,realized_r,exit_after_candles,exit_speed_ratio,outcome_timing
+                mfe_r,mae_r,realized_r,exit_after_candles,exit_speed_ratio,outcome_timing,
+                realized_r_gross,cost_r
             ) VALUES %s
             ON CONFLICT (symbol,exchange,timeframe,ts) DO UPDATE SET
                 market_phase=EXCLUDED.market_phase,
                 orb_fired=EXCLUDED.orb_fired,
                 realized_r=EXCLUDED.realized_r,
+                realized_r_gross=EXCLUDED.realized_r_gross,
+                cost_r=EXCLUDED.cost_r,
                 outcome_timing=EXCLUDED.outcome_timing,
                 created_at=EXCLUDED.created_at
         """
@@ -1212,7 +2777,16 @@ def calc_strategy_outcomes():
                 _chunk_execute(cur, OUTCOME_SQL, rows)
 
         elapsed = round(time.time() - t0, 1)
-        return jsonify({"status": "SUCCESS", "rows_written": len(rows), "elapsed_sec": elapsed})
+        return jsonify(
+            {
+                "status": "SUCCESS",
+                "rows_written": len(rows),
+                "elapsed_sec": elapsed,
+                "phases_calibrated": n_calibrated,
+                "phases_default": len(_cfg_cache) - n_calibrated,
+                "param_source": "calibrated" if n_calibrated > 0 else "default",
+            }
+        )
 
     except Exception:
         traceback.print_exc()
@@ -1222,13 +2796,14 @@ def calc_strategy_outcomes():
 # ── Rule stats ───────────────────────────────────────────────────
 @strategy_bp.route("/api/market-context/rule-stats", methods=["GET"])
 def get_rule_stats():
-    symbol    = (request.args.get("symbol")    or "").upper().strip()
+    symbol = (request.args.get("symbol") or "").upper().strip()
     timeframe = (request.args.get("timeframe") or "").lower().strip()
     if not symbol or not timeframe:
         return jsonify({"error": "symbol and timeframe required"}), 400
 
     with get_db_conn() as conn:
-        df = read_sql_safe("""
+        df = read_sql_safe(
+            """
             SELECT ts, orb_outcome, ema_trend_outcome AS ema_outcome,
                    atr_expansion_outcome AS atr_outcome,
                    vwap_trend_outcome AS vwap_outcome,
@@ -1237,40 +2812,55 @@ def get_rule_stats():
             FROM strategy_outcomes
             WHERE symbol=%s AND timeframe=%s
             ORDER BY ts
-        """, conn, params=[symbol, timeframe])
+        """,
+            conn,
+            params=[symbol, timeframe],
+        )
 
     if df.empty:
-        return jsonify({"symbol":symbol,"timeframe":timeframe,
-                        "test_period":None,"months_tested":0,"rules":[]})
+        return jsonify(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "test_period": None,
+                "months_tested": 0,
+                "rules": [],
+            }
+        )
 
-    df["ts"]         = pd.to_datetime(df["ts"], errors="coerce")
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
     df["year_month"] = df["ts"].dt.to_period("M").astype(str)
-    months           = sorted(df["year_month"].unique().tolist())
+    months = sorted(df["year_month"].unique().tolist())
 
     def stats(col):
         if col not in df.columns:
-            return {"samples":0,"success_rate":0,"failure_rate":0,"chop_rate":0}
+            return {"samples": 0, "success_rate": 0, "failure_rate": 0, "chop_rate": 0}
         s = df[col].dropna()
         if s.empty:
-            return {"samples":0,"success_rate":0,"failure_rate":0,"chop_rate":0}
+            return {"samples": 0, "success_rate": 0, "failure_rate": 0, "chop_rate": 0}
         t = len(s)
         return {
-            "samples":      t,
+            "samples": t,
             "success_rate": round((s > 0).sum() / t, 3),
             "failure_rate": round((s < 0).sum() / t, 3),
-            "chop_rate":    round((s == 0).sum() / t, 3),
+            "chop_rate": round((s == 0).sum() / t, 3),
         }
 
-    return jsonify({
-        "symbol":       symbol,
-        "timeframe":    timeframe,
-        "test_period":  {"from": df["ts"].min().isoformat(), "to": df["ts"].max().isoformat()},
-        "months_tested":{"count": len(months), "list": months},
-        "rules": [
-            {"name":"ORB",              **stats("orb_outcome")},
-            {"name":"EMA_TREND",        **stats("ema_outcome")},
-            {"name":"ATR_EXPANSION",    **stats("atr_outcome")},
-            {"name":"VWAP_TREND",       **stats("vwap_outcome")},
-            {"name":"VOLUME_EXPANSION", **stats("bb_outcome")},
-        ],
-    })
+    return jsonify(
+        {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "test_period": {
+                "from": df["ts"].min().isoformat(),
+                "to": df["ts"].max().isoformat(),
+            },
+            "months_tested": {"count": len(months), "list": months},
+            "rules": [
+                {"name": "ORB", **stats("orb_outcome")},
+                {"name": "EMA_TREND", **stats("ema_outcome")},
+                {"name": "ATR_EXPANSION", **stats("atr_outcome")},
+                {"name": "VWAP_TREND", **stats("vwap_outcome")},
+                {"name": "VOLUME_EXPANSION", **stats("bb_outcome")},
+            ],
+        }
+    )
