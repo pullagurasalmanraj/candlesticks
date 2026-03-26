@@ -102,7 +102,7 @@ export default function TransformerPredictor() {
     return (
         <div
             className={`min-h-screen flex flex-col items-center justify-center px-4 py-10 transition-colors ${isLight
-                ? "bg-gradient-to-br from-white via-blue-50 to-gray-100 text-gray-800"
+                ? "bg-gradient-to-br from-slate-50 via-gray-50 to-slate-100 text-slate-700"
                 : "bg-gradient-to-br from-[#0b0f19] via-[#111827] to-[#1e293b] text-gray-100"
                 }`}
         >
@@ -138,7 +138,7 @@ export default function TransformerPredictor() {
                                 placeholder="Search stock (e.g. INFY, RELIANCE)"
                                 value={symbol}
                                 onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                                className={`w-full outline-none bg-transparent ${isLight ? "text-gray-800" : "text-gray-100"
+                                className={`w-full outline-none bg-transparent ${isLight ? "text-slate-700" : "text-gray-100"
                                     }`}
                             />
                         </div>
@@ -156,7 +156,7 @@ export default function TransformerPredictor() {
                                         type="button"
                                         onClick={() => handleSelectSymbol(item.symbol)}
                                         className={`w-full text-left px-4 py-2 text-sm ${isLight
-                                            ? "hover:bg-blue-100 text-gray-800"
+                                            ? "hover:bg-blue-100 text-slate-700"
                                             : "hover:bg-gray-700 text-gray-100"
                                             }`}
                                     >

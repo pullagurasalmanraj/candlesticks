@@ -121,7 +121,7 @@ export default function Watchlist() {
     };
 
     return (
-        <div className={`p-6 min-h-screen ${isLight ? "bg-gray-50 text-gray-900" : "bg-[#0b0f19] text-gray-100"}`}>
+        <div className={`p-6 min-h-screen ${isLight ? "bg-slate-50 text-slate-700" : "bg-[#0b0f19] text-gray-100"}`}>
 
             <h2 className={`text-3xl font-bold mb-6 ${isLight ? "text-yellow-600" : "text-yellow-400"}`}>
                 ⭐ My Watchlist

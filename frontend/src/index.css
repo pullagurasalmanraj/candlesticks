@@ -14,71 +14,81 @@
    if JS is slow. They match AURORA_DARK exactly.
    ──────────────────────────────────────────────────────────── */
 :root {
-    --bg-primary:          #060b18;
-    --bg-secondary:        #0d1526;
-    --bg-tertiary:         #132038;
-    --bg-hover:            #1a2d4a;
-    --border-color:        #1e3a5f;
-    --border-subtle:       #0f2040;
-    --text-primary:        #e8f0fe;
-    --text-secondary:      #8ba3c7;
-    --text-muted:          #4a6080;
-    --accent-blue:         #4f9eff;
-    --accent-blue-hover:   #70b3ff;
-    --accent-blue-muted:   rgba(79,158,255,0.12);
-    --accent-up:           #00e676;
-    --accent-down:         #ff5252;
-    --accent-gold:         #ffd54f;
-    --glow:                rgba(79,158,255,0.7);
-    --navbar-height:       60px;
-    --sidebar-width:       240px;
-    --sidebar-collapsed:   64px;
-    --card-radius:         12px;
-    --input-radius:        8px;
-    --button-radius:       8px;
-    --font-body:           'DM Sans', 'Segoe UI', sans-serif;
-    --font-display:        'Syne', sans-serif;
-    --font-mono:           'JetBrains Mono', monospace;
-    --shadow-card:         0 1px 4px rgba(0,0,0,0.2);
-    --shadow-card-hover:   0 6px 20px rgba(0,0,0,0.35);
-    --shadow-glow-blue:    0 0 18px rgba(79,158,255,0.3);
-    --shadow-glow-green:   0 0 14px rgba(0,230,118,0.3);
-    --shadow-glow-red:     0 0 14px rgba(255,82,82,0.3);
+    --bg-primary: #060b18;
+    --bg-secondary: #0d1526;
+    --bg-tertiary: #132038;
+    --bg-hover: #1a2d4a;
+    --border-color: #1e3a5f;
+    --border-subtle: #0f2040;
+    --text-primary: #e8f0fe;
+    --text-secondary: #8ba3c7;
+    --text-muted: #4a6080;
+    --accent-blue: #4f9eff;
+    --accent-blue-hover: #70b3ff;
+    --accent-blue-muted: rgba(79, 158, 255, 0.12);
+    --accent-up: #00e676;
+    --accent-down: #ff5252;
+    --accent-gold: #ffd54f;
+    --glow: rgba(79, 158, 255, 0.7);
+    --navbar-height: 60px;
+    --sidebar-width: 240px;
+    --sidebar-collapsed: 64px;
+    --card-radius: 12px;
+    --input-radius: 8px;
+    --button-radius: 8px;
+    --font-body: 'DM Sans', 'Segoe UI', sans-serif;
+    --font-display: 'Syne', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+    --shadow-card: 0 1px 4px rgba(0, 0, 0, 0.2);
+    --shadow-card-hover: 0 6px 20px rgba(0, 0, 0, 0.35);
+    --shadow-glow-blue: 0 0 18px rgba(79, 158, 255, 0.3);
+    --shadow-glow-green: 0 0 14px rgba(0, 230, 118, 0.3);
+    --shadow-glow-red: 0 0 14px rgba(255, 82, 82, 0.3);
 }
 
 
 /* ── Base ──────────────────────────────────────────────────────── */
 
 html {
-    font-size: 14px; /* 1rem = 14px, controlled by TYPOGRAPHY.baseSize */
+    font-size: 14px;
+    /* 1rem = 14px, controlled by TYPOGRAPHY.baseSize */
 }
 
-html, body, #root {
+html,
+body,
+#root {
     height: 100%;
     width: 100%;
     margin: 0;
 }
 
 body {
-    background-color:        var(--bg-primary);
-    color:                   var(--text-primary);
-    font-family:             var(--font-body);
-    -webkit-font-smoothing:  antialiased;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     transition:
         background-color 0.25s ease,
-        color            0.25s ease;
+        color 0.25s ease;
 }
 
 
 /* ── Typography ────────────────────────────────────────────────── */
 
-h1, h2, h3, h4, h5, h6 {
-    font-family:    var(--font-display);
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    font-family: var(--font-display);
     letter-spacing: -0.01em;
 }
 
-code, pre, .font-mono {
+code,
+pre,
+.font-mono {
     font-family: var(--font-mono);
 }
 
@@ -90,15 +100,15 @@ code, pre, .font-mono {
 /* ── Cards ─────────────────────────────────────────────────────── */
 
 .card {
-    background:    var(--bg-secondary);
-    border:        1px solid var(--border-color);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
     border-radius: var(--card-radius);
-    box-shadow:    var(--shadow-card);
-    transition:    transform 0.2s ease, box-shadow 0.2s ease;
+    box-shadow: var(--shadow-card);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .card:hover {
-    transform:  translateY(-2px);
+    transform: translateY(-2px);
     box-shadow: var(--shadow-card-hover);
 }
 
@@ -106,26 +116,49 @@ code, pre, .font-mono {
 /* ── Glass ─────────────────────────────────────────────────────── */
 
 .glass {
-    background:      rgba(255,255,255,0.04);
+    background: rgba(255, 255, 255, 0.04);
     backdrop-filter: blur(14px);
-    border:          1px solid var(--border-subtle);
+    border: 1px solid var(--border-subtle);
 }
 
 
 /* ── Utility colour classes ────────────────────────────────────── */
 
-.bg-primary   { background-color: var(--bg-primary);   }
-.bg-secondary { background-color: var(--bg-secondary); }
-.bg-tertiary  { background-color: var(--bg-tertiary);  }
+.bg-primary {
+    background-color: var(--bg-primary);
+}
 
-.text-primary   { color: var(--text-primary);   }
-.text-secondary { color: var(--text-secondary); }
-.border-base    { border-color: var(--border-color); }
+.bg-secondary {
+    background-color: var(--bg-secondary);
+}
 
-.up   { color: var(--accent-up);   }
-.down { color: var(--accent-down); }
+.bg-tertiary {
+    background-color: var(--bg-tertiary);
+}
 
-.neon-text { text-shadow: 0 0 12px var(--glow); }
+.text-primary {
+    color: var(--text-primary);
+}
+
+.text-secondary {
+    color: var(--text-secondary);
+}
+
+.border-base {
+    border-color: var(--border-color);
+}
+
+.up {
+    color: var(--accent-up);
+}
+
+.down {
+    color: var(--accent-down);
+}
+
+.neon-text {
+    text-shadow: 0 0 12px var(--glow);
+}
 
 
 /* ── Selected glow state ───────────────────────────────────────── */
@@ -140,33 +173,75 @@ code, pre, .font-mono {
 
 /* Price tick blink */
 @keyframes blink {
-    0%, 100% { background-color: transparent; }
-    50%      { background-color: rgba(255, 230, 0, 0.4); }
+
+    0%,
+    100% {
+        background-color: transparent;
+    }
+
+    50% {
+        background-color: rgba(255, 230, 0, 0.4);
+    }
 }
 
 /* Stock card click flash */
 @keyframes flashPulse {
-    0%   { transform: scale(1);    box-shadow: none; background-color: transparent; }
-    50%  { transform: scale(1.04); box-shadow: 0 0 25px rgba(255, 230, 0, 0.7); background-color: rgba(255, 255, 180, 0.25); }
-    100% { transform: scale(1);    box-shadow: none; background-color: transparent; }
+    0% {
+        transform: scale(1);
+        box-shadow: none;
+        background-color: transparent;
+    }
+
+    50% {
+        transform: scale(1.04);
+        box-shadow: 0 0 25px rgba(255, 230, 0, 0.7);
+        background-color: rgba(255, 255, 180, 0.25);
+    }
+
+    100% {
+        transform: scale(1);
+        box-shadow: none;
+        background-color: transparent;
+    }
 }
 
 /* Row added / updated flash */
 @keyframes flash {
-    0%   { background-color: rgba(0, 230, 118, 0.12); }
-    100% { background-color: transparent; }
+    0% {
+        background-color: rgba(0, 230, 118, 0.12);
+    }
+
+    100% {
+        background-color: transparent;
+    }
 }
 
 /* Selected card persistent glow */
 @keyframes glowPulse {
-    0%   { box-shadow: 0 0 0px  rgba(79, 158, 255, 0); }
-    50%  { box-shadow: 0 0 22px var(--glow); }
-    100% { box-shadow: 0 0 0px  rgba(79, 158, 255, 0); }
+    0% {
+        box-shadow: 0 0 0px rgba(79, 158, 255, 0);
+    }
+
+    50% {
+        box-shadow: 0 0 22px var(--glow);
+    }
+
+    100% {
+        box-shadow: 0 0 0px rgba(79, 158, 255, 0);
+    }
 }
 
-.animate-blink  { animation: blink      0.7s ease-in-out; }
-.animate-flash  { animation: flashPulse 0.7s ease-in-out; }
-.animate-update { animation: flash      0.6s ease-in-out; }
+.animate-blink {
+    animation: blink 0.7s ease-in-out;
+}
+
+.animate-flash {
+    animation: flashPulse 0.7s ease-in-out;
+}
+
+.animate-update {
+    animation: flash 0.6s ease-in-out;
+}
 
 
 /* ── Video ─────────────────────────────────────────────────────── */
@@ -183,31 +258,31 @@ video {
 
 .react-datepicker-popper {
     position: absolute !important;
-    z-index:  9999     !important;
+    z-index: 9999 !important;
 }
 
 .datepicker-fixed {
     position: fixed !important;
-    z-index:  9999  !important;
+    z-index: 9999 !important;
 }
 
 .react-datepicker {
-    background-color: var(--bg-tertiary)  !important;
-    color:            var(--text-primary) !important;
-    border:           1px solid var(--border-color) !important;
-    font-family:      var(--font-body) !important;
+    background-color: var(--bg-tertiary) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border-color) !important;
+    font-family: var(--font-body) !important;
 }
 
 .react-datepicker__header {
     background-color: var(--bg-secondary) !important;
-    border-bottom:    1px solid var(--border-color) !important;
+    border-bottom: 1px solid var(--border-color) !important;
 }
 
 .react-datepicker__current-month,
 .react-datepicker-time__header,
 .react-datepicker-year-header {
-    color:       var(--text-primary) !important;
-    font-family: var(--font-body)    !important;
+    color: var(--text-primary) !important;
+    font-family: var(--font-body) !important;
     font-weight: 600 !important;
 }
 
@@ -217,7 +292,7 @@ video {
 
 .react-datepicker__day,
 .react-datepicker__time-name {
-    color:         var(--text-primary) !important;
+    color: var(--text-primary) !important;
     border-radius: 6px !important;
 }
 
@@ -228,43 +303,63 @@ video {
 .react-datepicker__day--selected,
 .react-datepicker__day--keyboard-selected {
     background-color: var(--accent-blue) !important;
-    color:            #ffffff            !important;
+    color: #ffffff !important;
 }
 
 .react-datepicker__day:hover:not(.react-datepicker__day--selected) {
     background-color: var(--accent-blue-muted) !important;
-    color:            var(--accent-blue)        !important;
+    color: var(--accent-blue) !important;
 }
 
 .react-datepicker__month-dropdown,
 .react-datepicker__year-dropdown {
     background-color: var(--bg-secondary) !important;
-    border:           1px solid var(--border-color) !important;
+    border: 1px solid var(--border-color) !important;
 }
 
 .react-datepicker__month-select,
 .react-datepicker__year-select {
-    background-color: var(--bg-tertiary)  !important;
-    color:            var(--text-primary) !important;
-    border:           1px solid var(--border-color) !important;
-    border-radius:    var(--input-radius) !important;
-    padding:          4px 8px !important;
-    outline:          none    !important;
-    font-family:      var(--font-body) !important;
+    background-color: var(--bg-tertiary) !important;
+    color: var(--text-primary) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--input-radius) !important;
+    padding: 4px 8px !important;
+    outline: none !important;
+    font-family: var(--font-body) !important;
 }
 
 .react-datepicker__month-select:focus,
 .react-datepicker__year-select:focus {
-    border-color: var(--accent-blue)           !important;
-    box-shadow:   0 0 0 1px var(--accent-blue) !important;
+    border-color: var(--accent-blue) !important;
+    box-shadow: 0 0 0 1px var(--accent-blue) !important;
 }
 
 .react-datepicker__month-select option,
 .react-datepicker__year-select option {
-    background-color: var(--bg-tertiary)  !important;
-    color:            var(--text-primary) !important;
+    background-color: var(--bg-tertiary) !important;
+    color: var(--text-primary) !important;
 }
 
 .react-datepicker__triangle {
     display: none;
+}
+
+/* ── Light Theme Overrides (Softer View) ─────────────────── */
+html.light {
+    --bg-primary: #f8fafc !important;
+    /* Slate 50 */
+    --bg-secondary: #ffffff !important;
+    --bg-tertiary: #f1f5f9 !important;
+    /* Slate 100 */
+    --bg-hover: #e2e8f0 !important;
+    /* Slate 200 */
+    --border-color: #e2e8f0 !important;
+    --border-subtle: #f1f5f9 !important;
+    --text-primary: #334155 !important;
+    /* Slate 700 - Softer than black */
+    --text-secondary: #64748b !important;
+    /* Slate 500 */
+    --text-muted: #94a3b8 !important;
+    /* Slate 400 */
+    --accent-blue-muted: rgba(59, 130, 246, 0.08) !important;
 }
