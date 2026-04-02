@@ -1,6 +1,9 @@
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from db import get_db_conn
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 
@@ -37,7 +40,7 @@ def fetch_india_vix():
     for row in res.json().get("data", []):
         if row.get("index") == "INDIA VIX":
             return {
-                "trade_date": datetime.now().date(),
+                "trade_date": datetime.now(timezone.utc).astimezone(IST).date(),
                 "vix": float(row["last"]),
                 "open": float(row["open"]),
                 "high": float(row["high"]),

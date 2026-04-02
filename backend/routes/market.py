@@ -7,7 +7,6 @@
 # ================================================================
 import json, time as systime
 from datetime import datetime, time as dtime
-from zoneinfo import ZoneInfo
 
 from flask import Blueprint, request, jsonify
 
@@ -34,7 +33,7 @@ def index_summary():
 
     ttl    = 15 if is_market_open() else 300
     now_ts = systime.time()
-    as_of  = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
+    as_of  = datetime.now(INDIA_TZ).isoformat()
 
     if REDIS_ENABLED and redis_client:
         try:

@@ -37,7 +37,7 @@
 # ================================================================
 import os, traceback, warnings
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import joblib
 import numpy as np
@@ -544,7 +544,7 @@ def train_pipeline():
 
         # ── Save models ───────────────────────────────────────────
         os.makedirs("models", exist_ok=True)
-        ts_str = datetime.utcnow().strftime("%Y%m%d_%H%M")
+        ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
         clf_path = f"models/binary_gate_{symbol}_{timeframe}_{ts_str}.pkl"
         reg_path = f"models/r_predictor_{symbol}_{timeframe}_{ts_str}.pkl"
         meta_path = f"models/phase_meta_{symbol}_{timeframe}_{ts_str}.pkl"
@@ -557,7 +557,7 @@ def train_pipeline():
             "cat_cols":     cat_cols,
             "symbol":       symbol,
             "timeframe":    timeframe,
-            "trained_at":   datetime.utcnow().isoformat(),
+            "trained_at":   datetime.now(timezone.utc).isoformat(),
         }, meta_path)
 
         # Persist to DB
@@ -572,7 +572,7 @@ def train_pipeline():
             """), {
                 "sym":  symbol, "tf": timeframe,
                 "mt":   "binary_gate+r_predictor",
-                "ta":   datetime.utcnow(),
+                "ta":   datetime.now(timezone.utc),
                 "tf1":  df_trade["ts"].min(), "tt1": df_trade["ts"].max(),
                 "tf2":  splits[-1][1]["ts"].min() if splits else df_trade["ts"].min(),
                 "tt2":  splits[-1][1]["ts"].max() if splits else df_trade["ts"].max(),

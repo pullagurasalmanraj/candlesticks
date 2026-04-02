@@ -39,7 +39,7 @@
 # ================================================================
 
 import traceback
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone
 
 import numpy as np
 import pandas as pd
@@ -450,7 +450,7 @@ def api_indicators_daily():
 
         # ── Build rows (vectorised) ─────────────────────────────
         ts_list = [pd.Timestamp(t).to_pydatetime() for t in df["ts"].values]
-        now     = datetime.utcnow()
+        now     = datetime.now(timezone.utc)
 
         rows = _build_rows(
             symbol, exchange, "1D", ts_list,
@@ -592,7 +592,7 @@ def api_indicators_intraday():
 
         # ── Build rows and upsert ────────────────────────────────
         ts_list = [pd.Timestamp(t).to_pydatetime() for t in df["ts"].values]
-        now     = datetime.now()
+        now     = datetime.now(timezone.utc)
 
         rows = _build_rows(
             symbol, exchange, timeframe, ts_list,

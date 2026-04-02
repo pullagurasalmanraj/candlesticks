@@ -47,7 +47,7 @@ def sync_instruments_core():
     with gzip.open(inst_path, "rt", encoding="utf-8") as f:
         instruments = json.load(f)
 
-    snapshot_ts = datetime.utcnow()
+    snapshot_ts = datetime.now(timezone.utc)
     rows, skipped = [], 0
 
     for i in instruments:

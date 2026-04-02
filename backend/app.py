@@ -95,9 +95,9 @@ if __name__ == "__main__":
         try:
             sync_instruments_core()
             with open(lock, "w") as f:
-                from datetime import datetime
+                from datetime import datetime, timezone
 
-                f.write(datetime.utcnow().isoformat())
+                f.write(datetime.now(timezone.utc).isoformat())
         except Exception as e:
             print("⚠️  Instrument sync failed:", e)
 

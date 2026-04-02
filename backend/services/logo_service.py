@@ -12,7 +12,7 @@
 # ================================================================
 import os, json, re, gzip
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config     import BASE_DIR
 from db         import get_db_conn
@@ -168,7 +168,7 @@ def _db_upsert(symbol: str, domain: str | None, name: str | None = None):
                     ON CONFLICT (symbol) DO UPDATE SET
                         domain      = EXCLUDED.domain,
                         resolved_at = EXCLUDED.resolved_at
-                """, (symbol, domain, name, datetime.utcnow()))
+                """, (symbol, domain, name, datetime.now(timezone.utc)))
     except Exception as e:
         print(f"⚠️  logo DB upsert failed for {symbol}:", e)
 
