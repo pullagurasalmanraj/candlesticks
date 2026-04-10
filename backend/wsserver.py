@@ -59,9 +59,20 @@ REDIS_SUBSCRIBE_CHANNEL = "subscribe:requests"
 REDIS_TICKS_CHANNEL = "ticks:live"
 REDIS_UNSUB_CHANNEL = "unsubscribe:requests"
 REDIS_ACTIVE_SUBS_KEY = "active_subscriptions"
+REDIS_READY_RETRY_SECONDS = float(os.getenv("REDIS_READY_RETRY_SECONDS", "2"))
+REDIS_OP_RETRIES = max(1, int(os.getenv("REDIS_OP_RETRIES", "2")))
+REDIS_OP_RETRY_DELAY = float(os.getenv("REDIS_OP_RETRY_DELAY", "0.25"))
 
 # ── Globals ───────────────────────────────────────────────────────
-redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+redis_client = redis.Redis.from_url(
+    REDIS_URL,
+    decode_responses=True,
+    socket_connect_timeout=5,
+    socket_timeout=5,
+    health_check_interval=30,
+    retry_on_timeout=True,
+    socket_keepalive=True,
+)
 CONNECTED_CLIENTS: Set = set()
 CURRENT_SUBS = set()
 SUBSCRIBE_QUEUE = asyncio.Queue()
@@ -70,6 +81,35 @@ ASYNC_LOOP: asyncio.AbstractEventLoop | None = None
 
 def log(*args, **kwargs):
     print(*args, **kwargs, flush=True)
+
+
+def wait_for_redis_ready():
+    attempts = 0
+    while True:
+        attempts += 1
+        try:
+            redis_client.ping()
+            log("Redis connection ready")
+            return
+        except redis.exceptions.RedisError as exc:
+            if attempts == 1 or attempts % 5 == 0:
+                log(
+                    f"Redis not ready yet: {exc}. "
+                    f"Retrying in {REDIS_READY_RETRY_SECONDS}s ..."
+                )
+            time.sleep(REDIS_READY_RETRY_SECONDS)
+
+
+def redis_call(method, *args, default=None, **kwargs):
+    for attempt in range(1, REDIS_OP_RETRIES + 1):
+        try:
+            fn = getattr(redis_client, method)
+            return fn(*args, **kwargs)
+        except redis.exceptions.RedisError as exc:
+            if attempt >= REDIS_OP_RETRIES:
+                log(f"Redis {method} failed after {attempt} attempt(s): {exc}")
+                return default
+            time.sleep(REDIS_OP_RETRY_DELAY * attempt)
 
 
 # ── Token ─────────────────────────────────────────────────────────
@@ -81,7 +121,7 @@ def get_access_token_from_redis() -> str:
     the backend has refreshed it via OAuth. Redis always has the latest token.
     """
     try:
-        raw = redis_client.get("upstox:tokens")
+        raw = redis_call("get", "upstox:tokens", default="")
         if not raw:
             return ""
         data = json.loads(raw)
@@ -215,7 +255,7 @@ async def upstox_wss_worker(loop, subscription_queue: asyncio.Queue):
                 log("✅ Connected to Upstox feed")
 
                 # Re-subscribe on every (re)connect from persisted Redis SET
-                saved_subs = redis_client.smembers(REDIS_ACTIVE_SUBS_KEY)
+                saved_subs = redis_call("smembers", REDIS_ACTIVE_SUBS_KEY, default=set())
                 if saved_subs:
                     CURRENT_SUBS.update(saved_subs)
                     await subscription_queue.put({
@@ -234,7 +274,7 @@ async def upstox_wss_worker(loop, subscription_queue: asyncio.Queue):
                             else:
                                 payload = json.dumps({"proto_parsed": False, "raw_text": message})
 
-                            redis_client.publish(REDIS_TICKS_CHANNEL, payload)
+                            redis_call("publish", REDIS_TICKS_CHANNEL, payload, default=0)
 
                             try:
                                 tick_obj = json.loads(payload)
@@ -243,8 +283,8 @@ async def upstox_wss_worker(loop, subscription_queue: asyncio.Queue):
                                     today = time.strftime("%Y-%m-%d")
                                     for ik in feeds:
                                         key = f"ticks:{today}:{ik}"
-                                        redis_client.lpush(key, payload)
-                                        redis_client.expire(key, 86400)
+                                        redis_call("lpush", key, payload, default=0)
+                                        redis_call("expire", key, 86400, default=False)
                             except Exception:
                                 traceback.print_exc()
 
@@ -319,73 +359,98 @@ async def upstox_wss_worker(loop, subscription_queue: asyncio.Queue):
 
 # ── Redis subscribe listener (thread) ────────────────────────────
 def redis_subscribe_thread(loop, subscription_queue):
-    log("📡 Listening on subscribe:requests ...")
-    pub = redis_client.pubsub(ignore_subscribe_messages=True)
-    pub.subscribe(REDIS_SUBSCRIBE_CHANNEL)
-    for item in pub.listen():
+    log("Listening on subscribe:requests ...")
+    while True:
+        pub = None
         try:
-            raw = item.get("data")
-            if not raw or not isinstance(raw, str):
-                continue
-            payload = json.loads(raw)
-            action = (payload.get("action") or "subscribe").lower()
-            ik = (
-                payload.get("instrument_key")
-                or payload.get("instrumentKey")
-                or payload.get("symbol")
-            )
-            if not ik:
-                continue
+            pub = redis_client.pubsub(ignore_subscribe_messages=True)
+            pub.subscribe(REDIS_SUBSCRIBE_CHANNEL)
 
-            log(f"📨 Redis → action='{action}' ik='{ik}'")
+            for item in pub.listen():
+                raw = item.get("data")
+                if not raw or not isinstance(raw, str):
+                    continue
 
-            if action in ("unsub", "unsubscribe"):
+                payload = json.loads(raw)
+                action = (payload.get("action") or "subscribe").lower()
+                ik = (
+                    payload.get("instrument_key")
+                    or payload.get("instrumentKey")
+                    or payload.get("symbol")
+                )
+                if not ik:
+                    continue
+
+                log(f"Redis -> action='{action}' ik='{ik}'")
+
+                if action in ("unsub", "unsubscribe"):
+                    CURRENT_SUBS.discard(ik)
+                    redis_call("srem", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
+                    asyncio.run_coroutine_threadsafe(
+                        subscription_queue.put({"instrumentKeys": [ik], "method": "unsub"}),
+                        loop,
+                    )
+                else:
+                    if ik in CURRENT_SUBS:
+                        log(f"Already subscribed: {ik}")
+                        continue
+                    CURRENT_SUBS.add(ik)
+                    redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
+                    asyncio.run_coroutine_threadsafe(
+                        subscription_queue.put({"instrumentKeys": [ik], "method": "sub", "mode": "full"}),
+                        loop,
+                    )
+        except redis.exceptions.RedisError as exc:
+            log(f"Redis subscribe listener disconnected: {exc}. Retrying in 2s ...")
+            time.sleep(2)
+        except Exception:
+            traceback.print_exc()
+            time.sleep(2)
+        finally:
+            if pub is not None:
+                try:
+                    pub.close()
+                except Exception:
+                    pass
+
+def redis_unsubscribe_thread(loop, subscription_queue):
+    log("Listening on unsubscribe:requests ...")
+    while True:
+        pub = None
+        try:
+            pub = redis_client.pubsub(ignore_subscribe_messages=True)
+            pub.subscribe(REDIS_UNSUB_CHANNEL)
+
+            for item in pub.listen():
+                raw = item.get("data")
+                if not raw or not isinstance(raw, str):
+                    continue
+
+                payload = json.loads(raw)
+                ik = payload.get("instrument_key")
+                if not ik:
+                    continue
+
+                log(f"Redis unsub -> '{ik}'")
                 CURRENT_SUBS.discard(ik)
-                redis_client.srem(REDIS_ACTIVE_SUBS_KEY, ik)
+                redis_call("srem", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
                 asyncio.run_coroutine_threadsafe(
                     subscription_queue.put({"instrumentKeys": [ik], "method": "unsub"}),
                     loop,
                 )
-            else:
-                if ik in CURRENT_SUBS:
-                    log(f"⚠️  Already subscribed: {ik}")
-                    continue
-                CURRENT_SUBS.add(ik)
-                redis_client.sadd(REDIS_ACTIVE_SUBS_KEY, ik)
-                asyncio.run_coroutine_threadsafe(
-                    subscription_queue.put({"instrumentKeys": [ik], "method": "sub", "mode": "full"}),
-                    loop,
-                )
+        except redis.exceptions.RedisError as exc:
+            log(f"Redis unsubscribe listener disconnected: {exc}. Retrying in 2s ...")
+            time.sleep(2)
         except Exception:
             traceback.print_exc()
+            time.sleep(2)
+        finally:
+            if pub is not None:
+                try:
+                    pub.close()
+                except Exception:
+                    pass
 
-
-# ── Redis unsubscribe listener (thread) ──────────────────────────
-def redis_unsubscribe_thread(loop, subscription_queue):
-    log("📡 Listening on unsubscribe:requests ...")
-    pub = redis_client.pubsub(ignore_subscribe_messages=True)
-    pub.subscribe(REDIS_UNSUB_CHANNEL)
-    for item in pub.listen():
-        try:
-            raw = item.get("data")
-            if not raw or not isinstance(raw, str):
-                continue
-            payload = json.loads(raw)
-            ik = payload.get("instrument_key")
-            if not ik:
-                continue
-            log(f"📨 Redis unsub → '{ik}'")
-            CURRENT_SUBS.discard(ik)
-            redis_client.srem(REDIS_ACTIVE_SUBS_KEY, ik)
-            asyncio.run_coroutine_threadsafe(
-                subscription_queue.put({"instrumentKeys": [ik], "method": "unsub"}),
-                loop,
-            )
-        except Exception:
-            traceback.print_exc()
-
-
-# ── Local WS server handler ───────────────────────────────────────
 async def ws_client_handler(websocket):
     CONNECTED_CLIENTS.add(websocket)
     log(f"🟢 WS client connected ({len(CONNECTED_CLIENTS)})")
@@ -403,7 +468,7 @@ async def ws_client_handler(websocket):
                     if keys:
                         for k in keys:
                             CURRENT_SUBS.add(k)
-                            redis_client.sadd(REDIS_ACTIVE_SUBS_KEY, k)
+                            redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, k, default=0)
                         asyncio.create_task(
                             SUBSCRIBE_QUEUE.put({"instrumentKeys": list(keys), "method": "sub", "mode": "full"})
                         )
@@ -414,7 +479,7 @@ async def ws_client_handler(websocket):
                     if keys:
                         for k in keys:
                             CURRENT_SUBS.discard(k)
-                            redis_client.srem(REDIS_ACTIVE_SUBS_KEY, k)
+                            redis_call("srem", REDIS_ACTIVE_SUBS_KEY, k, default=0)
                         asyncio.create_task(
                             SUBSCRIBE_QUEUE.put({"instrumentKeys": list(keys), "method": "unsub"})
                         )
@@ -425,13 +490,13 @@ async def ws_client_handler(websocket):
                     ik = parsed["instrument_key"]
                     if act in ("unsub", "unsubscribe"):
                         CURRENT_SUBS.discard(ik)
-                        redis_client.srem(REDIS_ACTIVE_SUBS_KEY, ik)
+                        redis_call("srem", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
                         asyncio.create_task(
                             SUBSCRIBE_QUEUE.put({"instrumentKeys": [ik], "method": "unsub"})
                         )
                     else:
                         CURRENT_SUBS.add(ik)
-                        redis_client.sadd(REDIS_ACTIVE_SUBS_KEY, ik)
+                        redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
                         asyncio.create_task(
                             SUBSCRIBE_QUEUE.put({"instrumentKeys": [ik], "method": "sub", "mode": "full"})
                         )
@@ -450,11 +515,11 @@ async def main_async():
     ASYNC_LOOP = asyncio.get_running_loop()
 
     log("📡 Redis:", REDIS_URL)
-
+    await asyncio.to_thread(wait_for_redis_ready)
     asyncio.create_task(upstox_wss_worker(ASYNC_LOOP, SUBSCRIBE_QUEUE))
 
     log(f"🌐 Starting local WS server ws://{WS_HOST}:{WS_PORT}")
-    await websockets.serve(ws_client_handler, WS_HOST, WS_PORT)
+    await websockets.serve(ws_client_handler, WS_HOST, WS_PORT, logger=None)
 
     for target, args in [
         (redis_subscribe_thread, (ASYNC_LOOP, SUBSCRIBE_QUEUE)),
@@ -473,3 +538,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
