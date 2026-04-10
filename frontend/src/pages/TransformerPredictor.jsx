@@ -10,7 +10,6 @@ export default function TransformerPredictor() {
 
     const [symbol, setSymbol] = useState("");
     const [filteredSymbols, setFilteredSymbols] = useState([]);
-    const [allSymbols, setAllSymbols] = useState([]);
     const [start, setStart] = useState("");
     const [end, setEnd] = useState("");
     const [use100Years, setUse100Years] = useState(false);
@@ -19,31 +18,41 @@ export default function TransformerPredictor() {
     const [result, setResult] = useState(null);
     const [showDropdown, setShowDropdown] = useState(false);
 
-    // 🔁 Fetch instrument list on load
+    // Server-side instrument search (debounced)
     useEffect(() => {
-        const fetchInstruments = async () => {
-            try {
-                const res = await axios.get("/api/instruments");
-                setAllSymbols(res.data.instruments || []);
-            } catch (e) {
-                console.error("Error loading instruments:", e);
-            }
-        };
-        fetchInstruments();
-    }, []);
-
-    // 🔍 Fuzzy search logic
-    useEffect(() => {
-        if (symbol.length > 0) {
-            const filtered = allSymbols.filter((s) =>
-                s.symbol.toLowerCase().includes(symbol.toLowerCase())
-            );
-            setFilteredSymbols(filtered.slice(0, 10)); // limit to 10 results
-            setShowDropdown(true);
-        } else {
+        const q = symbol.trim();
+        if (q.length < 2) {
+            setFilteredSymbols([]);
             setShowDropdown(false);
+            return;
         }
-    }, [symbol, allSymbols]);
+
+        const controller = new AbortController();
+        const timer = setTimeout(async () => {
+            try {
+                const res = await axios.get("/api/instruments", {
+                    params: { q },
+                    signal: controller.signal,
+                });
+                const items = Array.isArray(res?.data?.instruments)
+                    ? res.data.instruments
+                    : [];
+                setFilteredSymbols(items.slice(0, 10));
+                setShowDropdown(true);
+            } catch (e) {
+                if (e.name !== "CanceledError" && e.name !== "AbortError") {
+                    console.error("Error loading instruments:", e);
+                }
+                setFilteredSymbols([]);
+                setShowDropdown(false);
+            }
+        }, 180);
+
+        return () => {
+            clearTimeout(timer);
+            controller.abort();
+        };
+    }, [symbol]);
 
     // 🧠 Dropdown auto-close on outside click
     useEffect(() => {

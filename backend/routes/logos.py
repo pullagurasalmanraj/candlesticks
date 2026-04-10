@@ -50,7 +50,10 @@ def get_stock_logo(symbol):
         if not domain:
             return Response(status=404)
 
-        logo_url = f"https://img.logo.dev/{domain}?token={LOGO_DEV_KEY}"
+        logo_url = (
+            f"https://img.logo.dev/{domain}?token={LOGO_DEV_KEY}"
+            f"&size=256&format=png"
+        )
         resp = redirect(logo_url, code=302)
         resp.headers["X-Logo-Domain"] = domain
         resp.headers["Cache-Control"] = "public, max-age=604800"  # 7 days
@@ -94,7 +97,10 @@ def get_logos_batch():
         logos = {}
         for sym, domain in domain_map.items():
             if domain:
-                logos[sym] = f"https://img.logo.dev/{domain}?token={LOGO_DEV_KEY}"
+                logos[sym] = (
+                    f"https://img.logo.dev/{domain}?token={LOGO_DEV_KEY}"
+                    f"&size=256&format=png"
+                )
             else:
                 logos[sym] = None
 

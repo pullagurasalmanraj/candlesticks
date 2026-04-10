@@ -16,8 +16,8 @@ const InstrumentCard = memo(function InstrumentCard({
     const key        = normalizeKey(item);
     const live       = prices?.[key] || {};
     const ltp        = live.ltp;
-    const change     = live.change;
-    const pct        = live.percent;
+    const change     = typeof live.change === "number" ? live.change : 0;
+    const pct        = typeof live.percent === "number" ? live.percent : 0;
     const hasPrice   = typeof ltp === "number";
     const isUp       = hasPrice && change >= 0;
     const isSelected = selectedSymbol === sym;
@@ -74,7 +74,7 @@ const InstrumentCard = memo(function InstrumentCard({
             {/* ── Symbol + exchange ─────────────────────────── */}
             <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{
-                    fontSize:      "0.92rem",
+                    fontSize:      "13px",
                     fontWeight:    700,
                     fontFamily:    "var(--font-display)",
                     color:         "var(--text-primary)",
@@ -93,7 +93,7 @@ const InstrumentCard = memo(function InstrumentCard({
                     marginTop:   3,
                 }}>
                     <span style={{
-                        fontSize:     "0.6rem",
+                        fontSize:     "10px",
                         fontWeight:   600,
                         fontFamily:   "var(--font-mono)",
                         color:        "var(--accent-blue)",
@@ -107,7 +107,7 @@ const InstrumentCard = memo(function InstrumentCard({
                     </span>
                     {item.instrument_type && item.instrument_type !== "EQ" && (
                         <span style={{
-                            fontSize:     "0.58rem",
+                            fontSize:     "10px",
                             fontFamily:   "var(--font-mono)",
                             color:        "var(--text-muted)",
                             background:   "var(--bg-secondary)",
@@ -122,27 +122,31 @@ const InstrumentCard = memo(function InstrumentCard({
             </div>
 
             {/* ── Price ─────────────────────────────────────── */}
-            <div style={{ textAlign: "right", flexShrink: 0, minWidth: 72 }}>
+            <div style={{ textAlign: "right", flexShrink: 0, minWidth: 114 }}>
                 <div style={{
-                    fontSize:      "0.9rem",
+                    fontSize:      "15px",
                     fontWeight:    700,
                     fontFamily:    "var(--font-mono)",
                     color:         priceColor,
                     lineHeight:    1.2,
                     letterSpacing: "-0.01em",
+                    fontVariantNumeric: "tabular-nums",
+                    textRendering: "geometricPrecision",
                 }}>
                     {hasPrice ? `₹${ltp.toLocaleString("en-IN")}` : "--"}
                 </div>
                 <div style={{
-                    fontSize:   "0.65rem",
+                    fontSize:   "11px",
                     fontFamily: "var(--font-mono)",
                     color:      hasPrice ? priceColor : "var(--text-muted)",
                     marginTop:  2,
                     opacity:    hasPrice ? 1 : 0.5,
+                    fontVariantNumeric: "tabular-nums",
+                    textRendering: "geometricPrecision",
                 }}>
                     {hasPrice
-                        ? `${isUp ? "▲" : "▼"} ${Math.abs(pct).toFixed(2)}%`
-                        : "-- (0.00%)"}
+                        ? `${isUp ? "▲" : "▼"} ${Math.abs(change).toFixed(2)} (${Math.abs(pct).toFixed(2)}%)`
+                        : "-- (--%)"}
                 </div>
             </div>
 

@@ -102,7 +102,7 @@ def sync_instruments():
 
 @instruments_bp.route("/api/instruments", methods=["GET"])
 def api_instruments():
-    q = request.args.get("q", "").strip().upper()
+    q = (request.args.get("q") or request.args.get("query") or "").strip().upper()
     if len(q) < 2:
         return jsonify({"instruments": []})
 

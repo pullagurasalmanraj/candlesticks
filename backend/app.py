@@ -11,7 +11,9 @@ import warnings
 from dotenv import load_dotenv
 
 
-load_dotenv(override=True)
+# In containers, compose-provided env vars must win over local .env values.
+# Keeping override=False still loads missing vars for local development.
+load_dotenv(override=False)
 warnings.filterwarnings("ignore")
 
 from flask import Flask, send_from_directory
@@ -87,11 +89,27 @@ def add_no_cache_headers(response):
 
 # ── Startup ──────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Sync instruments once at boot (skip if lock file exists)
+    # Sync instruments at boot.
+    # If lock exists but instruments table is empty (fresh DB), force re-sync.
     from routes.instruments import sync_instruments_core
+    from db import get_db_conn
+
+    def _instrument_table_has_rows():
+        try:
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1 FROM instruments WHERE is_active = TRUE LIMIT 1")
+                    return cur.fetchone() is not None
+        except Exception:
+            return False
 
     lock = os.path.join(BASE_DIR, ".instrument_sync.lock")
-    if not os.path.exists(lock):
+    needs_sync = not os.path.exists(lock)
+    if not needs_sync and not _instrument_table_has_rows():
+        print("INFO: instruments table empty, forcing sync despite lock file")
+        needs_sync = True
+
+    if needs_sync:
         try:
             sync_instruments_core()
             with open(lock, "w") as f:
@@ -108,5 +126,32 @@ if __name__ == "__main__":
         update_vix_if_needed()
     except Exception as e:
         print("⚠️  VIX update failed:", e)
+
+    # ── Seed Redis from token.json on startup ────────────────────
+    # Problem: token.json is written during OAuth (locally or in a previous run)
+    # but Redis is empty on every fresh Docker start. wsserver reads ONLY from
+    # Redis, so without this seed it loops forever with "No token in Redis".
+    # Fix: load_saved_tokens() falls back to token.json when Redis is empty,
+    # then save_tokens() writes it back to Redis so wsserver can find it.
+    try:
+        from extensions import REDIS_ENABLED, redis_client
+        from services.token_service import load_saved_tokens, save_tokens
+
+        if REDIS_ENABLED and redis_client:
+            existing = redis_client.get("upstox:tokens")
+            if existing:
+                print("✅ Redis already has token — no seed needed")
+            else:
+                tokens = load_saved_tokens()  # reads token.json as fallback
+                if tokens.get("access_token"):
+                    save_tokens(tokens)       # writes to Redis + token.json
+                    print("✅ Token seeded into Redis from token.json")
+                else:
+                    print("⚠️  No saved token found — complete Upstox OAuth to generate one")
+        else:
+            print("⚠️  Redis not available at startup — wsserver will not receive token")
+    except Exception as e:
+        print("⚠️  Token seed failed:", e)
+    # ─────────────────────────────────────────────────────────────
 
     app.run(host="0.0.0.0", port=8000, debug=False)

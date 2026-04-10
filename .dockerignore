@@ -1,0 +1,14 @@
+.git
+.gitignore
+**/__pycache__/
+**/*.pyc
+
+frontend/node_modules/
+frontend/dist/
+
+backend/__pycache__/
+backend/data-*.csv
+backend/upstox_instruments.json.gz
+backend/tokens.json
+
+.claude/

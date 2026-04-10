@@ -1,0 +1,137 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: candlesticks-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: candleticks
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./backend/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres -d candleticks" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: candlesticks-redis
+    restart: unless-stopped
+    command: [ "redis-server", "--appendonly", "yes", "--requirepass", "linux123" ]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-a", "linux123", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: candlesticks-python:dev
+    container_name: candlesticks-backend
+    restart: unless-stopped
+    working_dir: /app/backend
+    volumes:
+      - ./:/app
+    command: [ "python", "app.py" ]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PGHOST: ${PGHOST:-host.docker.internal}
+      PGPORT: ${PGPORT:-5432}
+      PGDATABASE: ${PGDATABASE:-candleticks}
+      PGUSER: ${PGUSER:-postgres}
+      PGPASSWORD: ${PGPASSWORD:-postgres}
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_NAME: ${DB_NAME:-candleticks}
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      REDIS_URL: redis://:linux123@redis:6379/10
+      UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
+      UPSTOX_CLIENT_ID: ${UPSTOX_CLIENT_ID:-}
+      UPSTOX_CLIENT_SECRET: ${UPSTOX_CLIENT_SECRET:-}
+      UPSTOX_REDIRECT_URI: ${UPSTOX_REDIRECT_URI:-http://localhost/}
+      SECRET_KEY: ${SECRET_KEY:-candlesticks_super_secret_key}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  wsserver:
+    image: candlesticks-python:dev
+    container_name: candlesticks-wsserver
+    restart: unless-stopped
+    working_dir: /app/backend
+    volumes:
+      - ./:/app
+    command: [ "python", "wsserver.py" ]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      REDIS_URL: redis://:linux123@redis:6379/10
+      WS_HOST: 0.0.0.0
+      WS_PORT: "9000"
+      UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
+      SKIP_SSL_VERIFY: ${SKIP_SSL_VERIFY:-0}
+    ports:
+      - "9000:9000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    image: candlesticks-frontend:dev
+    container_name: candlesticks-frontend
+    restart: unless-stopped
+    working_dir: /app/frontend
+    volumes:
+      - ./frontend:/app/frontend
+      - frontend_node_modules:/app/frontend/node_modules
+    command: >
+      sh -c " if [ ! -x ./node_modules/.bin/vite ]; then npm install --include=dev; fi && node ./node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5173 "
+    environment:
+      NODE_ENV: development
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+      - wsserver
+
+  nginx:
+    image: nginx:1.28.2
+    container_name: candlesticks-nginx
+    restart: unless-stopped
+    profiles:
+      - docker-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - frontend
+      - backend
+      - wsserver
+
+volumes:
+  pg_data:
+  redis_data:
+  frontend_node_modules:

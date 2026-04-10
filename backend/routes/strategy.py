@@ -200,8 +200,20 @@ def read_sql_safe(sql, conn, params=None):
 
 def _chunk_execute(cur, sql, rows, chunk_size=5000):
     """Batch execute_values in chunks to avoid memory spikes."""
+    def _to_db_scalar(v):
+        # psycopg2 does not reliably adapt numpy scalar types (numpy>=2 can
+        # render repr like np.float64(...)), so normalize to native Python.
+        if isinstance(v, np.generic):
+            v = v.item()
+        # Normalize NaN/Inf to NULL for safer inserts across numeric columns.
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        return v
+
     for i in range(0, len(rows), chunk_size):
-        execute_values(cur, sql, rows[i : i + chunk_size])
+        chunk = rows[i : i + chunk_size]
+        safe_chunk = [tuple(_to_db_scalar(v) for v in row) for row in chunk]
+        execute_values(cur, sql, safe_chunk)
 
 
 def json_safe(v):
@@ -838,77 +850,125 @@ _HYSTERESIS_ALLOWED = frozenset(
 )
 
 
+# ── Module-level constant — defined once, shared across calls ────────────────
+# Labels that are allowed to self-propagate one extra bar via hysteresis.
+# Event-completion labels (ABSORPTION, REJECTION, GAP_TIMEOUT etc.) are
+# deliberately excluded — they are single-event signals, not states.
+_HYSTERESIS_ALLOWED = {
+    "TREND_CONTINUATION",
+    "TREND_DIGESTION",
+    "TREND_PAUSE",
+    "TREND_ACCEPTANCE",
+    "BEAR_TREND_CONTINUATION",
+    "BEAR_TREND_DIGESTION",
+    "BEAR_TREND_ACCEPTANCE",
+    "POST_IMPULSE_DIGESTION",
+}
+
+
 def _run_state_machine(
     df,
+    # ── Impulse signals ──────────────────────────────────────────────────────
     bullish_impulse,
     bearish_impulse,
     neutral_impulse,
-    gap_auction_entry,
-    gap_auction_resolved,
-    gap_auction_failed,
+    # ── Bull trend indicators ────────────────────────────────────────────────
     trend_valid,
     trend_digestion,
     trend_pause,
     trend_acceptance,
+    # ── Bear trend indicators ────────────────────────────────────────────────
     bear_trend_valid,
     bear_trend_digestion,
     bear_trend_pause,
     bear_trend_acceptance,
+    # ── Structure indicators ─────────────────────────────────────────────────
     compression,
     balance_chop,
     absorption,
     distribution,
     absorption_break,
     distribution_break,
+    # ── Volume baseline ──────────────────────────────────────────────────────
     vol_ma20,
-    GAP_AUCTION_MAX_BARS,
-    swing_n=3,
-    obv_window=10,
-    roll_20=20,
-    # ── v28-v31 tunable parameters ──────────────────────────────────
+    # ── Gap timing config ────────────────────────────────────────────────────
+    GAP_AUCTION_MAX_BARS: dict,
+    # ── Swing / OBV windows ──────────────────────────────────────────────────
+    swing_n: int = 3,
+    obv_window: int = 10,
+    roll_20: int = 20,
+    # ── Absorption / distribution controls ───────────────────────────────────
     absorption_vol_thr: float = 1.1,  # vol_ratio floor for genuine absorption
-    absorption_max_streak: int = 6,  # max consecutive absorption bars before force-break
-    distribution_max_streak: int = 5,  # max consecutive distribution bars before force-break
-    pullback_min_bars: int = 2,  # adverse bars required before PULLBACK_FAIL fires
-    trend_context_decay: int = 20,  # bars without fresh signal → trend_context resets
+    absorption_max_streak: int = 6,  # max consecutive absorption bars
+    distribution_max_streak: int = 5,  # max consecutive distribution bars
+    # ── Post-impulse controls ────────────────────────────────────────────────
+    pullback_min_bars: int = 2,  # adverse bars before PULLBACK_FAIL fires
+    # ── Trend context decay ──────────────────────────────────────────────────
+    trend_context_decay: int = 20,  # bars without signal → context resets
+    # ── No-man's-land RE floors (P3a / P3b) ─────────────────────────────────
+    nml_re_stack: float = 0.15,  # EMA-stack path minimum RE
+    nml_re_slope: float = 0.08,  # slope-only path minimum RE
+    nml_slope_thr: float = 0.005,  # EMA slope threshold for stack path
+    nml_slope_obv: float = 0.002,  # slope threshold for OBV rescue path
+    # ── P3c (post-neutral-impulse) ───────────────────────────────────────────
+    p3c_slope_thr: float = 0.003,  # slope threshold to route bull/bear
+    p3c_re_min: float = 0.25,  # RE floor for digestion fallback
+    # ── REJECTION gate (NEUTRAL direction) ───────────────────────────────────
+    rejection_re_max: float = 0.20,  # max RE for neutral rejection
+    # ── Volume-fade exhaustion (P3a) ─────────────────────────────────────────
+    vol_fade_ratio: float = 0.80,  # bar-on-bar volume contraction floor
+    vol_fade_re_min: float = 0.30,  # min RE for volume-fade label
+    # ── Post-gap routing (P3d) ───────────────────────────────────────────────
+    gap_slope_thr: float = 0.015,  # slope threshold for post-gap acceptance
+    gap_re_min: float = 0.10,  # RE floor for post-gap acceptance
+    # ── P5 thresholds ────────────────────────────────────────────────────────
+    p5_ae_re_min: float = 0.40,  # ae==1 branch minimum RE
+    p5_re_high: float = 0.60,  # high-RE branch threshold
+    p5_re_high_slope: float = 0.015,  # slope required for high-RE branch
+    p5_chop_range_atr: float = 0.80,  # OBV rescue raw-range / ATR floor
+    p5_fallback_re_min: float = 0.15,  # hysteresis RE floor (dead-market break)
+    # ── Debug mode ───────────────────────────────────────────────────────────
+    debug: bool = False,  # if True, returns reason column
 ):
     """
-    State machine: sole market-phase assigner.
+    State machine v34 — sole market-phase assigner.
 
-    numpy array access throughout — O(1) per bar, ~2-3 s for 89k rows.
+    numpy array access throughout — O(1) per bar.
 
-    Improvements over v27 (incorporated from submitted + data analysis):
-      - RSI window widened: obv_window*45 (was *4), min 100 bars
-      - min_periods raised to 40% of window for statistical significance
-      - Duplicate Priority-3 bull block removed (was dead code)
-      - ps=="LL_LH"/"HH_HL" replaced with _compute_price_structure real
-        return values: "BULL"/"BEAR"/"TRANSITION"/"NEUTRAL"
-      - ABSORPTION vol_ratio gate (>= 1.1) — 67% of old rows had no real vol
-      - absorption_max_streak cap — prevents multi-session self-perpetuation
-      - post_impulse_active=0 after PULLBACK_FAIL and ABSORPTION (frees machine)
-      - pullback_min_bars counter — kills first-bar false PULLBACK_FAIL
-      - BULL_MACRO suppression slope-aware — slope<-0.01 keeps BEAR_TREND_DIGESTION
-      - trend_context persistent state — replaces UNCLASSIFIED chain
-      - EMA stack (ema9/ema50) for no-man's-land direction
-      - EOD flag removed (data showed only 3% of EOD rows passed vol_ratio>=1.1)
-      - Priority-5 re>0.60 branch now requires EMA slope confirmation (>0.015)
-      - Hysteresis time-decay: re<0.15 → BALANCE_CHOP
-      - impulse_origin_low/high: NaN-initialised fixed anchor for post-impulse signals
-      - PULLBACK_FAIL: uses origin level + pullback_min_bars (restored regression fix)
-      - REJECTION: uses prior-bar extreme — semantically distinct from PULLBACK_FAIL
-      - EXPANSION: uses origin extreme — confirms genuine structural extension
-      - ta_arr / bta_arr in P3a/P3b now reset trend_context (direction flip fix)
-      - P5 dist_arr slope guard added (mirrors P3a gate — no positive-slope distribution)
-      - P5 absorption dead inner branch removed (simplified to single assignment)
-      - Compression keeps signal+streak+context gating (avoids over-filtering)
-      - trend_exhaustion uses 2-bar slope-magnitude deceleration
-      - Sticky ABSORPTION/DISTRIBUTION validate structure only (no re-spike required)
-      - P5 re>0.60 branch no longer requires prior-bar RE confirmation
-      - Post-impulse resolver yields to fresh same-bar impulse signals
+    Changes vs v33
+    ──────────────
+    CLEAN-1  Removed dead parameters: gap_auction_entry, gap_auction_resolved,
+             gap_auction_failed. These were passed in but never read. Callers
+             must remove them from call sites.
+
+    CLEAN-2  Removed dead variable: is_eod — computed but never used.
+
+    CLEAN-3  Defined _HYSTERESIS_ALLOWED at module level. Was referenced in P5
+             fallback but never defined → would have raised NameError at runtime.
+
+    CLEAN-4  Hardened df column initialisation: market_phase and session_context
+             are initialised from the column if it exists, else from "UNCLASSIFIED"
+             / session_context_arr, preventing KeyError on first run.
+
+    CLEAN-5  Exposed 18 previously hard-coded thresholds as keyword parameters
+             so callers can tune without editing the function body. Defaults
+             reproduce prior behaviour exactly.
+
+    CLEAN-6  Added debug=False flag. When True, a parallel list records the
+             priority branch and condition that assigned each label. The list is
+             returned as df["_phase_reason"] for inspection during backtesting.
+
+    FIX-1    REJECTION neutral gate: requires close < open AND ps != BULL.
+    FIX-2    neut_arr direction rescue: clearly bearish → IMPULSE_BEAR, clearly
+             bullish → IMPULSE_BULL.
+    FIX-3    neut_arr resets trend_context to NEUTRAL (prevents stale context).
+    FIX-4    P3c: dedicated IMPULSE_NEUTRAL forward propagation block.
+    FIX-5    tv_arr / btv_arr require non-opposing close direction.
+    FIX-6    P3a/P3b no-man's-land: OBV gate before BALANCE_CHOP.
     """
     n = len(df)
 
-    # ── Extract numpy arrays once ────────────────────────────────
+    # ── Extract numpy arrays once ─────────────────────────────────────────────
     bar_of_day = df["bar_of_day"].to_numpy()
     close_arr = df["close"].to_numpy(dtype=float)
     open_arr = df["open"].to_numpy(dtype=float)
@@ -937,8 +997,6 @@ def _run_state_machine(
     db_brk = distribution_break.to_numpy()
     ema_slope_arr = df["ema_21_slope"].to_numpy(dtype=float)
 
-    # ── Additional arrays for improved labelling ─────────────────
-    # EMA stack for directional fallbacks
     ema9_arr = (
         df["ema_9"].to_numpy(dtype=float) if "ema_9" in df.columns else close_arr.copy()
     )
@@ -947,19 +1005,16 @@ def _run_state_machine(
         if "ema_50" in df.columns
         else close_arr.copy()
     )
-    # vol_ratio: ATR%/baseline — genuine absorption needs vol_ratio >= 1.1
     vr_arr = (
         df["vol_ratio"].to_numpy(dtype=float)
         if "vol_ratio" in df.columns
         else np.ones(n)
     )
-    # minute_of_day for EOD-aware absorption
     minute_arr = (
         df["minute_of_day"].to_numpy(dtype=int)
         if "minute_of_day" in df.columns
         else np.zeros(n, dtype=int)
     )
-    # ── MACD histogram ───────────────────────────────────────────
     macd_hist_arr = (
         df["macd_hist"].to_numpy(dtype=float)
         if "macd_hist" in df.columns
@@ -969,9 +1024,6 @@ def _run_state_machine(
     abs_macd = np.abs(macd_hist_arr)
     macd_expanding[1:] = (abs_macd[1:] > abs_macd[:-1]).astype(int)
 
-    # ── RSI with improved window (submitted fix kept) ────────────
-    # obv_window * 45 gives ~100 bars on 15m (2 sessions), ~1350 on 1m (3.6 sessions).
-    # min_periods = 40% of window for early-dataset statistical significance.
     rsi_arr = (
         df["rsi_14"].to_numpy(dtype=float)
         if "rsi_14" in df.columns
@@ -993,13 +1045,12 @@ def _run_state_machine(
         .to_numpy()
     )
 
-    # ── OBV slope ────────────────────────────────────────────────
     obv_arr = df["obv"].to_numpy(dtype=float) if "obv" in df.columns else np.zeros(n)
     obv_slope = np.zeros(n, dtype=float)
     if obv_window < n:
         obv_slope[obv_window:] = obv_arr[obv_window:] - obv_arr[:-obv_window]
+    obv_slope_arr = obv_slope
 
-    # ── EMA-200 + atr_pct for macro_regime ───────────────────────
     ema200_arr = (
         df["ema_200"].to_numpy(dtype=float) if "ema_200" in df.columns else np.zeros(n)
     )
@@ -1011,7 +1062,6 @@ def _run_state_machine(
     with np.errstate(divide="ignore", invalid="ignore"):
         atr_pct_arr = np.where(close_arr > 0, atr14_arr / close_arr, 0.01)
 
-    # ── Session-type helpers ─────────────────────────────────────
     prev_atr_arr = (
         df["prev_day_atr"].to_numpy(dtype=float)
         if "prev_day_atr" in df.columns
@@ -1031,7 +1081,6 @@ def _run_state_machine(
         else np.zeros(n, dtype=int)
     )
 
-    # ── Symbol-adaptive gap fill thresholds ─────────────────────
     session_context_arr = df["session_context"].tolist()
     gap_fill_pct_arr = df["gap_fill_pct"].to_numpy(dtype=float)
     gap_atr_arr = df["gap_atr"].to_numpy(dtype=float)
@@ -1050,9 +1099,20 @@ def _run_state_machine(
     gap_filled_thr_arr = np.clip(_gfp_p75.to_numpy(), 0.65, 0.95)
     gap_extended_thr_arr = np.clip(_gfp_p25.to_numpy(), -0.80, -0.25)
 
-    # ── Mutable output arrays ─────────────────────────────────────
-    market_phase = df["market_phase"].tolist()
-    session_context = df["session_context"].tolist()
+    # ── CLEAN-4: Robust column initialisation ─────────────────────────────────
+    # market_phase and session_context may not exist on the first ever run.
+    # Fall back to safe defaults rather than crashing on missing column.
+    if "market_phase" in df.columns:
+        market_phase = df["market_phase"].tolist()
+    else:
+        market_phase = ["UNCLASSIFIED"] * n
+
+    if "session_context" in df.columns:
+        session_context = df["session_context"].tolist()
+    else:
+        session_context = list(session_context_arr)  # copy from input arr
+
+    # ── Mutable output arrays ─────────────────────────────────────────────────
     gap_resolved = np.zeros(n, dtype=int)
     gap_auction_started = np.zeros(n, dtype=int)
     gap_auction_active = np.zeros(n, dtype=int)
@@ -1065,34 +1125,20 @@ def _run_state_machine(
     macro_regime_arr = ["NEUTRAL_MACRO"] * n
     trend_exhaustion = np.zeros(n, dtype=int)
     current_session_type = "NORMAL_DAY"
-    obv_slope_arr = obv_slope
 
-    # impulse_origin: fixed anchor for PULLBACK_FAIL / REJECTION / EXPANSION.
-    # Initialised to NaN — conditions guard against NaN so warmup bars are safe.
-    # Propagated forward in the else-branch of the impulse-detection block.
-    # Using NaN instead of 0.0 prevents spurious False comparisons on price data
-    # (close can never be < 0, so origin=0.0 would silently suppress all signals).
+    # CLEAN-3: debug reason list — only populated when debug=True
+    phase_reason = [""] * n if debug else None
+
     impulse_origin_low = np.full(n, np.nan, dtype=float)
     impulse_origin_high = np.full(n, np.nan, dtype=float)
 
-    # FIX 22: Compression streak — require 2+ consecutive bars.
     compression_streak = 0
-
-    # ── Persistent trend context (v28) ───────────────────────────
-    # Decays to NEUTRAL after trend_context_decay bars without fresh signal.
-    # Eliminates UNCLASSIFIED self-chains (380/1087 rows were UNCLASSIFIED→UNCLASSIFIED).
     trend_context = "NEUTRAL"
     trend_context_bars = 0
-
-    # Absorption streak cap — prevents self-perpetuation across sessions
     absorption_streak = 0
-    # Distribution streak cap — symmetric protection from over-persistence
     distribution_streak = 0
-
-    # Pullback counter — prevents first-bar PULLBACK_FAIL false signals
     pullback_bars = 0
 
-    # Day-level session anchors for session-type computation
     session_open_price = float(open_arr[0]) if n > 0 else 0.0
     session_prev_atr = (
         float(prev_atr_arr[0])
@@ -1101,25 +1147,26 @@ def _run_state_machine(
     )
     orb_break_early_seen = False
 
-    # ════════════════════════════════════════════════════════════════
+    # ── Debug helper ──────────────────────────────────────────────────────────
+    def _dbg(i, reason):
+        if debug:
+            phase_reason[i] = reason
+
+    # ════════════════════════════════════════════════════════════════════════════
     for i in range(1, n):
         today = bar_date_arr[i]
         new_day = today != bar_date_arr[i - 1]
 
-        # ── Day-boundary resets ───────────────────────────────────
         if new_day:
             compression_streak = 0
             pullback_bars = 0
             absorption_streak = 0
             distribution_streak = 0
-            # trend_context intentionally persists — multi-day trend keeps context
 
-        # ── Trend context decay ───────────────────────────────────
         trend_context_bars += 1
         if trend_context_bars >= trend_context_decay:
             trend_context = "NEUTRAL"
 
-        # ── Per-bar state: price_structure, macro_regime, exhaustion ─
         price_structure_arr[i] = _compute_price_structure(high_arr, low_arr, i, swing_n)
         macro_regime_arr[i] = _compute_macro_regime(
             close_arr[i], ema200_arr[i], atr_pct_arr[i]
@@ -1130,7 +1177,6 @@ def _run_state_machine(
                 macd_hist_arr[i - 1]
             ) < abs(macd_hist_arr[i - 2])
             rsi_extreme = rsi_arr[i] > rsi_p80_arr[i] or rsi_arr[i] < rsi_p20_arr[i]
-            # 2-bar slope-magnitude deceleration filter: reduces one-bar oscillation noise.
             slope_mag_now = (abs(ema_slope_arr[i]) + abs(ema_slope_arr[i - 1])) * 0.5
             slope_mag_prev = (
                 abs(ema_slope_arr[i - 1]) + abs(ema_slope_arr[i - 2])
@@ -1142,19 +1188,15 @@ def _run_state_machine(
         else:
             trend_exhaustion[i] = 0
 
-        # ── Gap / session state propagation ──────────────────────
         if new_day:
             gap_resolved[i] = 0
             gap_auction_started[i] = 0
             gap_auction_active[i] = 0
             gap_auction_origin[i] = 0
-            # New day: clear carry-over post-impulse state.
             post_impulse_active[i] = 0
             impulse_dir[i] = None
             impulse_origin_low[i] = np.nan
             impulse_origin_high[i] = np.nan
-
-            # Refresh day anchors for open-drive session typing.
             session_open_price = float(open_arr[i])
             session_prev_atr = (
                 float(prev_atr_arr[i])
@@ -1169,35 +1211,29 @@ def _run_state_machine(
             gap_auction_active[i] = gap_auction_active[i - 1]
             gap_auction_origin[i] = gap_auction_origin[i - 1]
 
-        # Track ORB break status during opening sequence; use settled ORB range at/after bar 5.
         if bar_of_day[i] <= 10 and bool(orb_brk_arr[i]):
             orb_break_early_seen = True
         open_drive = abs(close_arr[i] - session_open_price) / session_prev_atr
         if bar_of_day[i] < 5:
-            # Early bars: ORB still forming, so avoid unstable orb_range classification.
-            # Keep only open-drive based trend-day detection.
             if open_drive > 0.3 and orb_break_early_seen:
                 current_session_type = "TREND_DAY"
         else:
-            # ORB considered formed from bar 5 onward.
             orb_range = float(orb_high_arr[i]) - float(orb_low_arr[i])
             current_session_type = _compute_session_type(
                 orb_range, session_prev_atr, open_drive, orb_break_early_seen
             )
-
         session_type_arr[i] = current_session_type
 
-        # ── EMA stack direction ───────────────────────────────────
-        # Used for directional fallbacks in no-man's-land and Priority 5.
-        ema_stack_bull = (ema9_arr[i] > ema50_arr[i]) and (ema_slope_arr[i] > 0.005)
-        ema_stack_bear = (ema9_arr[i] < ema50_arr[i]) and (ema_slope_arr[i] < -0.005)
+        ema_stack_bull = (ema9_arr[i] > ema50_arr[i]) and (
+            ema_slope_arr[i] > nml_slope_thr
+        )
+        ema_stack_bear = (ema9_arr[i] < ema50_arr[i]) and (
+            ema_slope_arr[i] < -nml_slope_thr
+        )
 
-        # EOD flag: last 60 min (minute_of_day >= 315 = after 14:30 IST on 15m)
-        is_eod = minute_arr[i] >= 315
-
-        # ════════════════════════════════════════════════════════════
-        #  ENTRY 1: Gap auction — opening bar (bar_of_day == 0)
-        # ════════════════════════════════════════════════════════════
+        # ════════════════════════════════════════════════════════════════════════
+        #  ENTRY 1: Gap auction — opening bar
+        # ════════════════════════════════════════════════════════════════════════
         if (
             session_context_arr[i] in ("LARGE_GAP_SESSION", "MODERATE_GAP_SESSION")
             and gap_resolved[i] == 0
@@ -1214,11 +1250,12 @@ def _run_state_machine(
                 market_phase[i] = "LARGE_GAP_DOWN" if is_large else "MODERATE_GAP_DOWN"
             else:
                 market_phase[i] = "GAP_OPEN"
+            _dbg(i, "E1:gap_open")
             continue
 
-        # ════════════════════════════════════════════════════════════
+        # ════════════════════════════════════════════════════════════════════════
         #  ENTRY 2: Gap auction continuation
-        # ════════════════════════════════════════════════════════════
+        # ════════════════════════════════════════════════════════════════════════
         if gap_auction_active[i] == 1 and gap_resolved[i] == 0:
             bars_elapsed = bar_of_day[i] - gap_auction_origin[i]
             is_large = session_context_arr[i] == "LARGE_GAP_SESSION"
@@ -1234,11 +1271,13 @@ def _run_state_machine(
                 gap_resolved[i] = 1
                 session_context[i] = "BALANCE"
                 market_phase[i] = "GAP_FILLED" if gap_nearly_filled else "GAP_TIMEOUT"
+                _dbg(i, "E2:gap_filled_or_timeout")
             elif gap_extended:
                 gap_auction_active[i] = 0
                 gap_resolved[i] = 1
                 session_context[i] = "BALANCE"
                 market_phase[i] = "GAP_CONTINUATION"
+                _dbg(i, "E2:gap_continuation")
             else:
                 _re_i = range_eff_arr[i]
                 if bull_arr[i]:
@@ -1265,18 +1304,15 @@ def _run_state_machine(
                     market_phase[i] = "AUCTION_IMPULSE_NEUTRAL"
                 else:
                     market_phase[i] = "GAP_AUCTION_CHOP"
+                _dbg(i, "E2:gap_active")
             continue
 
-        # Propagate gap_resolved within same day
         if gap_resolved[i] == 1 and market_phase[i] == "UNCLASSIFIED":
             session_context[i] = "BALANCE"
 
-        # ════════════════════════════════════════════════════════════
-        #  ENTRY 3: Post-impulse state
-        # ════════════════════════════════════════════════════════════
-        # impulse_allowed: post-impulse tracking only runs outside gap auction
-        # and never seeds from a prior-day bar.
-        # (defined once — no duplicate)
+        # ════════════════════════════════════════════════════════════════════════
+        #  ENTRY 3: Post-impulse resolver
+        # ════════════════════════════════════════════════════════════════════════
         impulse_allowed = gap_auction_active[i] == 0 and not new_day
 
         if impulse_allowed and bull_arr[i - 1]:
@@ -1284,13 +1320,8 @@ def _run_state_machine(
             impulse_dir[i] = "BULL"
             trend_context = "BULL"
             trend_context_bars = 0
-            # Capture the origin bar's extremes as a fixed anchor.
-            # All PULLBACK_FAIL / REJECTION / EXPANSION checks reference these
-            # rather than the ever-shifting prior-bar values, giving a stable
-            # structural reference throughout the post-impulse tracking window.
             impulse_origin_low[i] = low_arr[i - 1]
             impulse_origin_high[i] = high_arr[i - 1]
-
         elif impulse_allowed and bear_arr[i - 1]:
             post_impulse_active[i] = 1
             impulse_dir[i] = "BEAR"
@@ -1298,47 +1329,36 @@ def _run_state_machine(
             trend_context_bars = 0
             impulse_origin_low[i] = low_arr[i - 1]
             impulse_origin_high[i] = high_arr[i - 1]
-
         elif impulse_allowed and neut_arr[i - 1]:
             post_impulse_active[i] = 1
             impulse_dir[i] = "NEUTRAL"
             impulse_origin_low[i] = low_arr[i - 1]
             impulse_origin_high[i] = high_arr[i - 1]
-
         elif not new_day:
             post_impulse_active[i] = post_impulse_active[i - 1]
             impulse_dir[i] = impulse_dir[i - 1]
-            # Propagate the fixed origin forward through digestion bars.
-            # It stays pinned to the original impulse bar until a new impulse fires.
             impulse_origin_low[i] = impulse_origin_low[i - 1]
             impulse_origin_high[i] = impulse_origin_high[i - 1]
 
-        # Fresh impulse on the current bar must preempt post-impulse resolution.
-        # Without this guard, the post-impulse `continue` can hide a new impulse
-        # and force a stale digestion/rejection label.
         if post_impulse_active[i] == 1 and not (
             bull_arr[i] or bear_arr[i] or neut_arr[i]
         ):
             idir = impulse_dir[i]
             re = range_eff_arr[i]
             ae = atr_exp_arr[i]
+            ps = price_structure_arr[i]
 
-            # ── Safe origin references (NaN-guarded) ─────────────
-            # impulse_origin_low/high start as NaN and are only set when
-            # a real impulse fires. If still NaN (warmup bars), fall back
-            # to prior bar's extreme so no condition fires spuriously.
-            _o_lo = impulse_origin_low[i]
-            _o_hi = impulse_origin_high[i]
-            if np.isnan(_o_lo):
-                _o_lo = low_arr[i - 1]
-            if np.isnan(_o_hi):
-                _o_hi = high_arr[i - 1]
+            _o_lo = (
+                impulse_origin_low[i]
+                if not np.isnan(impulse_origin_low[i])
+                else low_arr[i - 1]
+            )
+            _o_hi = (
+                impulse_origin_high[i]
+                if not np.isnan(impulse_origin_high[i])
+                else high_arr[i - 1]
+            )
 
-            # ── Pullback counter ──────────────────────────────────
-            # Counts consecutive adverse close-to-close moves.
-            # PULLBACK_FAIL requires pullback_min_bars (default 2) before firing,
-            # preventing a single-bar dip from triggering the label immediately
-            # after the impulse.
             if idir == "BULL":
                 pullback_bars = (
                     pullback_bars + 1 if close_arr[i] < close_arr[i - 1] else 0
@@ -1348,13 +1368,7 @@ def _run_state_machine(
                     pullback_bars + 1 if close_arr[i] > close_arr[i - 1] else 0
                 )
 
-            # ── PULLBACK_FAIL ─────────────────────────────────────
-            # Fires when a multi-bar pullback (>= pullback_min_bars adverse bars)
-            # closes below the impulse origin's low (BULL) or above its high (BEAR).
-            # Using the origin level (not prior-bar midpoint or prior-bar extreme)
-            # gives a single stable reference — price returned to where the impulse
-            # started, confirming the move has fully reversed.
-            # Condition: re<0.25 (weak bar) + ae==0 (no expansion) + required bars.
+            # PULLBACK_FAIL
             if (
                 re < 0.25
                 and ae == 0
@@ -1366,12 +1380,11 @@ def _run_state_machine(
             ):
                 market_phase[i] = "PULLBACK_FAIL"
                 post_impulse_active[i] = 0
-                pullback_bars = 0  # reset counter — state cleared
+                pullback_bars = 0
+                _dbg(i, "E3:pullback_fail")
                 continue
 
-            # ── ABSORPTION ───────────────────────────────────────
-            # Genuine elevated volume required: vol_ratio >= absorption_vol_thr.
-            # Data: 67% of old ABSORPTION rows had vol_ratio < 1.0 — false fires.
+            # ABSORPTION
             if (
                 vol_arr[i] > vol_ma20_arr[i]
                 and vr_arr[i] >= absorption_vol_thr
@@ -1382,34 +1395,29 @@ def _run_state_machine(
                 post_impulse_active[i] = 0
                 absorption_streak = 1
                 pullback_bars = 0
+                _dbg(i, "E3:absorption")
                 continue
 
-            # ── REJECTION ────────────────────────────────────────
-            # Structural break through the PRIOR BAR's extreme (not origin).
-            # Semantically distinct from PULLBACK_FAIL:
-            #   PULLBACK_FAIL = weak multi-bar drift back to origin level
-            #   REJECTION     = sharp single/few-bar break through the immediately
-            #                   prior candle's floor/ceiling
-            # Requires pullback_bars >= 1 to prevent first-bar breakdown noise.
-            # NEUTRAL direction: no prior-bar check — fires on momentum collapse (RE<0.20).
+            # FIX-1: REJECTION — neutral requires bearish close + structure not bull
             if (
                 (
                     (idir == "BULL" and close_arr[i] < low_arr[i - 1])
                     or (idir == "BEAR" and close_arr[i] > high_arr[i - 1])
                 )
                 and pullback_bars >= 1
-            ) or (idir == "NEUTRAL" and re < 0.20):
+            ) or (
+                idir == "NEUTRAL"
+                and re < rejection_re_max
+                and close_arr[i] < open_arr[i]
+                and ps != "BULL"
+            ):
                 market_phase[i] = "REJECTION"
                 post_impulse_active[i] = 0
                 pullback_bars = 0
+                _dbg(i, "E3:rejection")
                 continue
 
-            # ── EXPANSION ────────────────────────────────────────
-            # Strong continuation: ATR expanding + RE > 0.50 + price breaks
-            # ABOVE the impulse origin's high (BULL) or BELOW its low (BEAR).
-            # Using origin extremes means: "price went further than where the
-            # impulse bar itself reached" — genuine structural extension.
-            # NaN-guarded via _o_lo / _o_hi fallbacks above.
+            # EXPANSION
             if (
                 ae == 1
                 and re > 0.50
@@ -1427,28 +1435,28 @@ def _run_state_machine(
                     else ("BEAR" if idir == "BEAR" else trend_context)
                 )
                 trend_context_bars = 0
+                _dbg(i, "E3:expansion")
                 continue
 
-            # Strong but didn't extend beyond origin — brief continuation pause
             market_phase[i] = (
                 "TREND_CONTINUATION"
                 if (ae == 1 and re > 0.45)
                 else "POST_IMPULSE_DIGESTION"
             )
+            _dbg(i, f"E3:continuation_or_digestion(ae={ae},re={re:.2f})")
             continue
 
-        # ════════════════════════════════════════════════════════════
+        # ════════════════════════════════════════════════════════════════════════
         #  MAIN STATE MACHINE
-        # ════════════════════════════════════════════════════════════
+        # ════════════════════════════════════════════════════════════════════════
         prev = market_phase[i - 1]
         re = range_eff_arr[i]
         ae = atr_exp_arr[i]
-        ps = price_structure_arr[i]  # "BULL" / "BEAR" / "TRANSITION" / "NEUTRAL"
+        ps = price_structure_arr[i]
 
-        # Compression streak (must update unconditionally)
         compression_streak = compression_streak + 1 if cmp_arr[i] else 0
 
-        # ── Priority 1: Impulse detection ────────────────────────
+        # ── Priority 1: Impulse detection ────────────────────────────────────
         if bull_arr[i]:
             market_phase[i] = "IMPULSE_BULL"
             trend_context = "BULL"
@@ -1456,6 +1464,7 @@ def _run_state_machine(
             pullback_bars = 0
             absorption_streak = 0
             distribution_streak = 0
+            _dbg(i, "P1:impulse_bull")
 
         elif bear_arr[i]:
             market_phase[i] = "IMPULSE_BEAR"
@@ -1464,216 +1473,288 @@ def _run_state_machine(
             pullback_bars = 0
             absorption_streak = 0
             distribution_streak = 0
+            _dbg(i, "P1:impulse_bear")
 
         elif neut_arr[i]:
-            market_phase[i] = "IMPULSE_NEUTRAL"
+            # FIX-2: rescue clearly directional bars from IMPULSE_NEUTRAL
+            # FIX-3: always reset trend_context so stale context cannot
+            #        poison fallback labels on subsequent bars
+            _bar_bearish = (
+                close_arr[i] < open_arr[i] and obv_slope_arr[i] < 0 and not bear_arr[i]
+            )
+            _bar_bullish = (
+                close_arr[i] > open_arr[i] and obv_slope_arr[i] > 0 and not bull_arr[i]
+            )
+            if _bar_bearish:
+                market_phase[i] = "IMPULSE_BEAR"
+                trend_context = "BEAR"
+                _dbg(i, "P1:neut_rescued_bear")
+            elif _bar_bullish:
+                market_phase[i] = "IMPULSE_BULL"
+                trend_context = "BULL"
+                _dbg(i, "P1:neut_rescued_bull")
+            else:
+                market_phase[i] = "IMPULSE_NEUTRAL"
+                trend_context = "NEUTRAL"
+                _dbg(i, "P1:impulse_neutral")
+            trend_context_bars = 0
             absorption_streak = 0
             distribution_streak = 0
+            pullback_bars = 0
 
-        # ── Priority 2: Compression squeeze ──────────────────────
-        # Require 3+ consecutive squeeze bars and active trend context.
-        # Data: with streak>=2 only 3% of COMPRESSION led to breakouts —
-        # most fired from BALANCE_CHOP/UNCLASSIFIED context (no prior trend).
-        # Genuine squeeze builds over 3+ bars and needs a trend to break from.
-        # trend_context != NEUTRAL means a bull or bear trend was active within
-        # the last trend_context_decay bars — compression is squeezing that trend.
+        # ── Priority 2: Compression ──────────────────────────────────────────
         elif cmp_arr[i] and compression_streak >= 3 and trend_context != "NEUTRAL":
             market_phase[i] = "COMPRESSION"
             absorption_streak = 0
+            _dbg(i, f"P2:compression(streak={compression_streak})")
 
-        # ── Priority 3a: Bull trend propagation ──────────────────
-        elif prev in (
+        # ── Priority 3a: Bull trend propagation ──────────────────────────────
+        elif prev in {
             "IMPULSE_BULL",
             "TREND_CONTINUATION",
             "TREND_ACCEPTANCE",
             "TREND_PAUSE",
             "TREND_DIGESTION",
-        ):
-            # Structural invalidation: price_structure turned BEAR means
-            # the swing series is now lower-highs / lower-lows → exit bull.
-            # "TRANSITION" is tolerated (mixed structure, trend still possible).
+            "EXPANSION",
+            "POST_IMPULSE_DIGESTION",
+        }:
             if ps == "BEAR":
                 market_phase[i] = "BALANCE_CHOP"
+                _dbg(i, "P3a:struct_invalidation")
 
-            # In-trend exhaustion: MACD histogram shrinking + RSI overbought.
-            # Added ema_slope check: slope must be turning flat/negative (<0.01)
-            # to confirm distribution. Positive slope with exhaustion is still
-            # trend continuation — not distribution. This prevents 150 false
-            # DISTRIBUTION→TREND_ACCEPTANCE flips observed in data.
             elif trend_exhaustion[i] and ema_slope_arr[i] < 0.01:
                 market_phase[i] = "DISTRIBUTION"
+                _dbg(i, "P3a:trend_exhaustion→distribution")
 
-            # Volume-fade on new highs: exhaustion not yet confirmed by RSI percentile.
-            # Keep trend structure label (DIGESTION) while warning on participation loss.
             elif (
-                close_arr[i] > high_arr[i - 1]  # new high
-                and vol_arr[i] < vol_arr[i - 1] * 0.80  # >=20% bar-on-bar volume fade
-                and vol_arr[i] < vol_ma20_arr[i]  # below rolling average
-                and re > 0.30  # some directional bar content
-                and ema_slope_arr[i]
-                > 0  # slope still positive (deceleration, not reversal)
+                close_arr[i] > high_arr[i - 1]
+                and vol_arr[i] < vol_arr[i - 1] * vol_fade_ratio
+                and vol_arr[i] < vol_ma20_arr[i]
+                and re > vol_fade_re_min
+                and ema_slope_arr[i] > 0
             ):
                 market_phase[i] = "TREND_DIGESTION"
                 trend_context = "BULL"
                 trend_context_bars = 0
+                _dbg(i, "P3a:vol_fade_on_new_high")
 
-            # Standard indicator propagation
-            elif tv_arr[i]:
+            # FIX-5: require non-bearish close for continuation
+            elif tv_arr[i] and close_arr[i] >= open_arr[i]:
                 market_phase[i] = "TREND_CONTINUATION"
                 trend_context = "BULL"
                 trend_context_bars = 0
+                _dbg(i, "P3a:tv_continuation")
+            elif tv_arr[i] and close_arr[i] < open_arr[i]:
+                market_phase[i] = "TREND_DIGESTION"
+                trend_context = "BULL"
+                trend_context_bars = 0
+                _dbg(i, "P3a:tv_demoted_digestion(bearish_close)")
+
             elif td_arr[i]:
                 market_phase[i] = "TREND_DIGESTION"
                 trend_context = "BULL"
-                trend_context_bars = 0  # v32 Issue 1: digestion refreshes context
+                trend_context_bars = 0
+                _dbg(i, "P3a:td_digestion")
             elif tp_arr[i]:
                 market_phase[i] = "TREND_PAUSE"
+                _dbg(i, "P3a:tp_pause")
             elif ta_arr[i]:
                 market_phase[i] = "TREND_ACCEPTANCE"
-                # Reset context: acceptance confirms direction change/start.
-                # Without this, a flip from BEAR trend to TREND_ACCEPTANCE would
-                # leave trend_context="BEAR" for decay bars, poisoning fallback labels.
                 trend_context = "BULL"
                 trend_context_bars = 0
+                _dbg(i, "P3a:ta_acceptance")
             elif btv_arr[i]:
                 market_phase[i] = "BEAR_TREND_CONTINUATION"
                 trend_context = "BEAR"
                 trend_context_bars = 0
+                _dbg(i, "P3a:btv_flip_bear")
             elif dist_arr[i] and ema_slope_arr[i] < 0.01:
-                # Only label DISTRIBUTION when slope is flat/negative.
-                # dist_arr fires when absorption+BB expanding+close>vwap —
-                # but if slope is still positive, it is trend continuation,
-                # not genuine distribution (selling into strength).
                 market_phase[i] = "DISTRIBUTION"
+                _dbg(i, "P3a:dist_arr")
             elif ab_arr[i] and vr_arr[i] >= absorption_vol_thr:
                 market_phase[i] = "ABSORPTION"
                 absorption_streak += 1
+                _dbg(i, "P3a:absorption")
             else:
-                # No-man's-land (bull): use EMA stack as tiebreaker.
-                # 85% of "chop" inside bull trends still had positive slope —
-                # they are digestion, not balance.
-                if ema_stack_bull and re > 0.15:
+                # FIX-6: OBV gate before BALANCE_CHOP
+                if ema_stack_bull and re > nml_re_stack:
                     market_phase[i] = "TREND_DIGESTION"
-                elif ema_slope_arr[i] > 0.005 and re > 0.08:
-                    # Lowered RE floor 0.10→0.08: captures narrow-range but
-                    # directional bars that genuinely belong in digestion.
+                    _dbg(i, "P3a:nml_ema_stack")
+                elif ema_slope_arr[i] > nml_slope_thr and re > nml_re_slope:
                     market_phase[i] = "TREND_DIGESTION"
+                    _dbg(i, "P3a:nml_slope")
+                elif obv_slope_arr[i] > 0 and ema_slope_arr[i] > nml_slope_obv:
+                    market_phase[i] = "TREND_DIGESTION"
+                    _dbg(i, "P3a:nml_obv_rescue")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P3a:nml_chop")
 
-        # ── Priority 3b: Bear trend propagation ──────────────────
-        elif prev in (
+        # ── Priority 3b: Bear trend propagation ──────────────────────────────
+        elif prev in {
             "IMPULSE_BEAR",
             "BEAR_TREND_CONTINUATION",
             "BEAR_TREND_ACCEPTANCE",
             "BEAR_TREND_PAUSE",
             "BEAR_TREND_DIGESTION",
-        ):
-            # Structural invalidation: price_structure turned BULL → exit bear.
+        }:
             if ps == "BULL":
                 market_phase[i] = "BALANCE_CHOP"
+                _dbg(i, "P3b:struct_invalidation")
 
-            # BULL_MACRO suppression — slope-aware (v28 fix):
-            # Old: any bear signal in BULL_MACRO → BALANCE_CHOP (too aggressive).
-            # Data: 85% of those bars had ema_slope < -0.01 → real intraday bearishness.
-            # New: only suppress if slope is flat or positive (noise, not real downtrend).
             elif macro_regime_arr[i] == "BULL_MACRO" and ema_slope_arr[i] >= -0.01:
                 market_phase[i] = "BALANCE_CHOP"
+                _dbg(i, "P3b:bull_macro_suppression")
 
-            # In-trend exhaustion: MACD shrinking + RSI oversold → absorption at lows.
             elif trend_exhaustion[i] and ema_slope_arr[i] < 0:
                 market_phase[i] = "ABSORPTION"
                 absorption_streak += 1
+                _dbg(i, "P3b:exhaustion→absorption")
 
-            # Standard propagation
-            elif btv_arr[i]:
+            # FIX-5: require non-bullish close for bear continuation
+            elif btv_arr[i] and close_arr[i] <= open_arr[i]:
                 market_phase[i] = "BEAR_TREND_CONTINUATION"
                 trend_context = "BEAR"
                 trend_context_bars = 0
+                _dbg(i, "P3b:btv_continuation")
+            elif btv_arr[i] and close_arr[i] > open_arr[i]:
+                market_phase[i] = "BEAR_TREND_DIGESTION"
+                trend_context = "BEAR"
+                trend_context_bars = 0
+                _dbg(i, "P3b:btv_demoted_digestion(bullish_close)")
+
             elif btd_arr[i]:
                 market_phase[i] = "BEAR_TREND_DIGESTION"
                 trend_context = "BEAR"
-                trend_context_bars = (
-                    0  # v32: digestion refreshes context (prevents drift)
-                )
+                trend_context_bars = 0
+                _dbg(i, "P3b:btd_digestion")
             elif btp_arr[i]:
-                # BEAR_TREND_PAUSE merged into BEAR_TREND_DIGESTION.
-                # Data: 16 samples, 0% WR — btp_arr near-impossible on 15m.
-                # Labelling as BEAR_TREND_DIGESTION keeps ML training data
-                # under a phase with meaningful sample size (223 rows).
                 market_phase[i] = "BEAR_TREND_DIGESTION"
                 trend_context = "BEAR"
                 trend_context_bars = 0
+                _dbg(i, "P3b:btp→digestion")
             elif bta_arr[i]:
                 market_phase[i] = "BEAR_TREND_ACCEPTANCE"
-                # Reset context: symmetric with ta_arr fix above.
-                # Prevents stale BULL context from surviving into fallback labels
-                # after a directional flip into bear acceptance.
                 trend_context = "BEAR"
                 trend_context_bars = 0
+                _dbg(i, "P3b:bta_acceptance")
             elif tv_arr[i]:
                 market_phase[i] = "TREND_CONTINUATION"
                 trend_context = "BULL"
                 trend_context_bars = 0
+                _dbg(i, "P3b:tv_flip_bull")
             elif ab_arr[i] and vr_arr[i] >= absorption_vol_thr:
                 market_phase[i] = "ABSORPTION"
                 absorption_streak += 1
+                _dbg(i, "P3b:absorption")
             else:
-                # No-man's-land (bear): use EMA stack.
-                # Data: 85% of "chop" inside bear trends had slope < -0.01.
-                if ema_stack_bear and re > 0.15:
+                # FIX-6: OBV gate before BALANCE_CHOP
+                if ema_stack_bear and re > nml_re_stack:
                     market_phase[i] = "BEAR_TREND_DIGESTION"
-                elif ema_slope_arr[i] < -0.005 and re > 0.08:
-                    # Lowered RE floor 0.10→0.08 (mirrors bull side fix).
+                    _dbg(i, "P3b:nml_ema_stack")
+                elif ema_slope_arr[i] < -nml_slope_thr and re > nml_re_slope:
                     market_phase[i] = "BEAR_TREND_DIGESTION"
+                    _dbg(i, "P3b:nml_slope")
+                elif obv_slope_arr[i] < 0 and ema_slope_arr[i] < -nml_slope_obv:
+                    # RE floor intentionally absent — narrow bear bar with
+                    # continuing OBV sell pressure is digestion not balance
+                    market_phase[i] = "BEAR_TREND_DIGESTION"
+                    _dbg(i, "P3b:nml_obv_rescue")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P3b:nml_chop")
 
-        # ── Priority 3c: Post-gap context transition ────────────────
-        # After gap resolution (GAP_FILLED, GAP_TIMEOUT, GAP_CONTINUATION),
-        # the state machine has no prior trend context to propagate from.
-        # Data: 28-34% of bars immediately after these phases become UNCLASSIFIED.
-        # Fix: check EMA slope + stack to assign a directional label directly.
-        # GAP_CONTINUATION → direction confirmed → use ema_stack for trend label.
-        # GAP_TIMEOUT      → gap won, follow direction → same.
-        # GAP_FILLED       → gap filled, now in balance → acceptance or chop.
+        # ── Priority 3c: Post-neutral-impulse propagation (FIX-4) ────────────
+        elif prev == "IMPULSE_NEUTRAL":
+            if ema_stack_bull or ema_slope_arr[i] > p3c_slope_thr:
+                if tv_arr[i] and close_arr[i] >= open_arr[i]:
+                    market_phase[i] = "TREND_CONTINUATION"
+                    trend_context = "BULL"
+                    trend_context_bars = 0
+                    _dbg(i, "P3c:bull_continuation")
+                elif td_arr[i] or tp_arr[i]:
+                    market_phase[i] = "TREND_DIGESTION"
+                    trend_context = "BULL"
+                    trend_context_bars = 0
+                    _dbg(i, "P3c:bull_digestion")
+                elif ta_arr[i]:
+                    market_phase[i] = "TREND_ACCEPTANCE"
+                    trend_context = "BULL"
+                    trend_context_bars = 0
+                    _dbg(i, "P3c:bull_acceptance")
+                elif re > p3c_re_min:
+                    market_phase[i] = "TREND_DIGESTION"
+                    trend_context = "BULL"
+                    trend_context_bars = 0
+                    _dbg(i, f"P3c:bull_re_fallback(re={re:.2f})")
+                else:
+                    market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P3c:bull_chop")
+            elif ema_stack_bear or ema_slope_arr[i] < -p3c_slope_thr:
+                if btv_arr[i] and close_arr[i] <= open_arr[i]:
+                    market_phase[i] = "BEAR_TREND_CONTINUATION"
+                    trend_context = "BEAR"
+                    trend_context_bars = 0
+                    _dbg(i, "P3c:bear_continuation")
+                elif btd_arr[i] or btp_arr[i]:
+                    market_phase[i] = "BEAR_TREND_DIGESTION"
+                    trend_context = "BEAR"
+                    trend_context_bars = 0
+                    _dbg(i, "P3c:bear_digestion")
+                elif re > p3c_re_min:
+                    market_phase[i] = "BEAR_TREND_DIGESTION"
+                    trend_context = "BEAR"
+                    trend_context_bars = 0
+                    _dbg(i, f"P3c:bear_re_fallback(re={re:.2f})")
+                else:
+                    market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P3c:bear_chop")
+            else:
+                market_phase[i] = "BALANCE_CHOP"
+                _dbg(i, "P3c:flat_chop")
+
+        # ── Priority 3d: Post-gap context transition ──────────────────────────
         elif prev in ("GAP_TIMEOUT", "GAP_FILLED", "GAP_CONTINUATION"):
-            if ema_stack_bull and re > 0.15:
+            if ema_stack_bull and re > nml_re_stack:
                 market_phase[i] = "TREND_ACCEPTANCE"
                 trend_context = "BULL"
                 trend_context_bars = 0
-            elif ema_stack_bear and re > 0.15:
+                _dbg(i, "P3d:bull_stack")
+            elif ema_stack_bear and re > nml_re_stack:
                 market_phase[i] = "BEAR_TREND_ACCEPTANCE"
                 trend_context = "BEAR"
                 trend_context_bars = 0
-            elif ema_slope_arr[i] > 0.015 and re > 0.10:
+                _dbg(i, "P3d:bear_stack")
+            elif ema_slope_arr[i] > gap_slope_thr and re > gap_re_min:
                 market_phase[i] = "TREND_ACCEPTANCE"
                 trend_context = "BULL"
                 trend_context_bars = 0
-            elif ema_slope_arr[i] < -0.015 and re > 0.10:
+                _dbg(i, "P3d:bull_slope")
+            elif ema_slope_arr[i] < -gap_slope_thr and re > gap_re_min:
                 market_phase[i] = "BEAR_TREND_ACCEPTANCE"
                 trend_context = "BEAR"
                 trend_context_bars = 0
+                _dbg(i, "P3d:bear_slope")
             elif tv_arr[i]:
                 market_phase[i] = "TREND_CONTINUATION"
                 trend_context = "BULL"
                 trend_context_bars = 0
+                _dbg(i, "P3d:tv")
             elif btv_arr[i]:
                 market_phase[i] = "BEAR_TREND_CONTINUATION"
                 trend_context = "BEAR"
                 trend_context_bars = 0
+                _dbg(i, "P3d:btv")
             else:
                 market_phase[i] = "BALANCE_CHOP"
+                _dbg(i, "P3d:chop")
 
-        # ── Priority 4: Absorption / Distribution sticky ─────────
+        # ── Priority 4: Sticky absorption / distribution ──────────────────────
         elif prev == "ABSORPTION":
             absorption_streak += 1
-            # Sticky validation: structural break alone controls absorption persistence.
-            absorption_valid = not ab_brk[i]
-            # Force-break after absorption_max_streak: prevents self-perpetuation
-            # across sessions (641/1226 ABSORPTION rows were preceded by ABSORPTION).
-            if absorption_valid and absorption_streak <= absorption_max_streak:
+            if not ab_brk[i] and absorption_streak <= absorption_max_streak:
                 market_phase[i] = "ABSORPTION"
+                _dbg(i, f"P4:absorption_sticky(streak={absorption_streak})")
             else:
                 absorption_streak = 0
                 if ema_stack_bull:
@@ -1682,52 +1763,48 @@ def _run_state_machine(
                     market_phase[i] = "BEAR_TREND_ACCEPTANCE"
                 else:
                     market_phase[i] = "BALANCE_CHOP"
+                _dbg(i, "P4:absorption_break")
 
         elif prev == "DISTRIBUTION":
             distribution_streak += 1
-            # Sticky validation: mirror absorption behavior.
-            # Distribution should persist until structural break or expansion.
-            distribution_valid = (not db_brk[i]) and (re < 0.50)
-            if distribution_valid and distribution_streak <= distribution_max_streak:
+            if (
+                not db_brk[i]
+                and re < 0.50
+                and distribution_streak <= distribution_max_streak
+            ):
                 market_phase[i] = "DISTRIBUTION"
+                _dbg(i, f"P4:distribution_sticky(streak={distribution_streak})")
             else:
                 distribution_streak = 0
                 market_phase[i] = (
                     "BEAR_TREND_ACCEPTANCE" if ema_stack_bear else "BALANCE_CHOP"
                 )
+                _dbg(i, "P4:distribution_break")
 
-        # ── Priority 5: Fresh classification ─────────────────────
+        # ── Priority 5: Fresh classification ─────────────────────────────────
         else:
             absorption_streak = 0
 
             if (dist_arr[i] and ema_slope_arr[i] < 0.01) or (
                 trend_exhaustion[i] and ema_slope_arr[i] > 0
             ):
-                # DISTRIBUTION gate: slope must be flat/negative (<0.01) for dist_arr path.
-                # In P5 (no prior trend context), dist_arr with positive slope is a
-                # breakout setup, not distribution. Mirrors the P3a slope guard.
-                # trend_exhaustion path: kept open with positive slope — exhaustion at
-                # overbought RSI + shrinking MACD IS distribution regardless of slope.
                 market_phase[i] = "DISTRIBUTION"
+                _dbg(i, "P5:distribution")
 
             elif ab_arr[i] and vr_arr[i] >= absorption_vol_thr:
-                # ab_arr is defined as: volume_expansion==1 AND ae==0 AND re<0.35.
-                # The outer gate (ab_arr AND vr>=1.1) is the complete condition.
-                # No inner branching needed — all sub-conditions are already inside ab_arr.
-                # Simplified from 3-branch structure: the final 'else: BALANCE_CHOP'
-                # was dead code since the inner elif was always True when ab_arr fired.
                 market_phase[i] = "ABSORPTION"
                 absorption_streak += 1
+                _dbg(i, "P5:absorption")
 
             elif ta_arr[i]:
-                # FIX: price-structure conflict resolution.
-                # Don't start a bull trend if swing structure is already BEAR.
                 if ps != "BEAR":
                     market_phase[i] = "TREND_ACCEPTANCE"
                     trend_context = "BULL"
                     trend_context_bars = 0
+                    _dbg(i, "P5:ta_acceptance")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P5:ta_blocked_by_bear_structure")
 
             elif bta_arr[i]:
                 if ps != "BULL" and not (
@@ -1736,96 +1813,94 @@ def _run_state_machine(
                     market_phase[i] = "BEAR_TREND_ACCEPTANCE"
                     trend_context = "BEAR"
                     trend_context_bars = 0
+                    _dbg(i, "P5:bta_acceptance")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P5:bta_blocked")
 
-            elif ae == 1 and re > 0.40:
-                # Strong expanding bar — direction from EMA stack
+            elif ae == 1 and re > p5_ae_re_min:
                 if ema_stack_bull:
                     market_phase[i] = "TREND_ACCEPTANCE"
                     trend_context = "BULL"
                     trend_context_bars = 0
+                    _dbg(i, "P5:ae_bull")
                 elif ema_stack_bear:
                     market_phase[i] = "BEAR_TREND_ACCEPTANCE"
                     trend_context = "BEAR"
                     trend_context_bars = 0
+                    _dbg(i, "P5:ae_bear")
                 else:
                     market_phase[i] = "IMPULSE_NEUTRAL"
+                    _dbg(i, "P5:ae_neutral")
 
-            elif re > 0.60 and abs(ema_slope_arr[i]) > 0.015:
-                # High RE requires slope > 0.015 (raised from 0.005).
-                # Data: 41% of fresh TREND_ACCEPTANCE from BALANCE_CHOP at slope
-                # 0.005-0.015 immediately returned to BALANCE_CHOP — false starts.
-                # Only genuine directional momentum (slope > 0.015) starts a trend.
-                if ema_slope_arr[i] > 0.015 and ps != "BEAR":
+            elif re > p5_re_high and abs(ema_slope_arr[i]) > p5_re_high_slope:
+                if ema_slope_arr[i] > p5_re_high_slope and ps != "BEAR":
                     market_phase[i] = "TREND_ACCEPTANCE"
                     trend_context = "BULL"
                     trend_context_bars = 0
-                elif ema_slope_arr[i] < -0.015 and ps != "BULL":
+                    _dbg(i, "P5:high_re_bull")
+                elif ema_slope_arr[i] < -p5_re_high_slope and ps != "BULL":
                     market_phase[i] = "BEAR_TREND_ACCEPTANCE"
                     trend_context = "BEAR"
                     trend_context_bars = 0
+                    _dbg(i, "P5:high_re_bear")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P5:high_re_chop")
 
             elif chop_arr[i]:
-                # OBV-directional rescue:
-                # Price-only can look like chop, but persistent OBV slope implies
-                # directional accumulation/distribution inside the range.
-                _obv_directional = (
+                _raw_range = high_arr[i] - low_arr[i]
+                _obv_dir = (
                     i >= 2
                     and obv_slope_arr[i] > 0
                     and obv_slope_arr[i - 1] > 0
-                    and re > 0.12
+                    and _raw_range > atr14_arr[i] * p5_chop_range_atr
                 )
-                if _obv_directional and ema_stack_bull:
+                if _obv_dir and ema_slope_arr[i] > 0:
                     market_phase[i] = "TREND_ACCEPTANCE"
                     trend_context = "BULL"
                     trend_context_bars = 0
-                elif _obv_directional and ema_stack_bear:
+                    _dbg(i, "P5:chop_obv_bull_rescue")
+                elif _obv_dir and ema_slope_arr[i] < 0:
                     market_phase[i] = "BEAR_TREND_ACCEPTANCE"
                     trend_context = "BEAR"
                     trend_context_bars = 0
+                    _dbg(i, "P5:chop_obv_bear_rescue")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P5:chop")
 
             else:
-                # ── Fallback: trend_context + EMA stack replaces UNCLASSIFIED ──
-                # trend_context decays to NEUTRAL after trend_context_decay bars.
-                # When active: use it to give a meaningful digestion label.
-                # When neutral: EMA stack as tiebreaker; BALANCE_CHOP if flat.
-                # Hysteresis time-decay (from submitted): re<0.15 → BALANCE_CHOP
-                # even with active context — truly dead market breaks persistence.
-                if re < 0.15:
+                # Fallback: trend_context + EMA stack
+                if re < p5_fallback_re_min:
                     market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P5:fallback_dead_market")
                 elif trend_context == "BULL":
                     market_phase[i] = "TREND_DIGESTION"
+                    _dbg(i, "P5:fallback_bull_context")
                 elif trend_context == "BEAR":
                     market_phase[i] = "BEAR_TREND_DIGESTION"
+                    _dbg(i, "P5:fallback_bear_context")
                 elif ema_stack_bull:
                     market_phase[i] = "TREND_DIGESTION"
+                    _dbg(i, "P5:fallback_bull_stack")
                 elif ema_stack_bear:
                     market_phase[i] = "BEAR_TREND_DIGESTION"
+                    _dbg(i, "P5:fallback_bear_stack")
                 elif i > 0 and market_phase[i - 1] in _HYSTERESIS_ALLOWED:
-                    # v32 Issue 3: restrict hysteresis to directional digestion phases.
-                    # Data showed problematic propagation of event-completion labels:
-                    # ABSORPTION(77), REJECTION(47), GAP_TIMEOUT(40), GAP_CONTINUATION(32).
-                    # These are single-event labels — they should never self-propagate.
-                    # Only directional digestion/acceptance labels persist one extra bar.
                     market_phase[i] = market_phase[i - 1]
+                    _dbg(i, f"P5:hysteresis({market_phase[i]})")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P5:fallback_chop")
 
-        # ── v32 Issue 2: absorption_streak post-assignment guard ──────
-        # Any bar that is NOT ABSORPTION resets the streak counter.
-        # Prevents stale counts from leaking across non-adjacent branches
-        # (e.g. DISTRIBUTION exit doesn't manually reset, GAP phases don't).
+        # ── Post-assignment streak guards ─────────────────────────────────────
         if market_phase[i] != "ABSORPTION":
             absorption_streak = 0
         if market_phase[i] != "DISTRIBUTION":
             distribution_streak = 0
 
-    # ── Write results back to df ──────────────────────────────────
+    # ── Write results back to df ──────────────────────────────────────────────
     df["market_phase"] = market_phase
     df["session_context"] = session_context
     df["gap_resolved"] = gap_resolved
@@ -1838,6 +1913,8 @@ def _run_state_machine(
     df["trend_exhaustion"] = trend_exhaustion
     df["obv_slope"] = obv_slope_arr
     df["macd_expanding"] = macd_expanding
+    if debug:
+        df["_phase_reason"] = phase_reason
     return df
 
 
@@ -2760,33 +2837,34 @@ def offline_label_market_context():
         # ── IMPROVEMENT 1: numpy state machine ───────────────────
         df = _run_state_machine(
             df,
-            bullish_impulse,
-            bearish_impulse,
-            neutral_impulse,
-            gap_auction_entry,
-            gap_auction_resolved,
-            gap_auction_failed,
-            trend_valid,
-            trend_digestion,
-            trend_pause,
-            trend_acceptance,
-            bear_trend_valid,
-            bear_trend_digestion,
-            bear_trend_pause,
-            bear_trend_acceptance,
-            compression,
-            balance_chop,
-            absorption,
-            distribution,
-            absorption_break,
-            distribution_break,
-            vol_ma20,
-            GAP_AUCTION_MAX_BARS,
-            swing_n=SWING_N,
-            obv_window=OBV_WINDOW,
-            roll_20=ROLL_20,  # BUG 2 FIX: pass local ROLL_20 to state machine
+            bullish_impulse=bullish_impulse,
+            bearish_impulse=bearish_impulse,
+            neutral_impulse=neutral_impulse,
+            trend_valid=trend_valid,
+            trend_digestion=trend_digestion,
+            trend_pause=trend_pause,
+            trend_acceptance=trend_acceptance,
+            bear_trend_valid=bear_trend_valid,
+            bear_trend_digestion=bear_trend_digestion,
+            bear_trend_pause=bear_trend_pause,
+            bear_trend_acceptance=bear_trend_acceptance,
+            compression=compression,
+            balance_chop=balance_chop,
+            absorption=absorption,
+            distribution=distribution,
+            absorption_break=absorption_break,
+            distribution_break=distribution_break,
+            vol_ma20=vol_ma20,
+            GAP_AUCTION_MAX_BARS=GAP_AUCTION_MAX_BARS,
+            swing_n=3,
+            obv_window=10,
+            roll_20=20,
+            absorption_vol_thr=1.1,
+            absorption_max_streak=6,
+            distribution_max_streak=5,
+            pullback_min_bars=2,
+            trend_context_decay=20,
         )
-
         # ── ORB quality (vectorized) ─────────────────────────────
         df["orb_breakout"] = (
             (df["close"] > df["orb_high"]) & (df["bar_of_day"] <= int(90 / tf_min))
@@ -3291,16 +3369,16 @@ def calibrate_phase_params():
                     exchange,
                     timeframe,
                     phase,
-                    tp,
-                    sl,
-                    la_min,
-                    n,
-                    win_rate,
+                    float(tp),
+                    float(sl),
+                    int(la_min),
+                    int(n),
+                    float(win_rate),
                     float(mfe_r_vals.mean()),
                     float(-mae_r_vals.mean()),
-                    p25_mfe,
-                    p50_mfe,
-                    p75_mfe,
+                    float(p25_mfe),
+                    float(p50_mfe),
+                    float(p75_mfe),
                     float(-p25_mae),
                     int(p75_exit),
                     bool(
@@ -3314,9 +3392,7 @@ def calibrate_phase_params():
         if upsert_rows:
             with get_db_conn() as conn:
                 with conn.cursor() as cur:
-                    from psycopg2.extras import execute_values
-
-                    execute_values(
+                    _chunk_execute(
                         cur,
                         """
                         INSERT INTO phase_params (

@@ -22,6 +22,19 @@ function getInitials(sym) {
     return sym.trim().toUpperCase().slice(0, 2);
 }
 
+function getHdLogoUrl(url, size) {
+    if (!url) return url;
+    try {
+        const u = new URL(url, window.location.origin);
+        const hdSize = String(Math.max(128, size * 4));
+        if (!u.searchParams.has("size")) u.searchParams.set("size", hdSize);
+        if (!u.searchParams.has("format")) u.searchParams.set("format", "png");
+        return u.toString();
+    } catch {
+        return url;
+    }
+}
+
 // ── Batch logo resolver ───────────────────────────────────────────
 // All StockLogo instances share this singleton.
 // Instead of 50 components firing 50 requests, they register here
@@ -112,8 +125,8 @@ const StockLogo = memo(function StockLogo({
         .replace(/&/g, "")
         .replace(/_/g, "");
 
-    const initials    = getInitials(sym);
-    const [bg, fg]    = symbolColor(sym);
+    const initials = getInitials(sym);
+    const [bg, fg] = symbolColor(sym);
 
     // logoUrl states: undefined = loading, null = failed/no logo, string = url
     const [logoUrl, setLogoUrl] = useState(() => {
@@ -121,6 +134,7 @@ const StockLogo = memo(function StockLogo({
         return cached === "pending" ? undefined : cached;
     });
     const [imgFailed, setImgFailed] = useState(false);
+    const hdLogoUrl = getHdLogoUrl(logoUrl, size);
 
     useEffect(() => {
         if (!sym) return;
@@ -158,6 +172,7 @@ const StockLogo = memo(function StockLogo({
             flexShrink:     0,
             userSelect:     "none",
             letterSpacing:  "-0.01em",
+            border:         "1px solid var(--border-subtle)",
             ...style,
         }}>
             {initials}
@@ -172,10 +187,13 @@ const StockLogo = memo(function StockLogo({
 
     return (
         <img
-            src={logoUrl}
+            src={hdLogoUrl}
             alt={sym}
             width={size}
             height={size}
+            loading="lazy"
+            decoding="async"
+            draggable={false}
             onError={() => setImgFailed(true)}
             style={{
                 width:      size,
@@ -183,8 +201,12 @@ const StockLogo = memo(function StockLogo({
                 borderRadius,
                 objectFit:  "contain",
                 background: "var(--bg-secondary)",
+                border:     "1px solid var(--border-subtle)",
                 flexShrink: 0,
                 display:    "block",
+                imageRendering: "auto",
+                transform: "translateZ(0)",
+                backfaceVisibility: "hidden",
                 ...style,
             }}
         />
