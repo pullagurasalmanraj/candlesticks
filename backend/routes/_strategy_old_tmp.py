@@ -922,7 +922,6 @@ def _run_state_machine(
     gap_re_min: float = 0.10,  # RE floor for post-gap acceptance
     # ------ P5 thresholds ------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     p5_ae_re_min: float = 0.40,  # ae==1 branch minimum RE
-    p5_ta_re_min: float = 0.30,  # ta_arr branch minimum RE
     p5_re_high: float = 0.60,  # high-RE branch threshold
     p5_re_high_slope: float = 0.015,  # slope required for high-RE branch
     p5_chop_range_atr: float = 0.80,  # OBV rescue raw-range / ATR floor
@@ -1438,13 +1437,11 @@ def _run_state_machine(
                 _dbg(i, "E3:expansion")
                 continue
 
-            if ae == 1 and re > 0.45:
-                if close_arr[i] >= open_arr[i]:
-                    market_phase[i] = "TREND_CONTINUATION"
-                else:
-                    market_phase[i] = "TREND_DIGESTION"
-            else:
-                market_phase[i] = "POST_IMPULSE_DIGESTION"
+            market_phase[i] = (
+                "TREND_CONTINUATION"
+                if (ae == 1 and re > 0.45)
+                else "POST_IMPULSE_DIGESTION"
+            )
             _dbg(i, f"E3:continuation_or_digestion(ae={ae},re={re:.2f})")
             continue
 
@@ -1482,28 +1479,10 @@ def _run_state_machine(
             # FIX-3: always reset trend_context so stale context cannot
             #        poison fallback labels on subsequent bars
             _bar_bearish = (
-                (
-                    close_arr[i] < open_arr[i]
-                    and obv_slope_arr[i] <= 0
-                    and not bear_arr[i]
-                )
-                or (
-                    close_arr[i] < open_arr[i]
-                    and range_eff_arr[i] > 0.60
-                    and not bear_arr[i]
-                )
+                close_arr[i] < open_arr[i] and obv_slope_arr[i] < 0 and not bear_arr[i]
             )
             _bar_bullish = (
-                (
-                    close_arr[i] > open_arr[i]
-                    and obv_slope_arr[i] >= 0
-                    and not bull_arr[i]
-                )
-                or (
-                    close_arr[i] > open_arr[i]
-                    and range_eff_arr[i] > 0.60
-                    and not bull_arr[i]
-                )
+                close_arr[i] > open_arr[i] and obv_slope_arr[i] > 0 and not bull_arr[i]
             )
             if _bar_bearish:
                 market_phase[i] = "IMPULSE_BEAR"
@@ -1583,16 +1562,11 @@ def _run_state_machine(
                 trend_context = "BULL"
                 trend_context_bars = 0
                 _dbg(i, "P3a:ta_acceptance")
-            elif btv_arr[i] and close_arr[i] <= open_arr[i]:
+            elif btv_arr[i]:
                 market_phase[i] = "BEAR_TREND_CONTINUATION"
                 trend_context = "BEAR"
                 trend_context_bars = 0
                 _dbg(i, "P3a:btv_flip_bear")
-            elif btv_arr[i] and close_arr[i] > open_arr[i]:
-                market_phase[i] = "BEAR_TREND_DIGESTION"
-                trend_context = "BEAR"
-                trend_context_bars = 0
-                _dbg(i, "P3a:btv_flip_demoted_digestion(bullish_close)")
             elif dist_arr[i] and ema_slope_arr[i] < 0.01:
                 market_phase[i] = "DISTRIBUTION"
                 _dbg(i, "P3a:dist_arr")
@@ -1664,14 +1638,10 @@ def _run_state_machine(
                 trend_context_bars = 0
                 _dbg(i, "P3b:bta_acceptance")
             elif tv_arr[i]:
+                market_phase[i] = "TREND_CONTINUATION"
                 trend_context = "BULL"
                 trend_context_bars = 0
-                if close_arr[i] >= open_arr[i]:
-                    market_phase[i] = "TREND_CONTINUATION"
-                    _dbg(i, "P3b:tv_flip_bull")
-                else:
-                    market_phase[i] = "TREND_DIGESTION"
-                    _dbg(i, "P3b:tv_flip_demoted_digestion(bearish_close)")
+                _dbg(i, "P3b:tv_flip_bull")
             elif ab_arr[i] and vr_arr[i] >= absorption_vol_thr:
                 market_phase[i] = "ABSORPTION"
                 absorption_streak += 1
@@ -1712,14 +1682,10 @@ def _run_state_machine(
                     trend_context_bars = 0
                     _dbg(i, "P3c:bull_acceptance")
                 elif re > p3c_re_min:
-                    if close_arr[i] >= open_arr[i]:
-                        market_phase[i] = "TREND_DIGESTION"
-                        trend_context = "BULL"
-                        trend_context_bars = 0
-                        _dbg(i, f"P3c:bull_re_fallback(re={re:.2f})")
-                    else:
-                        market_phase[i] = "BALANCE_CHOP"
-                        _dbg(i, "P3c:bull_re_blocked_bearish_close")
+                    market_phase[i] = "TREND_DIGESTION"
+                    trend_context = "BULL"
+                    trend_context_bars = 0
+                    _dbg(i, f"P3c:bull_re_fallback(re={re:.2f})")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
                     _dbg(i, "P3c:bull_chop")
@@ -1735,14 +1701,10 @@ def _run_state_machine(
                     trend_context_bars = 0
                     _dbg(i, "P3c:bear_digestion")
                 elif re > p3c_re_min:
-                    if close_arr[i] <= open_arr[i]:
-                        market_phase[i] = "BEAR_TREND_DIGESTION"
-                        trend_context = "BEAR"
-                        trend_context_bars = 0
-                        _dbg(i, f"P3c:bear_re_fallback(re={re:.2f})")
-                    else:
-                        market_phase[i] = "BALANCE_CHOP"
-                        _dbg(i, "P3c:bear_re_blocked_bullish_close")
+                    market_phase[i] = "BEAR_TREND_DIGESTION"
+                    trend_context = "BEAR"
+                    trend_context_bars = 0
+                    _dbg(i, f"P3c:bear_re_fallback(re={re:.2f})")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
                     _dbg(i, "P3c:bear_chop")
@@ -1773,23 +1735,15 @@ def _run_state_machine(
                 trend_context_bars = 0
                 _dbg(i, "P3d:bear_slope")
             elif tv_arr[i]:
+                market_phase[i] = "TREND_CONTINUATION"
                 trend_context = "BULL"
                 trend_context_bars = 0
-                if close_arr[i] >= open_arr[i]:
-                    market_phase[i] = "TREND_CONTINUATION"
-                    _dbg(i, "P3d:tv")
-                else:
-                    market_phase[i] = "TREND_DIGESTION"
-                    _dbg(i, "P3d:tv_demoted_digestion(bearish_close)")
+                _dbg(i, "P3d:tv")
             elif btv_arr[i]:
+                market_phase[i] = "BEAR_TREND_CONTINUATION"
                 trend_context = "BEAR"
                 trend_context_bars = 0
-                if close_arr[i] <= open_arr[i]:
-                    market_phase[i] = "BEAR_TREND_CONTINUATION"
-                    _dbg(i, "P3d:btv")
-                else:
-                    market_phase[i] = "BEAR_TREND_DIGESTION"
-                    _dbg(i, "P3d:btv_demoted_digestion(bullish_close)")
+                _dbg(i, "P3d:btv")
             else:
                 market_phase[i] = "BALANCE_CHOP"
                 _dbg(i, "P3d:chop")
@@ -1842,16 +1796,11 @@ def _run_state_machine(
                 _dbg(i, "P5:absorption")
 
             elif ta_arr[i]:
-                if ps != "BEAR" and re > p5_ta_re_min:
+                if ps != "BEAR":
                     market_phase[i] = "TREND_ACCEPTANCE"
                     trend_context = "BULL"
                     trend_context_bars = 0
                     _dbg(i, "P5:ta_acceptance")
-                elif ps != "BEAR":
-                    market_phase[i] = "TREND_DIGESTION"
-                    trend_context = "BULL"
-                    trend_context_bars = 0
-                    _dbg(i, f"P5:ta_downgraded_low_re(re={re:.2f})")
                 else:
                     market_phase[i] = "BALANCE_CHOP"
                     _dbg(i, "P5:ta_blocked_by_bear_structure")
@@ -2759,33 +2708,21 @@ def offline_label_market_context():
             df["volume"] > vol_ma20 * 2
         )
 
-        bullish_close = df["close"] > df["open"]
-        bearish_close = df["close"] < df["open"]
-        body_to_range = (df["close"] - df["open"]).abs() / (
-            df["high"] - df["low"]
-        ).replace(0, np.nan)
-        # Explicit direction gate for neutral impulses: doji-like or low body/range.
-        neutral_direction = (~bullish_close & ~bearish_close) | (body_to_range <= 0.30)
-
         bullish_impulse = (
             base_impulse
-            & bullish_close
-            & (df["volume"] > vol_ma20)
+            & (df["close"] > df["open"])
             & (df["close"] > df["ema_21"])
             & (df["ema_21_slope"] > 0)
             & (df["vwap_dist_pct"] > 0)
         )
         bearish_impulse = (
             base_impulse
-            & bearish_close
-            & (df["volume"] > vol_ma20)
+            & (df["close"] < df["open"])
             & (df["close"] < df["ema_21"])
             & (df["ema_21_slope"] < 0)
             & (df["vwap_dist_pct"] < 0)
         )
-        neutral_impulse = (
-            base_impulse & neutral_direction & ~bullish_impulse & ~bearish_impulse
-        )
+        neutral_impulse = base_impulse & ~bullish_impulse & ~bearish_impulse
 
         # Keep market_phase as UNCLASSIFIED for ALL bars --- state machine assigns everything
         # (gap auction entry bars will be set in state machine at bar_of_day==0)
