@@ -845,24 +845,9 @@ _HYSTERESIS_ALLOWED = frozenset(
         "BEAR_TREND_CONTINUATION",
         "TREND_PAUSE",
         "BEAR_TREND_PAUSE",
+        "POST_IMPULSE_DIGESTION",
     }
 )
-
-
-# ------ Module-level constant --- defined once, shared across calls ------------------------------------------------
-# Labels that are allowed to self-propagate one extra bar via hysteresis.
-# Event-completion labels (ABSORPTION, REJECTION, GAP_TIMEOUT etc.) are
-# deliberately excluded --- they are single-event signals, not states.
-_HYSTERESIS_ALLOWED = {
-    "TREND_CONTINUATION",
-    "TREND_DIGESTION",
-    "TREND_PAUSE",
-    "TREND_ACCEPTANCE",
-    "BEAR_TREND_CONTINUATION",
-    "BEAR_TREND_DIGESTION",
-    "BEAR_TREND_ACCEPTANCE",
-    "POST_IMPULSE_DIGESTION",
-}
 
 
 def _run_state_machine(
@@ -1398,26 +1383,7 @@ def _run_state_machine(
                 _dbg(i, "E3:absorption")
                 continue
 
-            # FIX-1: REJECTION --- neutral requires bearish close + structure not bull
-            if (
-                (
-                    (idir == "BULL" and close_arr[i] < low_arr[i - 1])
-                    or (idir == "BEAR" and close_arr[i] > high_arr[i - 1])
-                )
-                and pullback_bars >= 1
-            ) or (
-                idir == "NEUTRAL"
-                and re < rejection_re_max
-                and close_arr[i] < open_arr[i]
-                and ps != "BULL"
-            ):
-                market_phase[i] = "REJECTION"
-                post_impulse_active[i] = 0
-                pullback_bars = 0
-                _dbg(i, "E3:rejection")
-                continue
-
-            # EXPANSION
+            # EXPANSION: evaluate high-conviction continuation before rejection.
             if (
                 ae == 1
                 and re > 0.50
@@ -1438,11 +1404,36 @@ def _run_state_machine(
                 _dbg(i, "E3:expansion")
                 continue
 
+            # REJECTION: capped by RE to avoid classifying high-conviction
+            # momentum bars as rejection.
+            if (
+                re < rejection_re_max
+                and (
+                    (
+                        (idir == "BULL" and close_arr[i] < low_arr[i - 1])
+                        or (idir == "BEAR" and close_arr[i] > high_arr[i - 1])
+                    )
+                    and pullback_bars >= pullback_min_bars
+                )
+            ) or (
+                idir == "NEUTRAL"
+                and re < rejection_re_max
+                and close_arr[i] < open_arr[i]
+                and ps != "BULL"
+            ):
+                market_phase[i] = "REJECTION"
+                post_impulse_active[i] = 0
+                pullback_bars = 0
+                _dbg(i, "E3:rejection")
+                continue
+
             if ae == 1 and re > 0.45:
                 if close_arr[i] >= open_arr[i]:
                     market_phase[i] = "TREND_CONTINUATION"
                 else:
                     market_phase[i] = "TREND_DIGESTION"
+                trend_context = "BULL"
+                trend_context_bars = 0
             else:
                 market_phase[i] = "POST_IMPULSE_DIGESTION"
             _dbg(i, f"E3:continuation_or_digestion(ae={ae},re={re:.2f})")
@@ -1481,6 +1472,7 @@ def _run_state_machine(
             # FIX-2: rescue clearly directional bars from IMPULSE_NEUTRAL
             # FIX-3: always reset trend_context so stale context cannot
             #        poison fallback labels on subsequent bars
+            _obv_flat = np.isnan(obv_slope_arr[i]) or obv_slope_arr[i] == 0
             _bar_bearish = (
                 (
                     close_arr[i] < open_arr[i]
@@ -1490,6 +1482,7 @@ def _run_state_machine(
                 or (
                     close_arr[i] < open_arr[i]
                     and range_eff_arr[i] > 0.60
+                    and _obv_flat
                     and not bear_arr[i]
                 )
             )
@@ -1502,6 +1495,7 @@ def _run_state_machine(
                 or (
                     close_arr[i] > open_arr[i]
                     and range_eff_arr[i] > 0.60
+                    and _obv_flat
                     and not bull_arr[i]
                 )
             )
@@ -1577,6 +1571,8 @@ def _run_state_machine(
                 _dbg(i, "P3a:td_digestion")
             elif tp_arr[i]:
                 market_phase[i] = "TREND_PAUSE"
+                trend_context = "BULL"
+                trend_context_bars = 0
                 _dbg(i, "P3a:tp_pause")
             elif ta_arr[i]:
                 market_phase[i] = "TREND_ACCEPTANCE"
@@ -1654,10 +1650,10 @@ def _run_state_machine(
                 trend_context_bars = 0
                 _dbg(i, "P3b:btd_digestion")
             elif btp_arr[i]:
-                market_phase[i] = "BEAR_TREND_DIGESTION"
+                market_phase[i] = "BEAR_TREND_PAUSE"
                 trend_context = "BEAR"
                 trend_context_bars = 0
-                _dbg(i, "P3b:btp---digestion")
+                _dbg(i, "P3b:btp_pause")
             elif bta_arr[i]:
                 market_phase[i] = "BEAR_TREND_ACCEPTANCE"
                 trend_context = "BEAR"
@@ -1796,8 +1792,8 @@ def _run_state_machine(
 
         # ------ Priority 4: Sticky absorption / distribution ------------------------------------------------------------------
         elif prev == "ABSORPTION":
-            absorption_streak += 1
-            if not ab_brk[i] and absorption_streak <= absorption_max_streak:
+            if not ab_brk[i] and absorption_streak < absorption_max_streak:
+                absorption_streak += 1
                 market_phase[i] = "ABSORPTION"
                 _dbg(i, f"P4:absorption_sticky(streak={absorption_streak})")
             else:
@@ -1880,8 +1876,8 @@ def _run_state_machine(
                     trend_context_bars = 0
                     _dbg(i, "P5:ae_bear")
                 else:
-                    market_phase[i] = "IMPULSE_NEUTRAL"
-                    _dbg(i, "P5:ae_neutral")
+                    market_phase[i] = "BALANCE_CHOP"
+                    _dbg(i, "P5:ae_chop_no_stack")
 
             elif re > p5_re_high and abs(ema_slope_arr[i]) > p5_re_high_slope:
                 if ema_slope_arr[i] > p5_re_high_slope and ps != "BEAR":
@@ -2765,7 +2761,10 @@ def offline_label_market_context():
             df["high"] - df["low"]
         ).replace(0, np.nan)
         # Explicit direction gate for neutral impulses: doji-like or low body/range.
-        neutral_direction = (~bullish_close & ~bearish_close) | (body_to_range <= 0.30)
+        neutral_direction = (
+            ((~bullish_close & ~bearish_close) | (body_to_range <= 0.30))
+            & (df["range_efficiency"] < 0.55)
+        )
 
         bullish_impulse = (
             base_impulse
@@ -2842,16 +2841,10 @@ def offline_label_market_context():
             & (df["range_efficiency"] < re_trend_thr)
             & (df["volume"] > vol_ma20)
         )
-        trend_digestion = (
-            (df["range_efficiency"] >= re_chop_thr * 0.6)
-            & (df["range_efficiency"] < re_trend_thr)
-            & (df["atr_expanding"] == 0)
-            & (df["close"] > df["vwap"])
-            & (df["ema_21_slope"] > 0)
-        )
         trend_acceptance = (
             (df["ema_21_slope"] > 0)
             & (df["close"] > df["vwap"])
+            & ema_stacked_bull
             & (
                 (df["range_efficiency"] >= re_chop_thr)
                 | (
@@ -2860,6 +2853,14 @@ def offline_label_market_context():
                 )
             )
             & (df["atr_expanding"] == 0)
+        )
+        trend_digestion = (
+            (df["range_efficiency"] >= re_chop_thr * 0.6)
+            & (df["range_efficiency"] < re_trend_thr)
+            & (df["atr_expanding"] == 0)
+            & (df["close"] > df["vwap"])
+            & (df["ema_21_slope"] > 0)
+            & ~trend_acceptance
         )
 
         # ------ Bear trend signals --- mirrors of bull, same adaptive thresholds ---
@@ -2877,18 +2878,26 @@ def offline_label_market_context():
             & (df["range_efficiency"] < re_trend_thr)
             & (df["volume"] > vol_ma20)
         )
+        bear_trend_acceptance = (
+            (df["ema_21_slope"] < 0)
+            & (df["close"] < df["vwap"])
+            & ema_stacked_bear
+            & (
+                (df["range_efficiency"] >= re_chop_thr)
+                | (
+                    (df["gap_regime"] == "LARGE_GAP")
+                    & (df["range_efficiency"] >= re_chop_thr * 0.6)
+                )
+            )
+            & (df["atr_expanding"] == 0)
+        )
         bear_trend_digestion = (
             (df["range_efficiency"] >= re_chop_thr * 0.6)
             & (df["range_efficiency"] < re_trend_thr)
             & (df["atr_expanding"] == 0)
             & (df["close"] < df["vwap"])
             & (df["ema_21_slope"] < 0)
-        )
-        bear_trend_acceptance = (
-            (df["ema_21_slope"] < 0)
-            & (df["close"] < df["vwap"])
-            & (df["range_efficiency"] >= re_chop_thr * 0.6)
-            & (df["atr_expanding"] == 0)
+            & ~bear_trend_acceptance
         )
 
         absorption_break = (df["range_efficiency"] > 0.45) | (df["atr_expanding"] == 1)

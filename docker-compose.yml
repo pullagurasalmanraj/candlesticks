@@ -2,8 +2,6 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: candlesticks-postgres
-    profiles:
-      - docker-state
     restart: unless-stopped
     environment:
       POSTGRES_DB: candleticks
@@ -23,8 +21,6 @@ services:
   redis:
     image: redis:7-alpine
     container_name: candlesticks-redis
-    profiles:
-      - docker-state
     restart: unless-stopped
     command: [ "redis-server", "--appendonly", "yes", "--requirepass", "linux123" ]
     ports:
@@ -52,17 +48,17 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      PGHOST: ${PGHOST:-host.docker.internal}
+      PGHOST: ${PGHOST:-postgres}
       PGPORT: ${PGPORT:-5432}
       PGDATABASE: ${PGDATABASE:-candleticks}
       PGUSER: ${PGUSER:-postgres}
       PGPASSWORD: ${PGPASSWORD:-postgres}
-      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_HOST: ${DB_HOST:-postgres}
       DB_PORT: ${DB_PORT:-5432}
       DB_NAME: ${DB_NAME:-candleticks}
       DB_USER: ${DB_USER:-postgres}
       DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      REDIS_URL: redis://:linux123@host.docker.internal:6379/10
+      REDIS_URL: redis://:linux123@redis:6379/10
       UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
       UPSTOX_CLIENT_ID: ${UPSTOX_CLIENT_ID:-}
       UPSTOX_CLIENT_SECRET: ${UPSTOX_CLIENT_SECRET:-}
@@ -72,6 +68,11 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
     ports:
       - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
   wsserver:
     image: candlesticks-python:dev
     container_name: candlesticks-wsserver
@@ -83,13 +84,16 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      REDIS_URL: redis://:linux123@host.docker.internal:6379/10
+      REDIS_URL: redis://:linux123@redis:6379/10
       WS_HOST: 0.0.0.0
       WS_PORT: "9000"
       UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
       SKIP_SSL_VERIFY: ${SKIP_SSL_VERIFY:-0}
     ports:
       - "9000:9000"
+    depends_on:
+      redis:
+        condition: service_healthy
   frontend:
     build:
       context: .
