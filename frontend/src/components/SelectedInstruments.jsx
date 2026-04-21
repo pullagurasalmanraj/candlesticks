@@ -32,7 +32,7 @@ export default function SelectedInstruments({
     }
 
     return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {selectedInstruments.map(item => (
                 <InstrumentCard
                     key={item.instrument_key}

@@ -48,17 +48,17 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      PGHOST: ${PGHOST:-postgres}
+      PGHOST: ${PGHOST:-host.docker.internal}
       PGPORT: ${PGPORT:-5432}
       PGDATABASE: ${PGDATABASE:-candleticks}
       PGUSER: ${PGUSER:-postgres}
       PGPASSWORD: ${PGPASSWORD:-postgres}
-      DB_HOST: ${DB_HOST:-postgres}
-      DB_PORT: ${DB_PORT:-5432}
-      DB_NAME: ${DB_NAME:-candleticks}
-      DB_USER: ${DB_USER:-postgres}
-      DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      REDIS_URL: redis://:linux123@redis:6379/10
+      DB_HOST: ${PGHOST:-host.docker.internal}
+      DB_PORT: ${PGPORT:-5432}
+      DB_NAME: ${PGDATABASE:-candleticks}
+      DB_USER: ${PGUSER:-postgres}
+      DB_PASSWORD: ${PGPASSWORD:-postgres}
+      REDIS_URL: ${REDIS_URL:-redis://:linux123@host.docker.internal:6379/10}
       UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
       UPSTOX_CLIENT_ID: ${UPSTOX_CLIENT_ID:-}
       UPSTOX_CLIENT_SECRET: ${UPSTOX_CLIENT_SECRET:-}
@@ -66,6 +66,8 @@ services:
       SECRET_KEY: ${SECRET_KEY:-candlesticks_super_secret_key}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
     depends_on:
@@ -84,11 +86,13 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
-      REDIS_URL: redis://:linux123@redis:6379/10
+      REDIS_URL: ${REDIS_URL:-redis://:linux123@host.docker.internal:6379/10}
       WS_HOST: 0.0.0.0
       WS_PORT: "9000"
       UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
       SKIP_SSL_VERIFY: ${SKIP_SSL_VERIFY:-0}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "9000:9000"
     depends_on:

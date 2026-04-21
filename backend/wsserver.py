@@ -78,6 +78,51 @@ CURRENT_SUBS = set()
 SUBSCRIBE_QUEUE = asyncio.Queue()
 ASYNC_LOOP: asyncio.AbstractEventLoop | None = None
 
+# Canonicalize known index aliases to valid Upstox instrument keys.
+INDEX_KEY_ALIASES = {
+    "NSE_INDEX|NIFTY_50": "NSE_INDEX|Nifty 50",
+    "NSE_INDEX|NIFTY 50": "NSE_INDEX|Nifty 50",
+    "NSE_INDEX|NIFTY": "NSE_INDEX|Nifty 50",
+    "NSE_INDEX|BANKNIFTY": "NSE_INDEX|Nifty Bank",
+    "NSE_INDEX|NIFTY BANK": "NSE_INDEX|Nifty Bank",
+    "NSE_INDEX|NIFTY_NEXT_50": "NSE_INDEX|Nifty Next 50",
+    "NSE_INDEX|NIFTY NEXT 50": "NSE_INDEX|Nifty Next 50",
+    "NSE_INDEX|NIFTYNXT50": "NSE_INDEX|Nifty Next 50",
+    "NIFTY": "NSE_INDEX|Nifty 50",
+    "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+    "NIFTYNXT50": "NSE_INDEX|Nifty Next 50",
+    "NEXT50": "NSE_INDEX|Nifty Next 50",
+    "SENSEX": "BSE_INDEX|SENSEX",
+}
+
+
+def canonicalize_instrument_key(key: str) -> str:
+    raw = str(key or "").strip()
+    if not raw:
+        return ""
+    return INDEX_KEY_ALIASES.get(raw.upper(), raw)
+
+
+def canonicalize_instrument_keys(keys) -> list[str]:
+    out = []
+    seen = set()
+    for key in keys or []:
+        norm = canonicalize_instrument_key(key)
+        if norm and norm not in seen:
+            seen.add(norm)
+            out.append(norm)
+    return out
+
+
+def is_index_instrument_key(instrument_key: str) -> bool:
+    k = str(instrument_key or "").upper()
+    return k.startswith("NSE_INDEX|") or k.startswith("BSE_INDEX|")
+
+
+def daily_tick_storage_key(instrument_key: str, day_iso: str) -> str:
+    bucket = "index" if is_index_instrument_key(instrument_key) else "instrument"
+    return f"ticks:{bucket}:{day_iso}:{instrument_key}"
+
 
 def log(*args, **kwargs):
     print(*args, **kwargs, flush=True)
@@ -257,13 +302,20 @@ async def upstox_wss_worker(loop, subscription_queue: asyncio.Queue):
                 # Re-subscribe on every (re)connect from persisted Redis SET
                 saved_subs = redis_call("smembers", REDIS_ACTIVE_SUBS_KEY, default=set())
                 if saved_subs:
-                    CURRENT_SUBS.update(saved_subs)
+                    normalized_subs = canonicalize_instrument_keys(saved_subs)
+                    stale_subs = set(saved_subs) - set(normalized_subs)
+                    for old_key in stale_subs:
+                        redis_call("srem", REDIS_ACTIVE_SUBS_KEY, old_key, default=0)
+                    for new_key in normalized_subs:
+                        redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, new_key, default=0)
+
+                    CURRENT_SUBS.update(normalized_subs)
                     await subscription_queue.put({
-                        "instrumentKeys": list(saved_subs),
+                        "instrumentKeys": normalized_subs,
                         "method": "sub",
                         "mode": "full",
                     })
-                    log(f"🔄 Re-subscribing {len(saved_subs)} saved instrument(s): {saved_subs}")
+                    log(f"🔄 Re-subscribing {len(normalized_subs)} saved instrument(s): {normalized_subs}")
 
                 # ── Consumer ──────────────────────────────────────
                 async def consumer():
@@ -282,7 +334,7 @@ async def upstox_wss_worker(loop, subscription_queue: asyncio.Queue):
                                 if feeds:
                                     today = time.strftime("%Y-%m-%d")
                                     for ik in feeds:
-                                        key = f"ticks:{today}:{ik}"
+                                        key = daily_tick_storage_key(ik, today)
                                         redis_call("lpush", key, payload, default=0)
                                         redis_call("expire", key, 86400, default=False)
                             except Exception:
@@ -378,6 +430,7 @@ def redis_subscribe_thread(loop, subscription_queue):
                     or payload.get("instrumentKey")
                     or payload.get("symbol")
                 )
+                ik = canonicalize_instrument_key(ik)
                 if not ik:
                     continue
 
@@ -427,7 +480,7 @@ def redis_unsubscribe_thread(loop, subscription_queue):
                     continue
 
                 payload = json.loads(raw)
-                ik = payload.get("instrument_key")
+                ik = canonicalize_instrument_key(payload.get("instrument_key"))
                 if not ik:
                     continue
 
@@ -464,30 +517,32 @@ async def ws_client_handler(websocket):
                     continue
 
                 if "subscribe" in parsed:
-                    keys = parsed["subscribe"] or []
+                    keys = canonicalize_instrument_keys(parsed["subscribe"] or [])
                     if keys:
                         for k in keys:
                             CURRENT_SUBS.add(k)
                             redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, k, default=0)
                         asyncio.create_task(
-                            SUBSCRIBE_QUEUE.put({"instrumentKeys": list(keys), "method": "sub", "mode": "full"})
+                            SUBSCRIBE_QUEUE.put({"instrumentKeys": keys, "method": "sub", "mode": "full"})
                         )
                         log("📡 WS client subscribe:", keys)
 
                 if "unsubscribe" in parsed:
-                    keys = parsed["unsubscribe"] or []
+                    keys = canonicalize_instrument_keys(parsed["unsubscribe"] or [])
                     if keys:
                         for k in keys:
                             CURRENT_SUBS.discard(k)
                             redis_call("srem", REDIS_ACTIVE_SUBS_KEY, k, default=0)
                         asyncio.create_task(
-                            SUBSCRIBE_QUEUE.put({"instrumentKeys": list(keys), "method": "unsub"})
+                            SUBSCRIBE_QUEUE.put({"instrumentKeys": keys, "method": "unsub"})
                         )
                         log("❌ WS client unsubscribe:", keys)
 
                 if parsed.get("action") and parsed.get("instrument_key"):
                     act = parsed["action"].lower()
-                    ik = parsed["instrument_key"]
+                    ik = canonicalize_instrument_key(parsed["instrument_key"])
+                    if not ik:
+                        continue
                     if act in ("unsub", "unsubscribe"):
                         CURRENT_SUBS.discard(ik)
                         redis_call("srem", REDIS_ACTIVE_SUBS_KEY, ik, default=0)

@@ -52,10 +52,10 @@ def index_summary():
         return jsonify({"error": "Not logged in — connect Upstox"}), 401
 
     INDEX_KEYS = {
-        "Nifty 50":     "NSE_INDEX|NIFTY_50",
-        "Bank Nifty":   "NSE_INDEX|BANKNIFTY",
-        "Sensex":       "BSE_INDEX|SENSEX",
-        "Nifty Next 50":"NSE_INDEX|NIFTY_NEXT_50",
+        "Nifty 50":      "NSE_INDEX|Nifty 50",
+        "Bank Nifty":    "NSE_INDEX|Nifty Bank",
+        "Sensex":        "BSE_INDEX|SENSEX",
+        "Nifty Next 50": "NSE_INDEX|Nifty Next 50",
     }
     symbols = ",".join(INDEX_KEYS.values())
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
@@ -83,9 +83,10 @@ def index_summary():
     total_pct, count = 0, 0
 
     for name, key in INDEX_KEYS.items():
-        row = next((x for x in data
-                    if x.get("instrument_key") == key
-                    or x.get("tradingsymbol") in key), None)
+        row = next((
+            x for x in data
+            if (x.get("instrument_key") or "").upper() == key.upper()
+        ), None)
         if not row:
             continue
 
@@ -132,14 +133,16 @@ def index_summary():
 def api_ws_subscribe():
     import traceback
     try:
-        symbol   = (request.args.get("symbol") or "").strip().upper()
+        symbol_raw = (request.args.get("symbol") or "").strip()
         exchange = (request.args.get("exchange") or "").strip().upper()
-        if not symbol:
+        if not symbol_raw:
             return jsonify({"error": "symbol missing"}), 400
 
-        if "|" in symbol:
-            instrument_key = symbol
+        if "|" in symbol_raw:
+            instrument_key = symbol_raw
+            symbol = symbol_raw
         else:
+            symbol = symbol_raw.upper()
             mapped = SYMBOL_TO_KEY.get(symbol)
             if not mapped:
                 return jsonify({"error": f"Symbol not found: {symbol}"}), 404

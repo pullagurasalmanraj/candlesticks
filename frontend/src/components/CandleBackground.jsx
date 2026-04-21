@@ -260,24 +260,29 @@ export default function CandleBackground() {
 
         // ── Vignette ─────────────────────────────────────────────
         function drawVignette(bgColor) {
-            [[0,0,0,canvas.height*0.22],[0,canvas.height*0.72,0,canvas.height]].forEach(([x,y,x2,y2]) => {
-                if (y2 === canvas.height) {
-                    const g = ctx.createLinearGradient(0,canvas.height*0.72,0,canvas.height);
-                    g.addColorStop(0,"transparent"); g.addColorStop(1,bgColor);
-                    ctx.fillStyle=g; ctx.fillRect(0,canvas.height*0.72,canvas.width,canvas.height*0.28);
-                } else {
-                    const g = ctx.createLinearGradient(0,0,0,canvas.height*0.22);
-                    g.addColorStop(0,bgColor); g.addColorStop(1,"transparent");
-                    ctx.fillStyle=g; ctx.fillRect(0,0,canvas.width,canvas.height*0.22);
-                }
-            });
-            const left = ctx.createLinearGradient(0,0,canvas.width*0.06,0);
-            left.addColorStop(0,bgColor); left.addColorStop(1,"transparent");
-            ctx.fillStyle=left; ctx.fillRect(0,0,canvas.width*0.06,canvas.height);
+            const top = ctx.createLinearGradient(0, 0, 0, canvas.height * 0.16);
+            top.addColorStop(0, rgba(bgColor, 0.26));
+            top.addColorStop(1, "transparent");
+            ctx.fillStyle = top;
+            ctx.fillRect(0, 0, canvas.width, canvas.height * 0.16);
 
-            const right = ctx.createLinearGradient(canvas.width*0.94,0,canvas.width,0);
-            right.addColorStop(0,"transparent"); right.addColorStop(1,bgColor);
-            ctx.fillStyle=right; ctx.fillRect(canvas.width*0.94,0,canvas.width*0.06,canvas.height);
+            const bottom = ctx.createLinearGradient(0, canvas.height * 0.78, 0, canvas.height);
+            bottom.addColorStop(0, "transparent");
+            bottom.addColorStop(1, rgba(bgColor, 0.30));
+            ctx.fillStyle = bottom;
+            ctx.fillRect(0, canvas.height * 0.78, canvas.width, canvas.height * 0.22);
+
+            const left = ctx.createLinearGradient(0, 0, canvas.width * 0.04, 0);
+            left.addColorStop(0, rgba(bgColor, 0.16));
+            left.addColorStop(1, "transparent");
+            ctx.fillStyle = left;
+            ctx.fillRect(0, 0, canvas.width * 0.04, canvas.height);
+
+            const right = ctx.createLinearGradient(canvas.width * 0.96, 0, canvas.width, 0);
+            right.addColorStop(0, "transparent");
+            right.addColorStop(1, rgba(bgColor, 0.16));
+            ctx.fillStyle = right;
+            ctx.fillRect(canvas.width * 0.96, 0, canvas.width * 0.04, canvas.height);
         }
 
         // ── Main loop ────────────────────────────────────────────

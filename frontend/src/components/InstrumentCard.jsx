@@ -33,34 +33,36 @@ const InstrumentCard = memo(function InstrumentCard({
             style={{
                 display:       "flex",
                 alignItems:    "center",
-                gap:           12,
-                padding:       "10px 14px",
+                gap:           10,
+                padding:       "9px 11px",
                 borderRadius:  10,
                 cursor:        "pointer",
                 transition:    "all 0.15s ease",
                 background:    isSelected
-                    ? "linear-gradient(135deg, rgba(59,130,246,0.12), rgba(99,102,241,0.08))"
-                    : "var(--bg-tertiary)",
-                border:        `1px solid ${isSelected ? "var(--accent-blue)" : "var(--border-subtle)"}`,
-                boxShadow:     isSelected ? "0 0 0 1px rgba(59,130,246,0.15)" : "none",
+                    ? "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(59,130,246,0.08))"
+                    : "var(--bg-secondary)",
+                border:        `1px solid ${isSelected ? "var(--accent-blue)" : "var(--border-color)"}`,
+                boxShadow:     isSelected
+                    ? "0 0 0 1px rgba(59,130,246,0.2), var(--shadow-card)"
+                    : "var(--shadow-card)",
             }}
             onMouseEnter={e => {
+                if (!isSelected) {
+                    e.currentTarget.style.background  = "var(--bg-tertiary)";
+                    e.currentTarget.style.borderColor = "var(--accent-blue)";
+                }
+            }}
+            onMouseLeave={e => {
                 if (!isSelected) {
                     e.currentTarget.style.background  = "var(--bg-secondary)";
                     e.currentTarget.style.borderColor = "var(--border-color)";
                 }
             }}
-            onMouseLeave={e => {
-                if (!isSelected) {
-                    e.currentTarget.style.background  = "var(--bg-tertiary)";
-                    e.currentTarget.style.borderColor = "var(--border-subtle)";
-                }
-            }}
         >
             {/* ── Live dot ──────────────────────────────────── */}
             <span style={{
-                width:        7,
-                height:       7,
+                width:        6,
+                height:       6,
                 borderRadius: "50%",
                 flexShrink:   0,
                 background:   isRunning ? "var(--accent-up)" : "var(--border-color)",
@@ -69,7 +71,7 @@ const InstrumentCard = memo(function InstrumentCard({
             }} />
 
             {/* ── Logo ─────────────────────────────────────── */}
-            <StockLogo symbol={sym} size={36} borderRadius={8} />
+            <StockLogo symbol={sym} size={32} borderRadius={8} />
 
             {/* ── Symbol + exchange ─────────────────────────── */}
             <div style={{ flex: 1, minWidth: 0 }}>
@@ -96,9 +98,9 @@ const InstrumentCard = memo(function InstrumentCard({
                         fontSize:     "10px",
                         fontWeight:   600,
                         fontFamily:   "var(--font-mono)",
-                        color:        "var(--accent-blue)",
-                        background:   "rgba(59,130,246,0.1)",
-                        border:       "1px solid rgba(59,130,246,0.2)",
+                        color:        "var(--text-secondary)",
+                        background:   "var(--bg-tertiary)",
+                        border:       "1px solid var(--border-color)",
                         borderRadius: 4,
                         padding:      "1px 5px",
                         letterSpacing:"0.04em",
@@ -122,9 +124,9 @@ const InstrumentCard = memo(function InstrumentCard({
             </div>
 
             {/* ── Price ─────────────────────────────────────── */}
-            <div style={{ textAlign: "right", flexShrink: 0, minWidth: 114 }}>
+            <div style={{ textAlign: "right", flexShrink: 0, minWidth: 102 }}>
                 <div style={{
-                    fontSize:      "15px",
+                    fontSize:      "14px",
                     fontWeight:    700,
                     fontFamily:    "var(--font-mono)",
                     color:         priceColor,
@@ -136,7 +138,7 @@ const InstrumentCard = memo(function InstrumentCard({
                     {hasPrice ? `₹${ltp.toLocaleString("en-IN")}` : "--"}
                 </div>
                 <div style={{
-                    fontSize:   "11px",
+                    fontSize:   "10.5px",
                     fontFamily: "var(--font-mono)",
                     color:      hasPrice ? priceColor : "var(--text-muted)",
                     marginTop:  2,
@@ -152,7 +154,7 @@ const InstrumentCard = memo(function InstrumentCard({
 
             {/* ── Buttons ───────────────────────────────────── */}
             <div
-                style={{ display: "flex", gap: 5, flexShrink: 0 }}
+                style={{ display: "flex", gap: 6, flexShrink: 0 }}
                 onClick={e => e.stopPropagation()}
             >
                 {/* Stream toggle */}
@@ -160,13 +162,13 @@ const InstrumentCard = memo(function InstrumentCard({
                     onClick={() => subscribeToStock(item)}
                     title={isRunning ? "Stop stream" : "Start stream"}
                     style={{
-                        width:          28,
-                        height:         28,
+                        width:          26,
+                        height:         26,
                         borderRadius:   7,
-                        border:         "none",
+                        border:         "1px solid transparent",
                         background:     isRunning
                             ? "rgba(255,82,82,0.15)"
-                            : "rgba(0,230,118,0.12)",
+                            : "rgba(0,230,118,0.16)",
                         color:          isRunning ? "var(--accent-down)" : "var(--accent-up)",
                         cursor:         "pointer",
                         fontSize:       "0.6rem",
@@ -202,11 +204,11 @@ const InstrumentCard = memo(function InstrumentCard({
                     }
                     title="Remove"
                     style={{
-                        width:          28,
-                        height:         28,
+                        width:          26,
+                        height:         26,
                         borderRadius:   7,
                         border:         "1px solid var(--border-color)",
-                        background:     "transparent",
+                        background:     "var(--bg-secondary)",
                         color:          "var(--text-muted)",
                         cursor:         "pointer",
                         fontSize:       "0.65rem",
@@ -223,7 +225,7 @@ const InstrumentCard = memo(function InstrumentCard({
                         e.currentTarget.style.transform   = "scale(1.08)";
                     }}
                     onMouseLeave={e => {
-                        e.currentTarget.style.background  = "transparent";
+                        e.currentTarget.style.background  = "var(--bg-secondary)";
                         e.currentTarget.style.borderColor = "var(--border-color)";
                         e.currentTarget.style.color       = "var(--text-muted)";
                         e.currentTarget.style.transform   = "scale(1)";

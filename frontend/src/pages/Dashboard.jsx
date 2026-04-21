@@ -5,7 +5,7 @@ import "react-datepicker/dist/react-datepicker.css";
 import { useTheme } from "../context/ThemeContext";
 import SkeletonLoader from "../components/SkeletonLoader";
 
-import { INDEX_DEFAULTS } from "../context/indexes";
+import { INDEX_DEFAULTS, INDEX_LIST, INDEX_NAME_TO_SYMBOL } from "../context/indexes";
 import { normalizeKey } from "../utils/instrumentUtils";
 import { getLtpForInstrument } from "../utils/priceUtils";
 import { formatYMD } from "../utils/dateUtils";
@@ -20,7 +20,7 @@ import ToolsPanel           from "../components/ToolsPanel";
 import ProfileDrawer, { Avatar } from "../components/ProfileDrawer";
 import StockLogo               from "../components/StockLogo";
 import useInstrumentSearch  from "../hooks/useInstrumentSearch";
-import useWebSocketPrices   from "../hooks/useWebSocketPrices";
+import useWebSocketPrices   from "../hooks/useWebSocketPrices.js";
 import { fetchTimeframes }  from "../services/timeframeService";
 import { fetchHistoricalCandlesAPI } from "../services/candleService";
 import { subscribeSymbol, unsubscribeInstrument } from "../services/subscriptionService";
@@ -79,6 +79,39 @@ function Panel({ children, style = {} }) {
     );
 }
 
+const INDEX_INSTRUMENT_KEYS = INDEX_LIST
+    .map((idx) => idx.instrumentKey?.trim())
+    .filter(Boolean);
+
+const INDEX_KEY_ALIASES = {
+    "NSE_INDEX|NIFTY_50": "NSE_INDEX|Nifty 50",
+    "NSE_INDEX|NIFTY 50": "NSE_INDEX|Nifty 50",
+    "NSE_INDEX|NIFTY": "NSE_INDEX|Nifty 50",
+    "NSE_INDEX|BANKNIFTY": "NSE_INDEX|Nifty Bank",
+    "NSE_INDEX|NIFTY BANK": "NSE_INDEX|Nifty Bank",
+    "NSE_INDEX|NIFTY_NEXT_50": "NSE_INDEX|Nifty Next 50",
+    "NSE_INDEX|NIFTY NEXT 50": "NSE_INDEX|Nifty Next 50",
+    "NSE_INDEX|NIFTYNXT50": "NSE_INDEX|Nifty Next 50",
+};
+
+function normalizeIndexSubscriptionKey(rawKey) {
+    const key = String(rawKey || "").trim();
+    if (!key) return "";
+    return INDEX_KEY_ALIASES[key.toUpperCase()] || key;
+}
+
+function normalizeIndexSnapshot(row) {
+    const ltp = Number(row?.ltp);
+    const change = Number(row?.change);
+    const percent = Number(row?.percent);
+
+    return {
+        ltp: Number.isFinite(ltp) ? ltp : "--",
+        change: Number.isFinite(change) ? change : 0,
+        percent: Number.isFinite(percent) ? percent : 0,
+    };
+}
+
 export default function Dashboard() {
     const { theme } = useTheme();
 
@@ -118,11 +151,83 @@ export default function Dashboard() {
     }, [toast]);
     useEffect(() => {
         const saved = localStorage.getItem("activeSubscriptions");
-        if (saved) setActiveSubscriptions(JSON.parse(saved));
+        if (!saved) return;
+
+        try {
+            const parsed = JSON.parse(saved);
+            const migrated = {};
+            Object.entries(parsed || {}).forEach(([rawKey, isActive]) => {
+                const key = normalizeIndexSubscriptionKey(rawKey);
+                if (!key) return;
+                migrated[key] = Boolean(isActive);
+            });
+            setActiveSubscriptions(migrated);
+        } catch {
+            setActiveSubscriptions({});
+        }
     }, []);
     useEffect(() => {
         localStorage.setItem("activeSubscriptions", JSON.stringify(activeSubscriptions));
     }, [activeSubscriptions]);
+    useEffect(() => {
+        if (!INDEX_INSTRUMENT_KEYS.length) return;
+
+        setActiveSubscriptions((prev) => {
+            const next = { ...prev };
+            let changed = false;
+
+            INDEX_INSTRUMENT_KEYS.forEach((key) => {
+                if (!next[key]) {
+                    next[key] = true;
+                    changed = true;
+                }
+            });
+
+            return changed ? next : prev;
+        });
+
+        Promise.allSettled(
+            INDEX_INSTRUMENT_KEYS.map((instrumentKey) => subscribeSymbol(instrumentKey))
+        ).catch(() => {
+            // ignore failures here; fallback summary polling keeps initial values
+        });
+    }, []);
+    useEffect(() => {
+        let cancelled = false;
+
+        const loadIndexSummary = async () => {
+            try {
+                const res = await fetch("/api/index-summary");
+                if (!res.ok) return;
+
+                const payload = await res.json();
+                if (cancelled) return;
+
+                const nextIndexData = { ...INDEX_DEFAULTS };
+                const payloadIndices = payload?.indices || {};
+
+                Object.entries(payloadIndices).forEach(([name, row]) => {
+                    const symbol = INDEX_NAME_TO_SYMBOL[name];
+                    if (!symbol) return;
+                    nextIndexData[symbol] = normalizeIndexSnapshot(row);
+                });
+
+                setIndexData((prev) => ({ ...prev, ...nextIndexData }));
+                setMarketSummary(payload?.marketSummary || null);
+                setAsOf(payload?.asOf || null);
+            } catch {
+                // websocket live ticks still drive the strip
+            }
+        };
+
+        loadIndexSummary();
+        const pollId = setInterval(loadIndexSummary, 30000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(pollId);
+        };
+    }, []);
 
     // ── Instrument maps ──────────────────────────────────────────
     const instrumentByKey = useMemo(() => {
@@ -396,7 +501,7 @@ export default function Dashboard() {
                 }}>
 
                     {/* ── COL 1 — Watchlist ─────────────────────── */}
-                    <Panel>
+                    <Panel style={{ width: "100%", maxWidth: 520, justifySelf: "start" }}>
                         <SectionHeader
                             subtitle="Monitoring"
                             title="Watchlist"
@@ -432,7 +537,7 @@ export default function Dashboard() {
                                 Star symbols from search to add
                             </div>
                         ) : (
-                            <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                 {watchlist.map((w) => {
                                     const sym   = w.symbol?.toUpperCase();
                                     const live  = prices?.[sym] || {};
@@ -449,20 +554,34 @@ export default function Dashboard() {
                                                 display:        "flex",
                                                 alignItems:     "center",
                                                 justifyContent: "space-between",
-                                                padding:        "8px 10px",
-                                                borderRadius:   8,
+                                                padding:        "9px 11px",
+                                                borderRadius:   10,
                                                 cursor:         "pointer",
-                                                background:     isSel ? "var(--accent-blue-muted)" : "transparent",
-                                                border:         isSel ? "1px solid var(--accent-blue)" : "1px solid transparent",
-                                                borderBottom:   isSel ? "1px solid var(--accent-blue)" : "1px solid var(--border-subtle)",
+                                                background:     isSel
+                                                    ? "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(59,130,246,0.08))"
+                                                    : "var(--bg-secondary)",
+                                                border:         `1px solid ${isSel ? "var(--accent-blue)" : "var(--border-color)"}`,
+                                                boxShadow:      isSel
+                                                    ? "0 0 0 1px rgba(59,130,246,0.2), var(--shadow-card)"
+                                                    : "var(--shadow-card)",
                                                 transition:     "all 0.12s ease",
-                                                gap:            8,
+                                                gap:            10,
                                             }}
-                                            onMouseEnter={e => { if (!isSel) { e.currentTarget.style.background = "var(--bg-tertiary)"; e.currentTarget.style.borderColor = "var(--border-color)"; } }}
-                                            onMouseLeave={e => { if (!isSel) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.border = "1px solid transparent"; e.currentTarget.style.borderBottom = "1px solid var(--border-subtle)"; } }}
+                                            onMouseEnter={e => {
+                                                if (!isSel) {
+                                                    e.currentTarget.style.background = "var(--bg-tertiary)";
+                                                    e.currentTarget.style.borderColor = "var(--accent-blue)";
+                                                }
+                                            }}
+                                            onMouseLeave={e => {
+                                                if (!isSel) {
+                                                    e.currentTarget.style.background = "var(--bg-secondary)";
+                                                    e.currentTarget.style.border = "1px solid var(--border-color)";
+                                                }
+                                            }}
                                         >
                                             {/* Logo + symbol + exchange */}
-                                            <StockLogo symbol={sym} size={26} borderRadius={6} />
+                                            <StockLogo symbol={sym} size={30} borderRadius={7} />
                                             <div style={{ flex: 1, minWidth: 0 }}>
                                                 <div style={{ fontSize: "0.82rem", fontWeight: 700, fontFamily: "var(--font-display)", color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                                                     {sym}
@@ -473,12 +592,12 @@ export default function Dashboard() {
                                             </div>
 
                                             {/* Price */}
-                                            <div style={{ textAlign: "right", flexShrink: 0 }}>
+                                            <div style={{ textAlign: "right", flexShrink: 0, minWidth: 92 }}>
                                                 <div style={{ fontSize: "0.82rem", fontWeight: 700, fontFamily: "var(--font-mono)", color: hasP ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)" }}>
                                                     {hasP ? `₹${ltp.toLocaleString("en-IN")}` : "--"}
                                                 </div>
-                                                <div style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: isUp ? "var(--accent-up)" : "var(--accent-down)" }}>
-                                                    {isUp ? "▲" : "▼"} {Math.abs(pct).toFixed(2)}%
+                                                <div style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: hasP ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)" }}>
+                                                    {hasP ? `${isUp ? "▲" : "▼"} ${Math.abs(pct).toFixed(2)}%` : "--"}
                                                 </div>
                                             </div>
 
@@ -495,10 +614,10 @@ export default function Dashboard() {
                                                 }}
                                                 title="Remove from watchlist"
                                                 style={{
-                                                    width:        24, height: 24,
+                                                    width:        26, height: 26,
                                                     borderRadius: 6,
                                                     border:       "1px solid var(--border-color)",
-                                                    background:   "transparent",
+                                                    background:   "var(--bg-secondary)",
                                                     color:        "var(--text-muted)",
                                                     cursor:       "pointer",
                                                     fontSize:     "0.65rem",
@@ -514,7 +633,7 @@ export default function Dashboard() {
                                                     e.currentTarget.style.color        = "var(--accent-down)";
                                                 }}
                                                 onMouseLeave={e => {
-                                                    e.currentTarget.style.background   = "transparent";
+                                                    e.currentTarget.style.background   = "var(--bg-secondary)";
                                                     e.currentTarget.style.borderColor  = "var(--border-color)";
                                                     e.currentTarget.style.color        = "var(--text-muted)";
                                                 }}
@@ -529,7 +648,7 @@ export default function Dashboard() {
                     </Panel>
 
                     {/* ── COL 2 — Active Instruments ───────────── */}
-                    <Panel>
+                    <Panel style={{ width: "100%", maxWidth: 520, justifySelf: "start" }}>
                         <SectionHeader
                             subtitle="Working List"
                             title="Instruments"

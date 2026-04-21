@@ -223,7 +223,11 @@ function MegaPanel({ section, onClose }) {
 }
 
 // ── Navbar ───────────────────────────────────────────────────────
-export default function Navbar() {
+export default function Navbar({
+    authMode = false,
+    authTab = null,
+    onAuthTabChange = () => {},
+}) {
     const { theme, toggleTheme } = useTheme();
     const [openKey, setOpenKey]  = useState(null);
     const navRef                 = useRef(null);
@@ -279,59 +283,79 @@ export default function Navbar() {
             </div>
 
             {/* ── Nav items ────────────────────────────── */}
-            <div style={{ display: "flex", alignItems: "center", gap: 2, position: "relative" }}>
-                {MENU_SECTIONS.map((section) => {
-                    const isOpen = openKey === section.key;
-                    return (
-                        <div key={section.key} style={{ position: "relative" }}>
-                            <button
-                                onClick={() => setOpenKey(isOpen ? null : section.key)}
-                                style={{
-                                    display:     "flex",
-                                    alignItems:  "center",
-                                    gap:         6,
-                                    padding:     "7px 12px",
-                                    borderRadius: 7,
-                                    border:      "none",
-                                    background:  isOpen ? "var(--bg-tertiary)" : "transparent",
-                                    color:       isOpen ? "var(--accent-blue)" : "var(--text-secondary)",
-                                    fontFamily:  "var(--font-body)",
-                                    fontSize:    "0.85rem",
-                                    fontWeight:  isOpen ? 600 : 500,
-                                    cursor:      "pointer",
-                                    transition:  "all 0.15s ease",
-                                }}
-                                onMouseEnter={e => {
-                                    if (!isOpen) e.currentTarget.style.background = "var(--bg-tertiary)";
-                                }}
-                                onMouseLeave={e => {
-                                    if (!isOpen) e.currentTarget.style.background = "transparent";
-                                }}
-                            >
-                                <span style={{ color: isOpen ? "var(--accent-blue)" : "var(--text-muted)" }}>
-                                    {section.icon}
-                                </span>
-                                {section.label}
-                                <ChevronDown
-                                    size={13}
+            {authMode ? (
+                <div style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 10,
+                    minWidth: 220,
+                }}>
+                    <span style={{
+                        fontSize: "0.72rem",
+                        letterSpacing: "0.07em",
+                        textTransform: "uppercase",
+                        fontWeight: 700,
+                        color: "var(--text-muted)",
+                    }}>
+                        Secure Access
+                    </span>
+                </div>
+            ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 2, position: "relative" }}>
+                    {MENU_SECTIONS.map((section) => {
+                        const isOpen = openKey === section.key;
+                        return (
+                            <div key={section.key} style={{ position: "relative" }}>
+                                <button
+                                    onClick={() => setOpenKey(isOpen ? null : section.key)}
                                     style={{
-                                        color:     "var(--text-muted)",
-                                        transform: isOpen ? "rotate(180deg)" : "rotate(0deg)",
-                                        transition:"transform 0.2s ease",
+                                        display:     "flex",
+                                        alignItems:  "center",
+                                        gap:         6,
+                                        padding:     "7px 12px",
+                                        borderRadius: 7,
+                                        border:      "none",
+                                        background:  isOpen ? "var(--bg-tertiary)" : "transparent",
+                                        color:       isOpen ? "var(--accent-blue)" : "var(--text-secondary)",
+                                        fontFamily:  "var(--font-body)",
+                                        fontSize:    "0.85rem",
+                                        fontWeight:  isOpen ? 600 : 500,
+                                        cursor:      "pointer",
+                                        transition:  "all 0.15s ease",
                                     }}
-                                />
-                            </button>
+                                    onMouseEnter={e => {
+                                        if (!isOpen) e.currentTarget.style.background = "var(--bg-tertiary)";
+                                    }}
+                                    onMouseLeave={e => {
+                                        if (!isOpen) e.currentTarget.style.background = "transparent";
+                                    }}
+                                >
+                                    <span style={{ color: isOpen ? "var(--accent-blue)" : "var(--text-muted)" }}>
+                                        {section.icon}
+                                    </span>
+                                    {section.label}
+                                    <ChevronDown
+                                        size={13}
+                                        style={{
+                                            color:     "var(--text-muted)",
+                                            transform: isOpen ? "rotate(180deg)" : "rotate(0deg)",
+                                            transition:"transform 0.2s ease",
+                                        }}
+                                    />
+                                </button>
 
-                            {isOpen && (
-                                <MegaPanel
-                                    section={section}
-                                    onClose={() => setOpenKey(null)}
-                                />
-                            )}
-                        </div>
-                    );
-                })}
-            </div>
+                                {isOpen && (
+                                    <MegaPanel
+                                        section={section}
+                                        onClose={() => setOpenKey(null)}
+                                    />
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
 
             {/* ── Right side ───────────────────────────── */}
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
@@ -371,32 +395,72 @@ export default function Navbar() {
                     {theme === "light" ? <Moon size={15} /> : <Sun size={15} />}
                 </button>
 
-                {/* CTA */}
-                <a
-                    href="/login"
-                    style={{
-                        display:     "flex", alignItems: "center", gap: 6,
-                        padding:     "8px 16px", borderRadius: 7,
-                        background:  "var(--accent-blue)",
-                        color:       "#fff",
-                        fontFamily:  "var(--font-body)",
-                        fontSize:    "0.85rem", fontWeight: 600,
-                        textDecoration: "none",
-                        boxShadow:   "var(--shadow-glow-blue)",
-                        transition:  "all 0.15s ease",
-                    }}
-                    onMouseEnter={e => {
-                        e.currentTarget.style.background  = "var(--accent-blue-hover)";
-                        e.currentTarget.style.boxShadow   = "0 0 24px var(--glow)";
-                    }}
-                    onMouseLeave={e => {
-                        e.currentTarget.style.background  = "var(--accent-blue)";
-                        e.currentTarget.style.boxShadow   = "var(--shadow-glow-blue)";
-                    }}
-                >
-                    Open Console
-                    <ArrowRight size={14} />
-                </a>
+                {authMode ? (
+                    <div style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        padding: 3,
+                        borderRadius: 9,
+                        border: "1px solid var(--border-color)",
+                        background: "var(--bg-tertiary)",
+                    }}>
+                        {[
+                            { key: "login", label: "Login" },
+                            { key: "signup", label: "Sign Up" },
+                        ].map((item) => {
+                            const isActive = authTab === item.key;
+                            return (
+                                <button
+                                    type="button"
+                                    key={item.key}
+                                    onClick={() => onAuthTabChange(item.key)}
+                                    style={{
+                                        border: "none",
+                                        cursor: "pointer",
+                                        padding: "7px 14px",
+                                        borderRadius: 7,
+                                        fontSize: "0.82rem",
+                                        fontWeight: 600,
+                                        fontFamily: "var(--font-body)",
+                                        color: isActive ? "#ffffff" : "var(--text-secondary)",
+                                        background: isActive ? "var(--accent-blue)" : "transparent",
+                                        boxShadow: isActive ? "var(--shadow-glow-blue)" : "none",
+                                        transition: "all 0.15s ease",
+                                    }}
+                                >
+                                    {item.label}
+                                </button>
+                            );
+                        })}
+                    </div>
+                ) : (
+                    <a
+                        href="/login"
+                        style={{
+                            display:     "flex", alignItems: "center", gap: 6,
+                            padding:     "8px 16px", borderRadius: 7,
+                            background:  "var(--accent-blue)",
+                            color:       "#fff",
+                            fontFamily:  "var(--font-body)",
+                            fontSize:    "0.85rem", fontWeight: 600,
+                            textDecoration: "none",
+                            boxShadow:   "var(--shadow-glow-blue)",
+                            transition:  "all 0.15s ease",
+                        }}
+                        onMouseEnter={e => {
+                            e.currentTarget.style.background  = "var(--accent-blue-hover)";
+                            e.currentTarget.style.boxShadow   = "0 0 24px var(--glow)";
+                        }}
+                        onMouseLeave={e => {
+                            e.currentTarget.style.background  = "var(--accent-blue)";
+                            e.currentTarget.style.boxShadow   = "var(--shadow-glow-blue)";
+                        }}
+                    >
+                        Open Console
+                        <ArrowRight size={14} />
+                    </a>
+                )}
             </div>
 
             {/* Drop-in animation */}

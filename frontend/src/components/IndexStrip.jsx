@@ -48,7 +48,7 @@ export default function IndexStrip({ prices, indexData }) {
                         {/* Name */}
                         <div>
                             <div style={{
-                                fontSize:   "0.8rem",
+                                fontSize:   "0.92rem",
                                 fontWeight: 600,
                                 color:      "var(--text-primary)",
                                 fontFamily: "var(--font-body)",
@@ -56,7 +56,7 @@ export default function IndexStrip({ prices, indexData }) {
                                 {idx.display}
                             </div>
                             <div style={{
-                                fontSize:   "0.65rem",
+                                fontSize:   "0.74rem",
                                 color:      "var(--text-muted)",
                                 fontFamily: "var(--font-mono)",
                                 marginTop:  2,

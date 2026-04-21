@@ -40,6 +40,17 @@ live_workers  = {}   # symbol → thread
 
 
 # ── Redis helpers ────────────────────────────────────────────────
+def is_index_instrument_key(instrument_key: str) -> bool:
+    k = str(instrument_key or "").upper()
+    return k.startswith("NSE_INDEX|") or k.startswith("BSE_INDEX|")
+
+
+def daily_tick_storage_key(instrument_key: str, day_value: date | None = None) -> str:
+    day_iso = (day_value or date.today()).isoformat()
+    bucket = "index" if is_index_instrument_key(instrument_key) else "instrument"
+    return f"ticks:{bucket}:{day_iso}:{instrument_key}"
+
+
 def redis_store_candle(symbol: str, timeframe: str, candle: dict):
     ts       = int(candle["ts"])
     dt       = datetime.fromtimestamp(ts / 1000, IST)
@@ -180,8 +191,12 @@ def candle_worker(symbol: str, feed_key: str):
     print(f"[CANDLE] Engine started for {symbol} ({today})")
 
     # Backfill from stored daily ticks
-    tick_key   = f"ticks:{today.isoformat()}:{feed_key}"
-    raw_items  = redis_client.lrange(tick_key, 0, -1)
+    tick_key = daily_tick_storage_key(feed_key, today)
+    raw_items = redis_client.lrange(tick_key, 0, -1)
+    if not raw_items:
+        # Backward-compatibility: support old mixed namespace key.
+        legacy_tick_key = f"ticks:{today.isoformat()}:{feed_key}"
+        raw_items = redis_client.lrange(legacy_tick_key, 0, -1)
     backfill   = []
     for raw in raw_items:
         try:
