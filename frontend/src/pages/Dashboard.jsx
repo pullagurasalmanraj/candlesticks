@@ -10,6 +10,19 @@ import { normalizeKey } from "../utils/instrumentUtils";
 import { getLtpForInstrument } from "../utils/priceUtils";
 import { formatYMD } from "../utils/dateUtils";
 import { startOfDay } from "../utils/dateUtils";
+import {
+    DEFAULT_WATCHLIST_CAP,
+    WATCHLIST_CAP_KEYS,
+    WATCHLIST_CAP_OPTIONS,
+    WATCHLIST_LEGACY_KEY,
+    WATCHLIST_STORAGE_KEY,
+    ensureWatchlistsShape,
+    findWatchlistCapBySymbol,
+    flattenWatchlistsByCap,
+    getWatchlistCapLabel,
+    normalizeSymbol,
+    readStoredWatchlistsByCap,
+} from "../utils/watchlistUtils";
 
 import SearchBar            from "../components/SearchBar";
 import WebSocketStatus      from "../components/WebSocketStatus";
@@ -112,13 +125,25 @@ function normalizeIndexSnapshot(row) {
     };
 }
 
+function readStoredArray(key) {
+    try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return [];
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
 export default function Dashboard() {
     const { theme } = useTheme();
 
     // ── State ────────────────────────────────────────────────────
-    const [selectedInstruments,   setSelectedInstruments]   = useState([]);
+    const [selectedInstruments,   setSelectedInstruments]   = useState(() => readStoredArray("selectedInstruments"));
     const [isApplyingIndicators,  setIsApplyingIndicators]  = useState(false);
-    const [watchlist,             setWatchlist]             = useState([]);
+    const [watchlistsByCap,       setWatchlistsByCap]       = useState(() => readStoredWatchlistsByCap());
+    const [activeWatchlistCap,    setActiveWatchlistCap]    = useState(DEFAULT_WATCHLIST_CAP);
     const [selectedSymbol,        setSelectedSymbol]        = useState("");
     const [selectedInstrument,    setSelectedInstrument]    = useState(null);
     const [activeSubscriptions,   setActiveSubscriptions]   = useState({});
@@ -141,6 +166,20 @@ export default function Dashboard() {
         search, setSearch, debouncedSearch,
         instruments, showResults, setShowResults
     } = useInstrumentSearch();
+    const watchlist = useMemo(() => flattenWatchlistsByCap(watchlistsByCap), [watchlistsByCap]);
+    const activeWatchlist = watchlistsByCap[activeWatchlistCap] || [];
+    const activeWatchlistLabel = useMemo(
+        () => getWatchlistCapLabel(activeWatchlistCap),
+        [activeWatchlistCap]
+    );
+    const watchlistCountByCap = useMemo(() => {
+        const safe = ensureWatchlistsShape(watchlistsByCap);
+        const counts = {};
+        WATCHLIST_CAP_KEYS.forEach((cap) => {
+            counts[cap] = safe[cap].length;
+        });
+        return counts;
+    }, [watchlistsByCap]);
 
     // ── Init ─────────────────────────────────────────────────────
     useEffect(() => { setIndexData(INDEX_DEFAULTS); }, []);
@@ -248,25 +287,16 @@ export default function Dashboard() {
 
     // ── Persist ──────────────────────────────────────────────────
     useEffect(() => {
-        try {
-            const saved = localStorage.getItem("watchlist");
-            if (saved) setWatchlist(JSON.parse(saved));
-        } catch { setWatchlist([]); }
-    }, []);
-    useEffect(() => {
-        try {
-            const saved = localStorage.getItem("selectedInstruments");
-            if (saved) setSelectedInstruments(JSON.parse(saved));
-        } catch { setSelectedInstruments([]); }
-    }, []);
-    useEffect(() => {
         try { localStorage.setItem("selectedInstruments", JSON.stringify(selectedInstruments)); }
         catch { }
     }, [selectedInstruments]);
     useEffect(() => {
-        try { localStorage.setItem("watchlist", JSON.stringify(watchlist)); }
+        try {
+            localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlistsByCap));
+            localStorage.setItem(WATCHLIST_LEGACY_KEY, JSON.stringify(watchlist));
+        }
         catch { }
-    }, [watchlist]);
+    }, [watchlistsByCap, watchlist]);
 
     // ── Load timeframes ──────────────────────────────────────────
     useEffect(() => {
@@ -304,11 +334,34 @@ export default function Dashboard() {
     }, [activeSubscriptions]);
 
     const toggleWatchlist = useCallback((inst) => {
-        const sym    = (inst.symbol || "").toUpperCase().trim();
-        const exists = watchlist.find((w) => w.symbol === sym);
-        if (exists) setWatchlist((p) => p.filter((w) => w.symbol !== sym));
-        else        setWatchlist((p) => [...p, { ...inst, symbol: sym }]);
-    }, [watchlist]);
+        const sym = normalizeSymbol(inst?.symbol);
+        if (!sym) return;
+
+        setWatchlistsByCap((prevRaw) => {
+            const prev = ensureWatchlistsShape(prevRaw);
+            const next = {};
+            WATCHLIST_CAP_KEYS.forEach((cap) => {
+                next[cap] = [...prev[cap]];
+            });
+
+            const existingCap = findWatchlistCapBySymbol(prev, sym);
+            if (existingCap === activeWatchlistCap) {
+                next[existingCap] = next[existingCap].filter((item) => item.symbol !== sym);
+                return next;
+            }
+
+            if (existingCap) {
+                next[existingCap] = next[existingCap].filter((item) => item.symbol !== sym);
+            }
+
+            next[activeWatchlistCap].push({
+                ...inst,
+                symbol: sym,
+                cap: activeWatchlistCap,
+            });
+            return next;
+        });
+    }, [activeWatchlistCap]);
 
     const applyIndicators = async () => {
         if (!selectedSymbol || !timeframe) return setToast("Select a symbol and timeframe first.");
@@ -473,6 +526,7 @@ export default function Dashboard() {
                             debouncedSearch={debouncedSearch}
                             instruments={instruments}
                             watchlist={watchlist}
+                            activeWatchlistCapLabel={activeWatchlistLabel}
                             toggleWatchlist={toggleWatchlist}
                             setSelectedSymbol={setSelectedSymbol}
                             setSelectedInstrument={setSelectedInstrument}
@@ -515,11 +569,41 @@ export default function Dashboard() {
                                     borderRadius: 6,
                                     padding:      "2px 8px",
                                 }}>
-                                    {watchlist.length} symbols
+                                    {activeWatchlist.length} shown / {watchlist.length} total
                                 </span>
                             }
                         />
-                        {watchlist.length === 0 ? (
+                        <div style={{
+                            display: "flex",
+                            gap: 6,
+                            marginBottom: 10,
+                            flexWrap: "wrap",
+                        }}>
+                            {WATCHLIST_CAP_OPTIONS.map((capItem) => {
+                                const isActive = activeWatchlistCap === capItem.key;
+                                return (
+                                    <button
+                                        key={capItem.key}
+                                        onClick={() => setActiveWatchlistCap(capItem.key)}
+                                        style={{
+                                            borderRadius: 999,
+                                            border: `1px solid ${isActive ? "var(--accent-blue)" : "var(--border-color)"}`,
+                                            background: isActive ? "rgba(59,130,246,0.15)" : "var(--bg-secondary)",
+                                            color: isActive ? "var(--accent-blue)" : "var(--text-muted)",
+                                            fontSize: "0.68rem",
+                                            fontFamily: "var(--font-body)",
+                                            fontWeight: 600,
+                                            padding: "5px 9px",
+                                            cursor: "pointer",
+                                        }}
+                                        title={`Show ${capItem.label} list`}
+                                    >
+                                        {capItem.label} ({watchlistCountByCap[capItem.key] || 0})
+                                    </button>
+                                );
+                            })}
+                        </div>
+                        {activeWatchlist.length === 0 ? (
                             <div style={{
                                 display:        "flex",
                                 flexDirection:  "column",
@@ -534,11 +618,11 @@ export default function Dashboard() {
                                 fontFamily:     "var(--font-body)",
                             }}>
                                 <span style={{ fontSize: "1.4rem" }}>☆</span>
-                                Star symbols from search to add
+                                No symbols in {activeWatchlistLabel}
                             </div>
                         ) : (
                             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                                {watchlist.map((w) => {
+                                {activeWatchlist.map((w) => {
                                     const sym   = w.symbol?.toUpperCase();
                                     const live  = prices?.[sym] || {};
                                     const ltp   = live.ltp;

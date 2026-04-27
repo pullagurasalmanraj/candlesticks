@@ -52,6 +52,7 @@ indicators_bp = Blueprint("indicators", __name__)
 
 MIN_CANDLES_INTRADAY = 200
 MIN_CANDLES_DAILY    = 60
+INDICATOR_WARMUP_BARS = 700
 
 
 # ================================================================
@@ -370,6 +371,20 @@ def _build_rows(symbol, exchange, timeframe, ts_list,
 
 
 # ── Daily indicators ─────────────────────────────────────────────
+def _burn_in_slice(df: pd.DataFrame, *arrays, warmup_bars: int = INDICATOR_WARMUP_BARS):
+    """
+    Compute indicators on full history, then drop warmup rows.
+    This keeps only converged indicator values for downstream consumers.
+    """
+    if warmup_bars <= 0:
+        return df.reset_index(drop=True), tuple(np.asarray(a) for a in arrays)
+
+    keep = slice(warmup_bars, None)
+    df_out = df.iloc[keep].copy().reset_index(drop=True)
+    arr_out = tuple(np.asarray(a)[keep] for a in arrays)
+    return df_out, arr_out
+
+
 @indicators_bp.route("/api/indicators/daily", methods=["GET"])
 def api_indicators_daily():
     try:
@@ -401,6 +416,15 @@ def api_indicators_daily():
         if len(df) < MIN_CANDLES_DAILY:
             return jsonify({
                 "error": f"Not enough candles — need {MIN_CANDLES_DAILY}, got {len(df)}."
+            }), 400
+        if len(df) <= INDICATOR_WARMUP_BARS:
+            return jsonify({
+                "error": (
+                    f"Not enough candles for warmup trim — need more than "
+                    f"{INDICATOR_WARMUP_BARS}, got {len(df)}. "
+                    f"Fetch at least {INDICATOR_WARMUP_BARS} extra bars before your "
+                    f"analysis start date."
+                )
             }), 400
 
         # Extract numpy arrays — single allocation, all subsequent ops are numpy
@@ -448,6 +472,27 @@ def api_indicators_daily():
         # Trading decisions belong in strategy.py, not here.
         st_sig_str = np.where(c > st_val, "UP", "DOWN")
 
+        # Burn-in trim: compute on full history, then discard warmup rows.
+        df, (
+            o, h, l, c, v,
+            ema9, ema21, ema50, ema200,
+            st_val, vwap,
+            rsi, macd_l, macd_s, macd_h, atr,
+            bb_mid, bb_up, bb_lo, tr,
+            vsma20, vsma200, vratio, obv,
+            st_sig_str,
+        ) = _burn_in_slice(
+            df,
+            o, h, l, c, v,
+            ema9, ema21, ema50, ema200,
+            st_val, vwap,
+            rsi, macd_l, macd_s, macd_h, atr,
+            bb_mid, bb_up, bb_lo, tr,
+            vsma20, vsma200, vratio, obv,
+            st_sig_str,
+            warmup_bars=INDICATOR_WARMUP_BARS,
+        )
+
         # ── Build rows (vectorised) ─────────────────────────────
         ts_list = [pd.Timestamp(t).to_pydatetime() for t in df["ts"].values]
         now     = datetime.now(timezone.utc)
@@ -468,8 +513,17 @@ def api_indicators_daily():
             now,
         )
 
+        cutoff_ts = ts_list[0]
         with get_db_conn() as conn:
             with conn.cursor() as cur:
+                # Purge stale pre-warmup rows from previous runs.
+                cur.execute(
+                    """
+                    DELETE FROM indicators
+                    WHERE symbol=%s AND exchange=%s AND timeframe=%s AND ts < %s
+                    """,
+                    (symbol, exchange, "1D", cutoff_ts),
+                )
                 execute_values(cur, _UPSERT_SQL, rows)
 
         return jsonify({"status": "SUCCESS", "rows": len(rows)})
@@ -521,6 +575,15 @@ def api_indicators_intraday():
             return jsonify({
                 "error": f"Not enough candles — need {MIN_CANDLES_INTRADAY}, "
                          f"got {len(df)}. Fetch more history for {symbol} ({timeframe})."
+            }), 400
+        if len(df) <= INDICATOR_WARMUP_BARS:
+            return jsonify({
+                "error": (
+                    f"Not enough candles for warmup trim — need more than "
+                    f"{INDICATOR_WARMUP_BARS}, got {len(df)}. "
+                    f"Fetch at least {INDICATOR_WARMUP_BARS} extra bars before your "
+                    f"analysis start date."
+                )
             }), 400
 
         # ── IST conversion ───────────────────────────────────────
@@ -590,6 +653,31 @@ def api_indicators_intraday():
         # strategy.py reads those and makes the actual trading decisions.
         st_sig_str = np.where(c > st_val, "UP", "DOWN")
 
+        # Burn-in trim: compute on full history, then discard warmup rows.
+        df, (
+            o, h, l, c, v,
+            ema9, ema21, ema50, ema200,
+            rsi, macd_l, macd_s, macd_h,
+            atr, tr,
+            bb_mid, bb_up, bb_lo,
+            st_val, obv,
+            vwap, vsma20, vsma200, vratio,
+            orb_h, orb_l, orb_brk, orb_brd,
+            st_sig_str,
+        ) = _burn_in_slice(
+            df,
+            o, h, l, c, v,
+            ema9, ema21, ema50, ema200,
+            rsi, macd_l, macd_s, macd_h,
+            atr, tr,
+            bb_mid, bb_up, bb_lo,
+            st_val, obv,
+            vwap, vsma20, vsma200, vratio,
+            orb_h, orb_l, orb_brk, orb_brd,
+            st_sig_str,
+            warmup_bars=INDICATOR_WARMUP_BARS,
+        )
+
         # ── Build rows and upsert ────────────────────────────────
         ts_list = [pd.Timestamp(t).to_pydatetime() for t in df["ts"].values]
         now     = datetime.now(timezone.utc)
@@ -607,8 +695,17 @@ def api_indicators_intraday():
             now,
         )
 
+        cutoff_ts = ts_list[0]
         with get_db_conn() as conn:
             with conn.cursor() as cur:
+                # Purge stale pre-warmup rows from previous runs.
+                cur.execute(
+                    """
+                    DELETE FROM indicators
+                    WHERE symbol=%s AND exchange=%s AND timeframe=%s AND ts < %s
+                    """,
+                    (symbol, exchange, timeframe, cutoff_ts),
+                )
                 execute_values(cur, _UPSERT_SQL, rows)
 
         return jsonify({"status": "SUCCESS", "rows": len(rows)})

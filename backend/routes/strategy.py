@@ -2973,6 +2973,18 @@ def offline_label_market_context():
         #  15m : max(10,  8,  2,  6,  20) = 20  bars = 300 min
         WARMUP = max(ROLL_20, 4 * SWING_N, OBV_WINDOW, roll_slope_slow, roll_vol_slow)
         df = df.iloc[WARMUP:].reset_index(drop=True)
+        if df.empty:
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "No rows left after warmup trimming. "
+                            "Fetch more indicator history and retry."
+                        )
+                    }
+                ),
+                400,
+            )
 
         # Now fillna is safe --- only genuine missing values remain
         for c in FEATURE_COLS:
@@ -2989,6 +3001,7 @@ def offline_label_market_context():
         df["tf_role"] = tf_role
         market_rows = _build_market_rows(df, symbol, exchange, timeframe, now)
         rule_rows = _build_rule_rows(df, symbol, exchange, timeframe, now)
+        label_cutoff_ts = pd.Timestamp(df["ts"].iloc[0]).to_pydatetime()
 
         # ------ IMPROVEMENT 3: chunked inserts ---------------------------------------------------------------------
         MARKET_SQL = """
@@ -3037,6 +3050,21 @@ def offline_label_market_context():
 
         with get_db_conn() as conn:
             with conn.cursor() as cur:
+                # Discard stale warmup-era labels from earlier runs.
+                cur.execute(
+                    """
+                    DELETE FROM market_context
+                    WHERE symbol=%s AND exchange=%s AND timeframe=%s AND ts < %s
+                    """,
+                    (symbol, exchange, timeframe, label_cutoff_ts),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM rule_evaluations
+                    WHERE symbol=%s AND exchange=%s AND timeframe=%s AND ts < %s
+                    """,
+                    (symbol, exchange, timeframe, label_cutoff_ts),
+                )
                 _chunk_execute(cur, MARKET_SQL, market_rows)
                 _chunk_execute(cur, RULE_SQL, rule_rows)
 

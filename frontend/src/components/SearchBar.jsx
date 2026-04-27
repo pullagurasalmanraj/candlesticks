@@ -29,6 +29,7 @@ const SearchBar = memo(function SearchBar({
     debouncedSearch,
     instruments,
     watchlist,
+    activeWatchlistCapLabel = "Watchlist",
     toggleWatchlist,
     setSelectedSymbol,
     setSelectedInstrument,
@@ -227,6 +228,7 @@ const SearchBar = memo(function SearchBar({
 
                                         <button
                                             onClick={(e) => { e.stopPropagation(); toggleWatchlist(inst); }}
+                                            title={`Toggle in ${activeWatchlistCapLabel}`}
                                             style={{
                                                 fontSize:     "0.7rem",
                                                 padding:      "2px 8px",
