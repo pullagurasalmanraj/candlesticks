@@ -123,21 +123,7 @@ export default function useWebSocketPrices(_instrumentByKey) {
         }
     }, []);
 
-    const sendSavedSubscriptions = useCallback((ws, source) => {
-        const savedSubs = JSON.parse(localStorage.getItem("activeSubscriptions") || "{}");
-        const keys = Object.keys(savedSubs || {});
-
-        if (keys.length === 0) return;
-
-        ws.send(
-            JSON.stringify({
-                subscribe: keys,
-                source,
-            })
-        );
-    }, []);
-
-    const openSocket = useCallback((source = "restore") => {
+    const openSocket = useCallback(() => {
         if (closedRef.current) return;
 
         const current = wsRef.current;
@@ -159,7 +145,6 @@ export default function useWebSocketPrices(_instrumentByKey) {
         ws.onopen = () => {
             setIsConnected(true);
             setIsLoading(false);
-            sendSavedSubscriptions(ws, source);
         };
 
         ws.onmessage = handleMessage;
@@ -169,7 +154,7 @@ export default function useWebSocketPrices(_instrumentByKey) {
 
             if (!closedRef.current) {
                 reconnectTimerRef.current = setTimeout(() => {
-                    openSocket("reconnect");
+                    openSocket();
                 }, 2000);
             }
         };
@@ -177,11 +162,11 @@ export default function useWebSocketPrices(_instrumentByKey) {
         ws.onerror = () => {
             console.warn("WS temporary error");
         };
-    }, [handleMessage, sendSavedSubscriptions]);
+    }, [handleMessage]);
 
     useEffect(() => {
         closedRef.current = false;
-        openSocket("restore");
+        openSocket();
 
         return () => {
             closedRef.current = true;
@@ -195,7 +180,7 @@ export default function useWebSocketPrices(_instrumentByKey) {
 
     const connectWebSocket = useCallback(() => {
         closedRef.current = false;
-        openSocket("manual");
+        openSocket();
     }, [openSocket]);
 
     const disconnectWebSocket = useCallback(() => {

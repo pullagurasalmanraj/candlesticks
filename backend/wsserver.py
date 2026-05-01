@@ -94,6 +94,12 @@ INDEX_KEY_ALIASES = {
     "NEXT50": "NSE_INDEX|Nifty Next 50",
     "SENSEX": "BSE_INDEX|SENSEX",
 }
+DEFAULT_INDEX_SUBSCRIPTIONS = [
+    "NSE_INDEX|Nifty 50",
+    "NSE_INDEX|Nifty Bank",
+    "BSE_INDEX|SENSEX",
+    "NSE_INDEX|Nifty Next 50",
+]
 
 
 def canonicalize_instrument_key(key: str) -> str:
@@ -112,6 +118,69 @@ def canonicalize_instrument_keys(keys) -> list[str]:
             seen.add(norm)
             out.append(norm)
     return out
+
+
+def extract_instrument_keys(payload: dict, action: str = "") -> list[str]:
+    """
+    Accept both single and multi-key payload formats from Redis/WS clients.
+    Supported keys:
+      - instrument_key / instrumentKey / symbol
+      - instrument_keys / instrumentKeys
+      - subscribe / unsubscribe
+    """
+    raw_keys = []
+
+    for field in ("instrument_keys", "instrumentKeys", "subscribe", "unsubscribe"):
+        val = payload.get(field)
+        if isinstance(val, list):
+            raw_keys.extend(val)
+        elif isinstance(val, str) and val.strip():
+            raw_keys.append(val)
+
+    if not raw_keys:
+        single = (
+            payload.get("instrument_key")
+            or payload.get("instrumentKey")
+            or payload.get("symbol")
+        )
+        if single:
+            raw_keys.append(single)
+
+    return canonicalize_instrument_keys(raw_keys)
+
+
+def subscribe_keys(keys: list[str]) -> list[str]:
+    new_keys = []
+    for key in keys:
+        if key in CURRENT_SUBS:
+            continue
+        CURRENT_SUBS.add(key)
+        redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, key, default=0)
+        new_keys.append(key)
+    return new_keys
+
+
+def unsubscribe_keys(keys: list[str]) -> list[str]:
+    removed = []
+    for key in keys:
+        if key in CURRENT_SUBS:
+            CURRENT_SUBS.discard(key)
+            removed.append(key)
+        redis_call("srem", REDIS_ACTIVE_SUBS_KEY, key, default=0)
+    return removed
+
+
+def replace_non_index_subscriptions(next_keys: list[str]) -> list[str]:
+    """
+    Remove existing non-index subscriptions not present in next_keys.
+    Useful when caller wants an explicit "replace" behavior.
+    """
+    keep = set(next_keys)
+    to_remove = [
+        key for key in list(CURRENT_SUBS)
+        if (not is_index_instrument_key(key)) and key not in keep
+    ]
+    return unsubscribe_keys(to_remove)
 
 
 def is_index_instrument_key(instrument_key: str) -> bool:
@@ -425,32 +494,34 @@ def redis_subscribe_thread(loop, subscription_queue):
 
                 payload = json.loads(raw)
                 action = (payload.get("action") or "subscribe").lower()
-                ik = (
-                    payload.get("instrument_key")
-                    or payload.get("instrumentKey")
-                    or payload.get("symbol")
-                )
-                ik = canonicalize_instrument_key(ik)
-                if not ik:
+                keys = extract_instrument_keys(payload, action=action)
+                if not keys:
                     continue
 
-                log(f"Redis -> action='{action}' ik='{ik}'")
+                log(f"Redis -> action='{action}' keys={keys}")
 
                 if action in ("unsub", "unsubscribe"):
-                    CURRENT_SUBS.discard(ik)
-                    redis_call("srem", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
+                    unsubscribe_keys(keys)
                     asyncio.run_coroutine_threadsafe(
-                        subscription_queue.put({"instrumentKeys": [ik], "method": "unsub"}),
+                        subscription_queue.put({"instrumentKeys": keys, "method": "unsub"}),
                         loop,
                     )
                 else:
-                    if ik in CURRENT_SUBS:
-                        log(f"Already subscribed: {ik}")
+                    replace = bool(payload.get("replace"))
+                    if replace:
+                        removed = replace_non_index_subscriptions(keys)
+                        if removed:
+                            asyncio.run_coroutine_threadsafe(
+                                subscription_queue.put({"instrumentKeys": removed, "method": "unsub"}),
+                                loop,
+                            )
+
+                    new_keys = subscribe_keys(keys)
+                    if not new_keys:
+                        log(f"Already subscribed keys skipped: {keys}")
                         continue
-                    CURRENT_SUBS.add(ik)
-                    redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
                     asyncio.run_coroutine_threadsafe(
-                        subscription_queue.put({"instrumentKeys": [ik], "method": "sub", "mode": "full"}),
+                        subscription_queue.put({"instrumentKeys": new_keys, "method": "sub", "mode": "full"}),
                         loop,
                     )
         except redis.exceptions.RedisError as exc:
@@ -480,15 +551,14 @@ def redis_unsubscribe_thread(loop, subscription_queue):
                     continue
 
                 payload = json.loads(raw)
-                ik = canonicalize_instrument_key(payload.get("instrument_key"))
-                if not ik:
+                keys = extract_instrument_keys(payload, action="unsubscribe")
+                if not keys:
                     continue
 
-                log(f"Redis unsub -> '{ik}'")
-                CURRENT_SUBS.discard(ik)
-                redis_call("srem", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
+                log(f"Redis unsub -> {keys}")
+                unsubscribe_keys(keys)
                 asyncio.run_coroutine_threadsafe(
-                    subscription_queue.put({"instrumentKeys": [ik], "method": "unsub"}),
+                    subscription_queue.put({"instrumentKeys": keys, "method": "unsub"}),
                     loop,
                 )
         except redis.exceptions.RedisError as exc:
@@ -506,7 +576,14 @@ def redis_unsubscribe_thread(loop, subscription_queue):
 
 async def ws_client_handler(websocket):
     CONNECTED_CLIENTS.add(websocket)
-    log(f"🟢 WS client connected ({len(CONNECTED_CLIENTS)})")
+    log(f"WS client connected ({len(CONNECTED_CLIENTS)})")
+
+    # Index strip must always be live on connect; instruments remain manual.
+    new_index_keys = subscribe_keys(canonicalize_instrument_keys(DEFAULT_INDEX_SUBSCRIPTIONS))
+    if new_index_keys:
+        await SUBSCRIBE_QUEUE.put({"instrumentKeys": new_index_keys, "method": "sub", "mode": "full"})
+        log("Auto-subscribed index strip keys:", new_index_keys)
+
     try:
         async for msg in websocket:
             try:
@@ -519,50 +596,60 @@ async def ws_client_handler(websocket):
                 if "subscribe" in parsed:
                     keys = canonicalize_instrument_keys(parsed["subscribe"] or [])
                     if keys:
-                        for k in keys:
-                            CURRENT_SUBS.add(k)
-                            redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, k, default=0)
-                        asyncio.create_task(
-                            SUBSCRIBE_QUEUE.put({"instrumentKeys": keys, "method": "sub", "mode": "full"})
-                        )
-                        log("📡 WS client subscribe:", keys)
+                        replace = bool(parsed.get("replace"))
+                        if replace:
+                            removed = replace_non_index_subscriptions(keys)
+                            if removed:
+                                asyncio.create_task(
+                                    SUBSCRIBE_QUEUE.put({"instrumentKeys": removed, "method": "unsub"})
+                                )
+                        new_keys = subscribe_keys(keys)
+                        if new_keys:
+                            asyncio.create_task(
+                                SUBSCRIBE_QUEUE.put({"instrumentKeys": new_keys, "method": "sub", "mode": "full"})
+                            )
+                        log("WS client subscribe:", keys)
 
                 if "unsubscribe" in parsed:
                     keys = canonicalize_instrument_keys(parsed["unsubscribe"] or [])
                     if keys:
-                        for k in keys:
-                            CURRENT_SUBS.discard(k)
-                            redis_call("srem", REDIS_ACTIVE_SUBS_KEY, k, default=0)
+                        unsubscribe_keys(keys)
                         asyncio.create_task(
                             SUBSCRIBE_QUEUE.put({"instrumentKeys": keys, "method": "unsub"})
                         )
-                        log("❌ WS client unsubscribe:", keys)
+                        log("WS client unsubscribe:", keys)
 
-                if parsed.get("action") and parsed.get("instrument_key"):
+                if parsed.get("action"):
                     act = parsed["action"].lower()
-                    ik = canonicalize_instrument_key(parsed["instrument_key"])
-                    if not ik:
+                    keys = extract_instrument_keys(parsed, action=act)
+                    if not keys:
                         continue
+
                     if act in ("unsub", "unsubscribe"):
-                        CURRENT_SUBS.discard(ik)
-                        redis_call("srem", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
+                        unsubscribe_keys(keys)
                         asyncio.create_task(
-                            SUBSCRIBE_QUEUE.put({"instrumentKeys": [ik], "method": "unsub"})
+                            SUBSCRIBE_QUEUE.put({"instrumentKeys": keys, "method": "unsub"})
                         )
                     else:
-                        CURRENT_SUBS.add(ik)
-                        redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, ik, default=0)
-                        asyncio.create_task(
-                            SUBSCRIBE_QUEUE.put({"instrumentKeys": [ik], "method": "sub", "mode": "full"})
-                        )
+                        replace = bool(parsed.get("replace"))
+                        if replace:
+                            removed = replace_non_index_subscriptions(keys)
+                            if removed:
+                                asyncio.create_task(
+                                    SUBSCRIBE_QUEUE.put({"instrumentKeys": removed, "method": "unsub"})
+                                )
+                        new_keys = subscribe_keys(keys)
+                        if new_keys:
+                            asyncio.create_task(
+                                SUBSCRIBE_QUEUE.put({"instrumentKeys": new_keys, "method": "sub", "mode": "full"})
+                            )
             except Exception:
                 traceback.print_exc()
     except websockets.ConnectionClosed:
         pass
     finally:
         CONNECTED_CLIENTS.discard(websocket)
-        log(f"🔴 WS client disconnected ({len(CONNECTED_CLIENTS)})")
-
+        log(f"WS client disconnected ({len(CONNECTED_CLIENTS)})")
 
 # ── Main ──────────────────────────────────────────────────────────
 async def main_async():
@@ -593,5 +680,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 

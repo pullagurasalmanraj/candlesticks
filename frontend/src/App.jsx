@@ -118,11 +118,11 @@ function Sidebar({ collapsed, setCollapsed }) {
         borderRadius:   8,
         fontSize:       "0.875rem",
         fontFamily:     "var(--font-body)",
-        fontWeight:     isActive ? 600 : 400,
+        fontWeight:     isActive ? 700 : 600,
         textDecoration: "none",
         transition:     "all 0.15s ease",
         background:     isActive ? "var(--accent-blue)"        : "transparent",
-        color:          isActive ? "#ffffff"                   : "var(--text-secondary)",
+        color:          isActive ? "#ffffff"                   : "var(--text-primary)",
         boxShadow:      isActive ? "var(--shadow-glow-blue)"   : "none",
     });
 

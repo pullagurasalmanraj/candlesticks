@@ -22,8 +22,9 @@ const InstrumentCard = memo(function InstrumentCard({
     const isUp       = hasPrice && change >= 0;
     const isSelected = selectedSymbol === sym;
     const isRunning  = !!activeSubscriptions[key];
+    const canShowLive = isRunning && hasPrice;
 
-    const priceColor = !hasPrice
+    const priceColor = !canShowLive
         ? "var(--text-muted)"
         : isUp ? "var(--accent-up)" : "var(--accent-down)";
 
@@ -135,19 +136,18 @@ const InstrumentCard = memo(function InstrumentCard({
                     fontVariantNumeric: "tabular-nums",
                     textRendering: "geometricPrecision",
                 }}>
-                    {hasPrice ? `₹${ltp.toLocaleString("en-IN")}` : "--"}
+                    {canShowLive ? `₹${ltp.toLocaleString("en-IN")}` : "--"}
                 </div>
                 <div style={{
                     fontSize:   "10.5px",
                     fontFamily: "var(--font-mono)",
-                    color:      hasPrice ? priceColor : "var(--text-muted)",
+                    color:      canShowLive ? priceColor : "var(--text-muted)",
                     marginTop:  2,
-                    opacity:    hasPrice ? 1 : 0.5,
+                    opacity:    canShowLive ? 1 : 0.5,
                     fontVariantNumeric: "tabular-nums",
                     textRendering: "geometricPrecision",
                 }}>
-                    {hasPrice
-                        ? `${isUp ? "▲" : "▼"} ${Math.abs(change).toFixed(2)} (${Math.abs(pct).toFixed(2)}%)`
+                    {canShowLive ? `${isUp ? "▲" : "▼"} ${Math.abs(change).toFixed(2)} (${Math.abs(pct).toFixed(2)}%)`
                         : "-- (--%)"}
                 </div>
             </div>
@@ -193,15 +193,22 @@ const InstrumentCard = memo(function InstrumentCard({
 
                 {/* Remove */}
                 <button
-                    onClick={() =>
+                    onClick={async () => {
+                        if (isRunning) {
+                            try {
+                                await subscribeToStock(item); // toggles running script off
+                            } catch {
+                                // proceed with local removal even if unsubscribe fails
+                            }
+                        }
                         setSelectedInstruments(prev =>
                             prev.filter(p =>
                                 !(p.symbol === sym &&
                                   (p.exchange || p.segment) ===
                                   (item.exchange || item.segment))
                             )
-                        )
-                    }
+                        );
+                    }}
                     title="Remove"
                     style={{
                         width:          26,
@@ -239,3 +246,4 @@ const InstrumentCard = memo(function InstrumentCard({
 });
 
 export default InstrumentCard;
+

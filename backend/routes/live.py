@@ -330,75 +330,121 @@ def api_symbol_feedkey():
 # ---------------------------------------------------------------------------
 # Subscribe  –  GET /api/ws-subscribe?symbol=RELIANCE&exchange=NSE
 # ---------------------------------------------------------------------------
-@live_bp.route("/api/ws-subscribe", methods=["GET"])
+@live_bp.route("/api/ws-subscribe", methods=["GET", "POST"])
 def api_ws_subscribe():
     try:
-        symbol   = (request.args.get("symbol")   or "").strip().upper()
-        exchange = (request.args.get("exchange") or "").strip().upper()
+        payload = request.get_json(silent=True) or {}
+        exchange = (payload.get("exchange") or request.args.get("exchange") or "").strip().upper()
 
-        if not symbol:
-            return jsonify({"error": "symbol missing"}), 400
+        raw_targets = []
+        if request.args.get("symbol"):
+            raw_targets.append(request.args.get("symbol"))
+        raw_targets.extend(request.args.getlist("symbols"))
+        raw_targets.extend(request.args.getlist("instrument_key"))
+        raw_targets.extend(request.args.getlist("instrument_keys"))
 
-        # Frontend may send a full instrument key directly (e.g. "NSE_EQ|INE002A01018")
-        if "|" in symbol:
-            instrument_key = symbol
-        else:
+        if payload.get("symbol"):
+            raw_targets.append(payload.get("symbol"))
+        if isinstance(payload.get("symbols"), list):
+            raw_targets.extend(payload.get("symbols"))
+        if payload.get("instrument_key"):
+            raw_targets.append(payload.get("instrument_key"))
+        if isinstance(payload.get("instrument_keys"), list):
+            raw_targets.extend(payload.get("instrument_keys"))
+
+        split_targets = []
+        for raw in raw_targets:
+            txt = str(raw or "").strip()
+            if not txt:
+                continue
+            if "," in txt:
+                split_targets.extend([x.strip() for x in txt.split(",") if x.strip()])
+            else:
+                split_targets.append(txt)
+
+        unique_targets = list(dict.fromkeys(split_targets))
+        instrument_keys = []
+        symbols = []
+        invalid = []
+
+        for target in unique_targets:
+            if "|" in target:
+                instrument_keys.append(target)
+                symbols.append(target)
+                continue
+
+            symbol = target.upper()
             mapped = SYMBOL_TO_KEY.get(symbol)
             if not mapped:
-                return jsonify({"error": f"Symbol not found: {symbol}"}), 404
+                invalid.append({"input": target, "error": f"Symbol not found: {symbol}"})
+                continue
 
             if isinstance(mapped, str):
-                instrument_key = mapped
+                instrument_keys.append(mapped)
+                symbols.append(symbol)
             elif isinstance(mapped, dict):
-                if exchange and exchange in mapped:
-                    instrument_key = mapped[exchange]
-                elif "NSE" in mapped:
-                    instrument_key = mapped["NSE"]
-                else:
-                    instrument_key = list(mapped.values())[0]
+                key = mapped.get(exchange) or mapped.get("NSE") or list(mapped.values())[0]
+                instrument_keys.append(key)
+                symbols.append(symbol)
             else:
-                return jsonify({"error": "Invalid mapping format"}), 500
+                invalid.append({"input": target, "error": "Invalid mapping format"})
+
+        instrument_keys = list(dict.fromkeys(instrument_keys))
+        symbols = list(dict.fromkeys(symbols))
+
+        if not instrument_keys:
+            if invalid:
+                return jsonify({"error": "No valid symbol/instrument_key", "details": invalid}), 400
+            return jsonify({"error": "symbol missing"}), 400
 
         redis_client.publish(
             "subscribe:requests",
             json.dumps({
-                "instrument_key": instrument_key,
-                "action":         "subscribe",
-                "symbol":         symbol,
+                "instrument_keys": instrument_keys,
+                "action": "subscribe",
+                "symbols": symbols,
+                "replace": bool(payload.get("replace")),
             }),
         )
 
-        print(f"📡 SUBSCRIBE → {symbol} → {instrument_key}")
         return jsonify({
-            "status":         "subscribed",
-            "instrument_key": instrument_key,
-            "symbol":         symbol,
+            "status": "subscribed",
+            "instrument_keys": instrument_keys,
+            "symbols": symbols,
+            "replace": bool(payload.get("replace")),
+            "invalid": invalid,
         })
 
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-
-# ---------------------------------------------------------------------------
-# Unsubscribe  –  POST /api/unsubscribe   body: { "instrument_key": "..." }
-# ---------------------------------------------------------------------------
 @live_bp.route("/api/unsubscribe", methods=["POST"])
 def api_unsubscribe():
     data = request.get_json(silent=True) or {}
-    ik   = data.get("instrument_key")
+    keys = []
 
-    if not ik:
+    if data.get("instrument_key"):
+        keys.append(data.get("instrument_key"))
+    if isinstance(data.get("instrument_keys"), list):
+        keys.extend(data.get("instrument_keys"))
+    if isinstance(data.get("unsubscribe"), list):
+        keys.extend(data.get("unsubscribe"))
+
+    keys = [str(k).strip() for k in keys if str(k or "").strip()]
+    keys = list(dict.fromkeys(keys))
+
+    if not keys:
         return jsonify({"error": "instrument_key missing"}), 400
 
     redis_client.publish(
         "unsubscribe:requests",
         json.dumps({
-            "instrument_key": ik,
-            "method":         "unsub",
-            "action":         "unsubscribe",
+            "instrument_keys": keys,
+            "method": "unsub",
+            "action": "unsubscribe",
         }),
     )
 
-    print(f"❌ Unsubscribe → {ik}")
-    return jsonify({"status": "unsubscribed", "instrument_key": ik})
+    return jsonify({"status": "unsubscribed", "instrument_keys": keys})
+

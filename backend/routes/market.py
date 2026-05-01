@@ -60,33 +60,57 @@ def index_summary():
     symbols = ",".join(INDEX_KEYS.values())
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
-    response = safe_requests.get(
-        f"{UPSTOX_API_BASE}/v2/market-quote/indices?symbols={symbols}",
-        headers=headers, timeout=10,
-    )
+    quote_url = f"{UPSTOX_API_BASE}/market-quote/quotes?instrument_key={symbols}"
+    response = safe_requests.get(quote_url, headers=headers, timeout=10)
 
     if response.status_code == 401:
         if refresh_upstox_token():
             headers["Authorization"] = f"Bearer {load_saved_tokens().get('access_token')}"
-            response = safe_requests.get(
-                f"{UPSTOX_API_BASE}/v2/market-quote/indices?symbols={symbols}",
-                headers=headers, timeout=10,
-            )
+            response = safe_requests.get(quote_url, headers=headers, timeout=10)
         else:
             return jsonify({"error": "Session expired — login again"}), 401
 
     if response.status_code != 200:
-        return jsonify({"error": "Upstox API failed", "details": response.text}), 500
+        if _last_market_data:
+            stale = dict(_last_market_data)
+            stale["status"] = "stale"
+            stale["warning"] = "Live index summary unavailable; serving stale cache"
+            return jsonify(stale), 200
+        return jsonify({
+            "status": "degraded",
+            "indices": {},
+            "marketSummary": {"title": "Market Data Unavailable", "avg_percent": 0},
+            "asOf": as_of,
+            "warning": "Live index summary unavailable",
+            "details": response.text,
+        }), 200
 
-    data    = response.json().get("data", [])
+    data_raw = (response.json() or {}).get("data", {})
+    rows_by_key = {}
+    if isinstance(data_raw, dict):
+        for map_key, row in data_raw.items():
+            if not isinstance(row, dict):
+                continue
+            row_key = str(row.get("instrument_token") or map_key).replace(":", "|")
+            rows_by_key[row_key.upper()] = row
+            rows_by_key[str(map_key).replace(":", "|").upper()] = row
+    elif isinstance(data_raw, list):
+        for row in data_raw:
+            if not isinstance(row, dict):
+                continue
+            row_key = str(
+                row.get("instrument_token")
+                or row.get("instrument_key")
+                or ""
+            ).replace(":", "|")
+            if row_key:
+                rows_by_key[row_key.upper()] = row
+
     summary = {}
     total_pct, count = 0, 0
 
     for name, key in INDEX_KEYS.items():
-        row = next((
-            x for x in data
-            if (x.get("instrument_key") or "").upper() == key.upper()
-        ), None)
+        row = rows_by_key.get(key.upper())
         if not row:
             continue
 
@@ -94,14 +118,24 @@ def index_summary():
             try:    return round(float(v), 2)
             except: return 0
 
-        ltp     = safe(row.get("ltp"))
-        change  = safe(row.get("change"))
-        percent = safe(row.get("percent_change"))
+        ohlc = row.get("ohlc") if isinstance(row.get("ohlc"), dict) else {}
+        ltp = safe(row.get("ltp", row.get("last_price")))
+        prev_close = safe(row.get("cp", row.get("close", ohlc.get("close"))))
+        open_px = safe(row.get("open", ohlc.get("open")))
+        high_px = safe(row.get("high", ohlc.get("high")))
+        low_px = safe(row.get("low", ohlc.get("low")))
+        change = safe(row.get("change", row.get("net_change", ltp - prev_close)))
+        percent = safe(
+            row.get(
+                "percent_change",
+                ((change / prev_close) * 100.0) if prev_close else 0.0,
+            )
+        )
 
         summary[name] = {
             "symbol": key, "displayName": name, "ltp": ltp,
-            "open": safe(row.get("open")), "high": safe(row.get("high")),
-            "low": safe(row.get("low")), "prevClose": safe(row.get("close")),
+            "open": open_px, "high": high_px,
+            "low": low_px, "prevClose": prev_close,
             "change": change, "percent": percent,
             "direction": "up" if change >= 0 else "down",
             "source": "Upstox Live",
@@ -129,47 +163,163 @@ def index_summary():
 
 
 # ── WebSocket subscribe ──────────────────────────────────────────
-@market_bp.route("/api/ws-subscribe", methods=["GET"])
+def _resolve_one_instrument_key(raw_symbol: str, exchange: str = ""):
+    symbol_raw = (raw_symbol or "").strip()
+    if not symbol_raw:
+        return None, None, "symbol missing"
+
+    if "|" in symbol_raw:
+        return symbol_raw, symbol_raw, None
+
+    symbol = symbol_raw.upper()
+    mapped = SYMBOL_TO_KEY.get(symbol)
+    if not mapped:
+        return None, None, f"Symbol not found: {symbol}"
+
+    if isinstance(mapped, str):
+        return mapped, symbol, None
+
+    if isinstance(mapped, dict):
+        instrument_key = mapped.get(exchange) or mapped.get("NSE") or list(mapped.values())[0]
+        return instrument_key, symbol, None
+
+    return None, None, "Invalid mapping format"
+
+
+def _collect_subscribe_targets():
+    body = request.get_json(silent=True) or {}
+    exchange = (
+        body.get("exchange")
+        or request.args.get("exchange")
+        or ""
+    ).strip().upper()
+
+    raw_targets = []
+
+    # GET compatibility
+    if request.args.get("symbol"):
+        raw_targets.append(request.args.get("symbol"))
+    raw_targets.extend(request.args.getlist("symbols"))
+    raw_targets.extend(request.args.getlist("instrument_key"))
+    raw_targets.extend(request.args.getlist("instrument_keys"))
+
+    # POST payload support
+    if body.get("symbol"):
+        raw_targets.append(body.get("symbol"))
+    if isinstance(body.get("symbols"), list):
+        raw_targets.extend(body.get("symbols"))
+    if body.get("instrument_key"):
+        raw_targets.append(body.get("instrument_key"))
+    if isinstance(body.get("instrument_keys"), list):
+        raw_targets.extend(body.get("instrument_keys"))
+
+    split_targets = []
+    for raw in raw_targets:
+        if raw is None:
+            continue
+        txt = str(raw).strip()
+        if not txt:
+            continue
+        if "," in txt:
+            split_targets.extend([x.strip() for x in txt.split(",") if x.strip()])
+        else:
+            split_targets.append(txt)
+
+    unique_raw = list(dict.fromkeys(split_targets))
+
+    resolved_keys = []
+    resolved_symbols = []
+    errors = []
+    for raw in unique_raw:
+        key, symbol, err = _resolve_one_instrument_key(raw, exchange=exchange)
+        if err:
+            errors.append({"input": raw, "error": err})
+            continue
+        resolved_keys.append(key)
+        resolved_symbols.append(symbol)
+
+    resolved_keys = list(dict.fromkeys(resolved_keys))
+    resolved_symbols = list(dict.fromkeys(resolved_symbols))
+
+    return resolved_keys, resolved_symbols, errors, bool(body.get("replace"))
+
+
+@market_bp.route("/api/ws-subscribe", methods=["GET", "POST"])
 def api_ws_subscribe():
     import traceback
     try:
-        symbol_raw = (request.args.get("symbol") or "").strip()
-        exchange = (request.args.get("exchange") or "").strip().upper()
-        if not symbol_raw:
+        keys, symbols, errors, replace = _collect_subscribe_targets()
+        if not keys:
+            if errors:
+                return jsonify({"error": "No valid symbol/instrument_key", "details": errors}), 400
             return jsonify({"error": "symbol missing"}), 400
 
-        if "|" in symbol_raw:
-            instrument_key = symbol_raw
-            symbol = symbol_raw
-        else:
-            symbol = symbol_raw.upper()
-            mapped = SYMBOL_TO_KEY.get(symbol)
-            if not mapped:
-                return jsonify({"error": f"Symbol not found: {symbol}"}), 404
-            if isinstance(mapped, str):
-                instrument_key = mapped
-            elif isinstance(mapped, dict):
-                instrument_key = mapped.get(exchange) or mapped.get("NSE") or list(mapped.values())[0]
-            else:
-                return jsonify({"error": "Invalid mapping format"}), 500
-
         redis_client.publish("subscribe:requests", json.dumps({
-            "instrument_key": instrument_key,
-            "action": "subscribe", "symbol": symbol,
+            "instrument_keys": keys,
+            "symbols": symbols,
+            "action": "subscribe",
+            "replace": replace,
         }))
-        return jsonify({"status": "subscribed", "instrument_key": instrument_key, "symbol": symbol})
+
+        return jsonify({
+            "status": "subscribed",
+            "instrument_keys": keys,
+            "symbols": symbols,
+            "replace": replace,
+            "invalid": errors,
+        })
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
-# ── WebSocket unsubscribe ────────────────────────────────────────
 @market_bp.route("/api/unsubscribe", methods=["POST"])
 def api_unsubscribe():
-    ik = (request.json or {}).get("instrument_key")
-    if not ik:
+    payload = request.get_json(silent=True) or {}
+    keys = []
+
+    if payload.get("instrument_key"):
+        keys.append(payload.get("instrument_key"))
+    if isinstance(payload.get("instrument_keys"), list):
+        keys.extend(payload.get("instrument_keys"))
+    if isinstance(payload.get("unsubscribe"), list):
+        keys.extend(payload.get("unsubscribe"))
+
+    keys = [str(k).strip() for k in keys if str(k or "").strip()]
+    keys = list(dict.fromkeys(keys))
+
+    if not keys:
         return jsonify({"error": "instrument_key missing"}), 400
+
     redis_client.publish("unsubscribe:requests", json.dumps({
-        "instrument_key": ik, "method": "unsub", "action": "unsubscribe",
+        "instrument_keys": keys,
+        "method": "unsub",
+        "action": "unsubscribe",
     }))
-    return jsonify({"status": "unsubscribed", "instrument_key": ik})
+    return jsonify({"status": "unsubscribed", "instrument_keys": keys})
+
+
+@market_bp.route("/api/unsubscribe-all", methods=["POST"])
+def api_unsubscribe_all():
+    try:
+        all_keys = list(redis_client.smembers("active_subscriptions") or [])
+        keys = [
+            ik for ik in all_keys
+            if not str(ik or "").upper().startswith(("NSE_INDEX|", "BSE_INDEX|"))
+        ]
+        for ik in keys:
+            redis_client.publish("unsubscribe:requests", json.dumps({
+                "instrument_key": ik, "method": "unsub", "action": "unsubscribe",
+            }))
+        if keys:
+            redis_client.srem("active_subscriptions", *keys)
+        return jsonify({
+            "status": "ok",
+            "unsubscribed_count": len(keys),
+            "instrument_keys": keys,
+            "preserved_index_keys": [ik for ik in all_keys if ik not in keys],
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
