@@ -21,7 +21,9 @@ import {
     flattenWatchlistsByCap,
     getWatchlistCapLabel,
     normalizeSymbol,
+    readPreferredWatchlistCap,
     readStoredWatchlistsByCap,
+    savePreferredWatchlistCap,
 } from "../utils/watchlistUtils";
 
 import SearchBar            from "../components/SearchBar";
@@ -122,7 +124,7 @@ export default function Dashboard() {
     const [selectedInstruments,   setSelectedInstruments]   = useState(() => readStoredArray("selectedInstruments"));
     const [isApplyingIndicators,  setIsApplyingIndicators]  = useState(false);
     const [watchlistsByCap,       setWatchlistsByCap]       = useState(() => readStoredWatchlistsByCap());
-    const [activeWatchlistCap,    setActiveWatchlistCap]    = useState(DEFAULT_WATCHLIST_CAP);
+    const [activeWatchlistCap,    setActiveWatchlistCap]    = useState(() => readPreferredWatchlistCap());
     const [selectedSymbol,        setSelectedSymbol]        = useState("");
     const [selectedInstrument,    setSelectedInstrument]    = useState(null);
     const [activeSubscriptions,   setActiveSubscriptions]   = useState({});
@@ -240,6 +242,9 @@ export default function Dashboard() {
         try { localStorage.setItem("selectedInstruments", JSON.stringify(selectedInstruments)); }
         catch { }
     }, [selectedInstruments]);
+    useEffect(() => {
+        savePreferredWatchlistCap(activeWatchlistCap);
+    }, [activeWatchlistCap]);
     useEffect(() => {
         try {
             localStorage.setItem(WATCHLIST_STORAGE_KEY, JSON.stringify(watchlistsByCap));

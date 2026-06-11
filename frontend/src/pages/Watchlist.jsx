@@ -9,7 +9,9 @@ import {
     ensureWatchlistsShape,
     flattenWatchlistsByCap,
     getWatchlistCapLabel,
+    readPreferredWatchlistCap,
     readStoredWatchlistsByCap,
+    savePreferredWatchlistCap,
 } from "../utils/watchlistUtils";
 
 export default function Watchlist() {
@@ -17,7 +19,7 @@ export default function Watchlist() {
     const isLight = theme === "light";
 
     const [watchlistsByCap, setWatchlistsByCap] = useState(() => readStoredWatchlistsByCap());
-    const [activeCap, setActiveCap] = useState(DEFAULT_WATCHLIST_CAP);
+    const [activeCap, setActiveCap] = useState(() => readPreferredWatchlistCap());
     const [prices, setPrices] = useState({});
     const [priceChange, setPriceChange] = useState({});
 
@@ -48,6 +50,9 @@ export default function Watchlist() {
             // ignore storage write failures
         }
     }, [watchlistsByCap, allWatchlistItems]);
+    useEffect(() => {
+        savePreferredWatchlistCap(activeCap);
+    }, [activeCap]);
 
     // WebSocket connection
     useEffect(() => {

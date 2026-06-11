@@ -1,6 +1,7 @@
 export const WATCHLIST_STORAGE_KEY = "watchlistsByCap";
 export const WATCHLIST_LEGACY_KEY = "watchlist";
 export const DEFAULT_WATCHLIST_CAP = "large";
+export const WATCHLIST_PREFERRED_CAP_KEY = "preferredWatchlistCap";
 
 export const WATCHLIST_CAP_OPTIONS = [
     { key: "small", label: "Small Cap" },
@@ -9,6 +10,20 @@ export const WATCHLIST_CAP_OPTIONS = [
 ];
 
 export const WATCHLIST_CAP_KEYS = WATCHLIST_CAP_OPTIONS.map((opt) => opt.key);
+
+export function readPreferredWatchlistCap() {
+    const saved = localStorage.getItem(WATCHLIST_PREFERRED_CAP_KEY);
+    return WATCHLIST_CAP_KEYS.includes(saved) ? saved : DEFAULT_WATCHLIST_CAP;
+}
+
+export function savePreferredWatchlistCap(capKey) {
+    const safeCap = WATCHLIST_CAP_KEYS.includes(capKey)
+        ? capKey
+        : DEFAULT_WATCHLIST_CAP;
+
+    localStorage.setItem(WATCHLIST_PREFERRED_CAP_KEY, safeCap);
+    return safeCap;
+}
 
 export function normalizeSymbol(value) {
     return String(value || "").trim().toUpperCase();
