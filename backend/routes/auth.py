@@ -14,7 +14,7 @@ from urllib.parse import quote
 
 from flask import (
     Blueprint, request, jsonify, session,
-    redirect, url_for, send_from_directory,
+    current_app, redirect, url_for, send_from_directory,
 )
 from werkzeug.security import generate_password_hash, check_password_hash
 
@@ -44,7 +44,7 @@ def login_user():
 
     if not row:
         return jsonify({"error": "Invalid username"}), 401
-    if not check_password_hash(row[0], password):
+    if not check_password_hash(row["password_hash"], password):
         return jsonify({"error": "Invalid password"}), 401
 
     session["user"] = username
@@ -76,6 +76,13 @@ def signup():
 # ── Google OAuth ─────────────────────────────────────────────────
 @auth_bp.route("/auth/google")
 def google_login():
+    if not current_app.config.get("GOOGLE_CLIENT_ID") or not current_app.config.get("GOOGLE_CLIENT_SECRET"):
+        return (
+            "Google OAuth is not configured. Set GOOGLE_CLIENT_ID and "
+            "GOOGLE_CLIENT_SECRET, then recreate the backend container.",
+            500,
+        )
+
     redirect_uri = url_for("auth.google_callback", _external=True)
     return google.authorize_redirect(redirect_uri)
 

@@ -10,5 +10,7 @@ WORKDIR /app/backend
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install -r /tmp/requirements.txt
 
-# Runtime source is bind-mounted by docker-compose for fast iteration.
+# Copy runtime source so the app can start even when host bind mounts are unavailable.
+COPY backend/ ./
+
 CMD ["python", "app.py"]

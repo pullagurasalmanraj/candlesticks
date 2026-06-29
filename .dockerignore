@@ -1,5 +1,7 @@
 .git
 .gitignore
+.env
+backend/.env
 **/__pycache__/
 **/*.pyc
 
@@ -8,7 +10,6 @@ frontend/dist/
 
 backend/__pycache__/
 backend/data-*.csv
-backend/upstox_instruments.json.gz
 backend/tokens.json
 
 .claude/

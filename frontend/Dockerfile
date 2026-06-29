@@ -6,5 +6,6 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm install --include=dev
 
-# Runtime source is bind-mounted by docker-compose for fast iteration.
+COPY frontend/ ./
+
 CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]

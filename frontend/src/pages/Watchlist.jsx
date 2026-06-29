@@ -170,13 +170,12 @@ export default function Watchlist() {
                         <button
                             key={capItem.key}
                             onClick={() => setActiveCap(capItem.key)}
-                            className={`px-3 py-1.5 rounded-full text-sm border transition ${
-                                isActive
+                            className={`px-3 py-1.5 rounded-full text-sm border transition ${isActive
                                     ? "border-blue-500 bg-blue-500/15 text-blue-500"
                                     : isLight
                                         ? "border-slate-300 bg-white text-slate-600"
                                         : "border-gray-700 bg-[#111827] text-gray-300"
-                            }`}
+                                }`}
                         >
                             {capItem.label} ({watchlistCountByCap[capItem.key] || 0})
                         </button>

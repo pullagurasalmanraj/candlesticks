@@ -1,6 +1,9 @@
 services:
     postgres:
-        image: postgres:16-alpine
+        build:
+            context: .
+            dockerfile: backend/postgres.Dockerfile
+        image: candlesticks-postgres:dev
         container_name: candlesticks-postgres
         restart: unless-stopped
         environment:
@@ -8,10 +11,9 @@ services:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres
         ports:
-            - "5432:5432"
+            - "5433:5432"
         volumes:
             - pg_data:/var/lib/postgresql/data
-            - ./backend/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
         healthcheck:
             test: [ "CMD-SHELL", "pg_isready -U postgres -d candleticks" ]
             interval: 10s
@@ -42,23 +44,21 @@ services:
         container_name: candlesticks-backend
         restart: unless-stopped
         working_dir: /app/backend
-        volumes:
-            - ./:/app
         command: [ "python", "app.py" ]
         environment:
             PYTHONUNBUFFERED: "1"
             PYTHONDONTWRITEBYTECODE: "1"
-            PGHOST: ${PGHOST:-host.docker.internal}
-            PGPORT: ${PGPORT:-5432}
-            PGDATABASE: ${PGDATABASE:-candleticks}
-            PGUSER: ${PGUSER:-postgres}
-            PGPASSWORD: ${PGPASSWORD:-postgres}
-            DB_HOST: ${PGHOST:-host.docker.internal}
-            DB_PORT: ${PGPORT:-5432}
-            DB_NAME: ${PGDATABASE:-candleticks}
-            DB_USER: ${PGUSER:-postgres}
-            DB_PASSWORD: ${PGPASSWORD:-postgres}
-            REDIS_URL: ${REDIS_URL:-redis://:linux123@host.docker.internal:6379/10}
+            PGHOST: ${DOCKER_PGHOST:-postgres}
+            PGPORT: ${DOCKER_PGPORT:-5432}
+            PGDATABASE: ${DOCKER_PGDATABASE:-candleticks}
+            PGUSER: ${DOCKER_PGUSER:-postgres}
+            PGPASSWORD: ${DOCKER_PGPASSWORD:-postgres}
+            DB_HOST: ${DOCKER_DB_HOST:-postgres}
+            DB_PORT: ${DOCKER_DB_PORT:-5432}
+            DB_NAME: ${DOCKER_DB_NAME:-candleticks}
+            DB_USER: ${DOCKER_DB_USER:-postgres}
+            DB_PASSWORD: ${DOCKER_DB_PASSWORD:-postgres}
+            REDIS_URL: ${DOCKER_REDIS_URL:-redis://:linux123@redis:6379/10}
             UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
             UPSTOX_CLIENT_ID: ${UPSTOX_CLIENT_ID:-}
             UPSTOX_CLIENT_SECRET: ${UPSTOX_CLIENT_SECRET:-}
@@ -66,8 +66,6 @@ services:
             SECRET_KEY: ${SECRET_KEY:-candlesticks_super_secret_key}
             GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
             GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-        extra_hosts:
-            - "host.docker.internal:host-gateway"
         ports:
             - "8000:8000"
         depends_on:
@@ -80,19 +78,15 @@ services:
         container_name: candlesticks-wsserver
         restart: unless-stopped
         working_dir: /app/backend
-        volumes:
-            - ./:/app
         command: [ "python", "wsserver.py" ]
         environment:
             PYTHONUNBUFFERED: "1"
             PYTHONDONTWRITEBYTECODE: "1"
-            REDIS_URL: ${REDIS_URL:-redis://:linux123@host.docker.internal:6379/10}
+            REDIS_URL: ${DOCKER_REDIS_URL:-redis://:linux123@redis:6379/10}
             WS_HOST: 0.0.0.0
             WS_PORT: "9000"
             UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
             SKIP_SSL_VERIFY: ${SKIP_SSL_VERIFY:-0}
-        extra_hosts:
-            - "host.docker.internal:host-gateway"
         ports:
             - "9000:9000"
         depends_on:
@@ -107,7 +101,6 @@ services:
         restart: unless-stopped
         working_dir: /app/frontend
         volumes:
-            - ./frontend:/app/frontend
             - frontend_node_modules:/app/frontend/node_modules
         command: >
             sh -c " if [ ! -x ./node_modules/.bin/vite ]; then npm install --include=dev; fi && node ./node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5173 "
@@ -123,14 +116,15 @@ services:
             - wsserver
 
     nginx:
-        image: nginx:1.28.2
+        build:
+            context: .
+            dockerfile: nginx/Dockerfile
+        image: candlesticks-nginx:dev
         container_name: candlesticks-nginx
         restart: unless-stopped
 
         ports:
             - "80:80"
-        volumes:
-            - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
         depends_on:
             - frontend
             - backend

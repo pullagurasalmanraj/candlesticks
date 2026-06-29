@@ -153,7 +153,7 @@ def _db_get(symbol: str) -> str | None:
                 row = cur.fetchone()
                 if row is None:
                     return None          # not in DB at all
-                return row[0] or ""     # empty string = confirmed null
+                return row["domain"] or ""     # empty string = confirmed null
     except Exception:
         return None
 
