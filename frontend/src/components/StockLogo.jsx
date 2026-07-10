@@ -46,7 +46,15 @@ let   batchTimer  = null;
 const pendingBatch = new Set();
 
 function subscribeToLogo(symbol, callback) {
-    const sym = symbol.toUpperCase().trim().replace(/-EQ$/, "").replace(/&/g, "").replace(/_/g, "");
+    let sym = symbol.toUpperCase().trim().replace(/-EQ$/, "").replace(/&/g, "").replace(/_/g, "");
+    if (sym.includes(" ")) {
+        sym = sym.split(/\s+/)[0];
+    } else {
+        const derivativeMatch = sym.match(/^([A-Z\d]+?)(\d{2}[A-Z\d]{2,}.*)$/);
+        if (derivativeMatch) {
+            sym = derivativeMatch[1];
+        }
+    }
 
     // Already resolved — call back immediately
     if (logoCache[sym] !== undefined && logoCache[sym] !== "pending") {
@@ -120,10 +128,21 @@ const StockLogo = memo(function StockLogo({
     borderRadius = 6,
     style = {},
 }) {
-    const sym = (symbol || "").toUpperCase().trim()
+    let sym = (symbol || "").toUpperCase().trim()
         .replace(/-EQ$/, "")
         .replace(/&/g, "")
         .replace(/_/g, "");
+
+    // Handle option/future contracts containing spaces (e.g. "TCS 1680 CE 28 JUL 26")
+    if (sym.includes(" ")) {
+        sym = sym.split(/\s+/)[0];
+    } else {
+        // Handle option/future contracts without spaces (e.g. "RELIANCE26MAY2400CE")
+        const derivativeMatch = sym.match(/^([A-Z\d]+?)(\d{2}[A-Z\d]{2,}.*)$/);
+        if (derivativeMatch) {
+            sym = derivativeMatch[1];
+        }
+    }
 
     const initials = getInitials(sym);
     const [bg, fg] = symbolColor(sym);

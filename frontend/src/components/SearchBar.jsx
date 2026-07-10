@@ -1,20 +1,22 @@
-import React, { memo } from "react";
+import React, { memo, useRef, useEffect } from "react";
+import { Search } from "lucide-react";
 import StockLogo from "./StockLogo";
 
 // Shared input style — used for all inputs/selects in this file
 const inputStyle = {
     width:        "100%",
-    height:       36,
-    borderRadius: "var(--input-radius)",
-    border:       "1px solid var(--border-color)",
-    background:   "var(--bg-tertiary)",
+    height:       42,
+    borderRadius: 999,
+    border:       "1.5px solid var(--border-color)",
+    background:   "var(--bg-secondary)",
     color:        "var(--text-primary)",
-    padding:      "0 12px",
-    fontSize:     "0.875rem",
+    padding:      "0 44px 0 40px",
+    fontSize:     "0.9rem",
     fontFamily:   "var(--font-body)",
     outline:      "none",
     boxSizing:    "border-box",
-    transition:   "border-color 0.15s ease",
+    transition:   "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+    boxShadow:    "inset 0 1px 2px rgba(0,0,0,0.1)",
 };
 
 // memo() prevents SearchBar from re-rendering when Dashboard's other
@@ -37,8 +39,41 @@ const SearchBar = memo(function SearchBar({
     getLtpForInstrument,
     prices,
 }) {
+    const inputRef = useRef(null);
+    const containerRef = useRef(null);
+
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (
+                (e.key === "/" && 
+                 document.activeElement?.tagName !== "INPUT" && 
+                 document.activeElement?.tagName !== "TEXTAREA") ||
+                (e.key === "k" && (e.ctrlKey || e.metaKey))
+            ) {
+                e.preventDefault();
+                inputRef.current?.focus();
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, []);
+
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (containerRef.current && !containerRef.current.contains(event.target)) {
+                setShowResults(false);
+            }
+        };
+        document.addEventListener("mousedown", handleClickOutside);
+        document.addEventListener("touchstart", handleClickOutside);
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+            document.removeEventListener("touchstart", handleClickOutside);
+        };
+    }, [setShowResults]);
+
     return (
-        <div style={{ width: "100%", maxWidth: 480, position: "relative" }}>
+        <div ref={containerRef} style={{ width: "100%", maxWidth: 480, position: "relative" }}>
 
             {/* Label */}
             <p style={{
@@ -57,16 +92,18 @@ const SearchBar = memo(function SearchBar({
             <div style={{ position: "relative" }}>
                 <span style={{
                     position:       "absolute",
-                    left:           12,
+                    left:           14,
                     top:            "50%",
                     transform:      "translateY(-50%)",
-                    fontSize:       12,
                     color:          "var(--text-muted)",
                     pointerEvents:  "none",
+                    display:        "flex",
+                    alignItems:     "center",
                 }}>
-                    🔍
+                    <Search size={16} />
                 </span>
                 <input
+                    ref={inputRef}
                     value={search}
                     onChange={(e) => {
                         const val = e.target.value;
@@ -74,17 +111,89 @@ const SearchBar = memo(function SearchBar({
                         setShowResults(val.trim().length > 0);
                         if (!val.trim() && setDebouncedSearch) setDebouncedSearch("");
                     }}
-                    placeholder="Search by symbol or name (e.g. TCS, INFY, RELIANCE)…"
-                    style={{
-                        ...inputStyle,
-                        height:       40,
-                        borderRadius: 999,
-                        paddingLeft:  36,
-                        paddingRight: 16,
+                    onClick={() => {
+                        if (search.trim().length > 0) setShowResults(true);
                     }}
-                    onFocus={e  => e.target.style.borderColor = "var(--accent-blue)"}
-                    onBlur={e   => e.target.style.borderColor = "var(--border-color)"}
+                    placeholder="Search by symbol or name (e.g. TCS, INFY, RELIANCE)…"
+                    style={inputStyle}
+                    onFocus={e  => {
+                        setShowResults(search.trim().length > 0);
+                        e.target.style.borderColor = "var(--accent-blue)";
+                        e.target.style.background = "var(--bg-tertiary)";
+                        e.target.style.boxShadow = "0 0 14px var(--glow), inset 0 1px 2px rgba(0,0,0,0.05)";
+                    }}
+                    onBlur={e   => {
+                        e.target.style.borderColor = "var(--border-color)";
+                        e.target.style.background = "var(--bg-secondary)";
+                        e.target.style.boxShadow = "inset 0 1px 2px rgba(0,0,0,0.1)";
+                    }}
                 />
+                
+                {/* Keyboard shortcut kbd */}
+                {!search && (
+                    <div style={{
+                        position:       "absolute",
+                        right:          14,
+                        top:            "50%",
+                        transform:      "translateY(-50%)",
+                        background:     "var(--bg-tertiary)",
+                        border:         "1px solid var(--border-color)",
+                        borderRadius:   5,
+                        padding:        "2px 6px",
+                        fontSize:       "0.68rem",
+                        fontFamily:     "var(--font-mono)",
+                        color:          "var(--text-muted)",
+                        pointerEvents:  "none",
+                        display:        "flex",
+                        alignItems:     "center",
+                        gap:            2,
+                        boxShadow:      "0 1px 2px rgba(0,0,0,0.1)",
+                    }}>
+                        <span style={{ fontSize: "0.58rem" }}>⌘</span>K
+                    </div>
+                )}
+
+                {/* Reset button */}
+                {search && (
+                    <button
+                        onClick={() => {
+                            setSearch("");
+                            setShowResults(false);
+                            if (setDebouncedSearch) setDebouncedSearch("");
+                            inputRef.current?.focus();
+                        }}
+                        style={{
+                            position:       "absolute",
+                            right:          14,
+                            top:            "50%",
+                            transform:      "translateY(-50%)",
+                            border:         "none",
+                            background:     "var(--border-color)",
+                            color:          "var(--text-primary)",
+                            cursor:         "pointer",
+                            fontSize:       "0.7rem",
+                            display:        "flex",
+                            alignItems:     "center",
+                            justifyContent: "center",
+                            borderRadius:   "50%",
+                            width:          18,
+                            height:         18,
+                            transition:     "all 0.15s ease",
+                            padding:        0,
+                            opacity:        0.8,
+                        }}
+                        onMouseEnter={e => {
+                            e.currentTarget.style.opacity = 1;
+                            e.currentTarget.style.background = "var(--accent-down)";
+                        }}
+                        onMouseLeave={e => {
+                            e.currentTarget.style.opacity = 0.8;
+                            e.currentTarget.style.background = "var(--border-color)";
+                        }}
+                    >
+                        ✕
+                    </button>
+                )}
             </div>
 
             {/* Dropdown results */}

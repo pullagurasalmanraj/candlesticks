@@ -439,11 +439,12 @@ export default function Dashboard() {
                     display:        "flex",
                     alignItems:     "center",
                     justifyContent: "space-between",
-                    gap:            16,
+                    gap:            20,
                     flexWrap:       "wrap",
+                    width:          "100%",
                 }}>
                     {/* Greeting + avatar */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
                         <Avatar size={42} onClick={() => setProfileOpen(true)} />
                         <div>
                             <div style={{
@@ -471,8 +472,14 @@ export default function Dashboard() {
                         </div>
                     </div>
 
-                    {/* Search + WS */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                    {/* Center Search Bar - Prominent & Highly Visible */}
+                    <div style={{ 
+                        flex: 1, 
+                        display: "flex", 
+                        justifyContent: "center", 
+                        maxWidth: 520, 
+                        minWidth: 280,
+                    }}>
                         <SearchBar
                             search={search}
                             setSearch={setSearch}
@@ -489,6 +496,16 @@ export default function Dashboard() {
                             getLtpForInstrument={getLtpForInstrument}
                             prices={prices}
                         />
+                    </div>
+
+                    {/* WS Status + Market Summary */}
+                    <div style={{ 
+                        display: "flex", 
+                        alignItems: "center", 
+                        gap: 12, 
+                        justifyContent: "flex-end", 
+                        flexShrink: 0,
+                    }}>
                         <WebSocketStatus
                             isConnected={isConnected}
                             connectWebSocket={stableConnect}

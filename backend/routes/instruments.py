@@ -112,6 +112,7 @@ def api_instruments():
                qty_multiplier, instrument_key, exchange_token, tick_size
         FROM v_search_universe
         WHERE is_tradeable = true
+          AND (expiry >= CURRENT_DATE OR expiry IS NULL)
           AND (trading_symbol ILIKE %s OR name ILIKE %s)
         ORDER BY
             CASE
@@ -122,7 +123,10 @@ def api_instruments():
                 WHEN segment = 'NSE_FO' AND instrument_type IN ('FUTIDX','FUTSTK') THEN 4
                 WHEN segment = 'NSE_FO' AND instrument_type IN ('CE','PE') THEN 5
                 ELSE 6
-            END, LENGTH(trading_symbol), trading_symbol
+            END,
+            expiry ASC NULLS FIRST,
+            LENGTH(trading_symbol),
+            trading_symbol
         LIMIT 50
     """
     with get_db_conn() as conn:
@@ -151,6 +155,7 @@ def api_options_contracts():
         "is_tradeable = true",
         "segment = 'NSE_FO'",
         "instrument_type IN ('CE','PE','OPTIDX','OPTSTK')",
+        "(expiry >= CURRENT_DATE OR expiry IS NULL)",
     ]
     params = []
 
@@ -183,7 +188,7 @@ def api_options_contracts():
                 WHEN underlying ILIKE %s THEN 2
                 ELSE 3
             END,
-            expiry DESC,
+            expiry ASC,
             strike_price ASC
         LIMIT 80
     """

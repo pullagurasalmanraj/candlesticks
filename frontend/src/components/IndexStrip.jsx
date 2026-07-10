@@ -1,23 +1,63 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import ChangeBadge from "./ChangeBadge";
 import { INDEX_LIST } from "../context/indexes";
 
-// No isLight prop: reads CSS vars from ThemeContext automatically
+// Helper to generate a smooth sparkline path
+const generateSparklinePath = (data, w, h) => {
+    if (!data || data.length < 2) return "";
+    const min = Math.min(...data);
+    const max = Math.max(...data);
+    const range = max - min === 0 ? 1 : max - min;
+    return data
+        .map((val, idx) => {
+            const x = (idx / (data.length - 1)) * w;
+            const y = h - ((val - min) / range) * (h - 4) - 2; // padding 2px top/bottom
+            return `${idx === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
+        })
+        .join(" ");
+};
+
 export default function IndexStrip({ prices, indexData }) {
+    // Keep rolling history of last 15 prices for each index symbol
+    const [histories, setHistories] = useState({});
+
+    useEffect(() => {
+        setHistories((prev) => {
+            let changed = false;
+            const next = { ...prev };
+
+            INDEX_LIST.forEach((idx) => {
+                const sym = idx.symbol.toUpperCase().replace(/ /g, "");
+                const live = prices?.[sym] || null;
+                const fallback = indexData?.[sym] || null;
+                const ltp = live?.ltp ?? fallback?.ltp;
+
+                if (typeof ltp === "number") {
+                    const history = prev[sym] || [];
+                    const lastVal = history[history.length - 1];
+                    if (ltp !== lastVal) {
+                        next[sym] = [...history, ltp].slice(-15);
+                        changed = true;
+                    }
+                }
+            });
+
+            return changed ? next : prev;
+        });
+    }, [prices, indexData]);
+
     return (
         <section
             style={{
-                display: "flex",
-                alignItems: "stretch",
-                gap: 14,
-                overflowX: "auto",
-                padding: "14px 16px",
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gap: 12,
+                padding: 12,
                 borderRadius: "var(--card-radius)",
-                background:
-                    "linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%)",
+                background: "linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%)",
                 border: "1px solid var(--border-color)",
                 boxShadow: "var(--shadow-card)",
-                scrollbarWidth: "none",
+                marginBottom: 10,
             }}
         >
             {INDEX_LIST.map((idx) => {
@@ -29,87 +69,72 @@ export default function IndexStrip({ prices, indexData }) {
                 const change = source?.change ?? 0;
                 const pct = source?.percent ?? 0;
                 const up = change >= 0;
+                
+                // Get history or seed with current price
+                const history = histories[sym] || (typeof ltp === "number" ? [ltp, ltp] : []);
 
                 return (
                     <div
                         key={idx.name}
                         style={{
-                            minWidth: 228,
-                            flexShrink: 0,
-                            borderRadius: 14,
-                            padding: "14px 16px",
+                            borderRadius: 10,
+                            padding: "10px 14px",
                             display: "flex",
-                            alignItems: "flex-start",
-                            justifyContent: "space-between",
-                            background:
-                                "linear-gradient(160deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%)",
-                            border: "1px solid var(--border-color)",
-                            boxShadow: "0 8px 20px rgba(15, 23, 42, 0.18)",
-                            transition: "all 0.16s ease",
+                            flexDirection: "column",
+                            gap: 6,
+                            background: "var(--bg-tertiary)",
+                            border: "1px solid var(--border-subtle)",
+                            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.02)",
+                            transition: "all 0.15s cubic-bezier(0.4, 0, 0.2, 1)",
                             position: "relative",
-                            overflow: "hidden",
+                            cursor: "pointer",
                         }}
                         onMouseEnter={(e) => {
-                            e.currentTarget.style.borderColor = "var(--accent-blue)";
-                            e.currentTarget.style.transform = "translateY(-1px)";
-                            e.currentTarget.style.boxShadow =
-                                "0 12px 26px rgba(15, 23, 42, 0.24)";
+                            e.currentTarget.style.borderColor = up ? "var(--accent-up)" : "var(--accent-down)";
+                            e.currentTarget.style.transform = "translateY(-1.5px)";
+                            e.currentTarget.style.boxShadow = up ? "var(--shadow-glow-green)" : "var(--shadow-glow-red)";
+                            e.currentTarget.style.background = "var(--bg-hover)";
                         }}
                         onMouseLeave={(e) => {
-                            e.currentTarget.style.borderColor = "var(--border-color)";
+                            e.currentTarget.style.borderColor = "var(--border-subtle)";
                             e.currentTarget.style.transform = "translateY(0)";
-                            e.currentTarget.style.boxShadow =
-                                "0 8px 20px rgba(15, 23, 42, 0.18)";
+                            e.currentTarget.style.boxShadow = "none";
+                            e.currentTarget.style.background = "var(--bg-tertiary)";
                         }}
                     >
-                        <div
-                            style={{
-                                position: "absolute",
-                                top: 0,
-                                left: 0,
-                                right: 0,
-                                height: 3,
-                                background: up
-                                    ? "linear-gradient(90deg, rgba(0,230,118,0.1), rgba(0,230,118,0.9), rgba(0,230,118,0.1))"
-                                    : "linear-gradient(90deg, rgba(255,82,82,0.1), rgba(255,82,82,0.9), rgba(255,82,82,0.1))",
-                                opacity: 0.85,
-                            }}
-                        />
-
-                        <div>
-                            <div
+                        {/* Top Row: Name, Sparkline, LTP */}
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                            <span
                                 style={{
-                                    fontSize: "1rem",
+                                    fontSize: "0.85rem",
                                     fontWeight: 700,
                                     color: "var(--text-primary)",
                                     fontFamily: "var(--font-display)",
-                                    letterSpacing: "-0.01em",
                                 }}
                             >
                                 {idx.display}
-                            </div>
-                            <div
-                                style={{
-                                    fontSize: "0.76rem",
-                                    color: "var(--text-muted)",
-                                    fontFamily: "var(--font-mono)",
-                                    marginTop: 4,
-                                    letterSpacing: "0.03em",
-                                }}
-                            >
-                                {idx.name}
-                            </div>
-                        </div>
+                            </span>
+                            
+                            {/* SVG Sparkline (compact) */}
+                            {history.length >= 2 && (
+                                <svg width="54" height="18" style={{ overflow: "visible" }}>
+                                    <path
+                                        d={generateSparklinePath(history, 54, 18)}
+                                        fill="none"
+                                        stroke={up ? "var(--accent-up)" : "var(--accent-down)"}
+                                        strokeWidth="1.5"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                    />
+                                </svg>
+                            )}
 
-                        <div style={{ textAlign: "right", paddingTop: 2 }}>
-                            <div
+                            <span
                                 style={{
-                                    fontSize: "1.16rem",
+                                    fontSize: "0.95rem",
                                     fontWeight: 700,
                                     color: "var(--text-primary)",
                                     fontFamily: "var(--font-mono)",
-                                    letterSpacing: "-0.02em",
-                                    lineHeight: 1.05,
                                 }}
                             >
                                 {typeof ltp === "number"
@@ -117,28 +142,24 @@ export default function IndexStrip({ prices, indexData }) {
                                           minimumFractionDigits: 2,
                                       })
                                     : ltp}
-                            </div>
-                            <div
-                                style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "flex-end",
-                                    gap: 6,
-                                    marginTop: 7,
-                                }}
-                            >
+                            </span>
+                        </div>
+
+                        {/* Bottom Row: Code Name, Change Indicator */}
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "0.7rem" }}>
+                            <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontWeight: 500 }}>
+                                {idx.name}
+                            </span>
+                            
+                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                                 <span
                                     style={{
-                                        fontSize: "0.78rem",
-                                        fontWeight: 600,
                                         fontFamily: "var(--font-mono)",
-                                        color: up
-                                            ? "var(--accent-up)"
-                                            : "var(--accent-down)",
-                                        letterSpacing: "0.02em",
+                                        fontWeight: 600,
+                                        color: up ? "var(--accent-up)" : "var(--accent-down)",
                                     }}
                                 >
-                                    {up ? "+" : "-"} {Math.abs(change).toFixed(2)}
+                                    {up ? "▲" : "▼"} {Math.abs(change).toFixed(2)}
                                 </span>
                                 <ChangeBadge pct={pct || 0} up={up} />
                             </div>
