@@ -15,9 +15,8 @@ steps:
   - task: DockerCompose@1
     displayName: 'Build services'
     inputs:
-      containerregistrytype: 'Azure Container Registry'
-      azureSubscription: '$(registryServiceConnection)'
-      azureContainerRegistry: '$(containerRegistry)'
+      containerregistrytype: 'Container Registry'
+      dockerRegistryEndpoint: '$(registryServiceConnection)'
       dockerComposeFile: 'docker-compose.yml'
       action: 'Build services'
       qualifyImageNames: true
@@ -27,9 +26,8 @@ steps:
   - task: DockerCompose@1
     displayName: 'Push services'
     inputs:
-      containerregistrytype: 'Azure Container Registry'
-      azureSubscription: '$(registryServiceConnection)'
-      azureContainerRegistry: '$(containerRegistry)'
+      containerregistrytype: 'Container Registry'
+      dockerRegistryEndpoint: '$(registryServiceConnection)'
       dockerComposeFile: 'docker-compose.yml'
       action: 'Push services'
       qualifyImageNames: true
