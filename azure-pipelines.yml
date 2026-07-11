@@ -1,0 +1,33 @@
+trigger:
+  - master
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  # The name of your Azure Service Connection for the container registry
+  registryServiceConnection: 'candlesticks'
+  containerRegistry: 'candlesticks.azurecr.io'
+
+steps:
+  # Build the images defined in docker-compose.yml using Docker Compose v2
+  - task: DockerCompose@1
+    displayName: 'Build services'
+    inputs:
+      containerregistrytype: 'Container Registry'
+      dockerRegistryEndpoint: '$(registryServiceConnection)'
+      dockerComposeFile: 'docker-compose.yml'
+      action: 'Build services'
+      qualifyImageNames: true
+      additionalImageTags: '$(Build.BuildId)'
+
+  # Push the images to Azure Container Registry (ACR) using Docker Compose v2
+  - task: DockerCompose@1
+    displayName: 'Push services'
+    inputs:
+      containerregistrytype: 'Container Registry'
+      dockerRegistryEndpoint: '$(registryServiceConnection)'
+      dockerComposeFile: 'docker-compose.yml'
+      action: 'Push services'
+      qualifyImageNames: true
+      additionalImageTags: '$(Build.BuildId)'
