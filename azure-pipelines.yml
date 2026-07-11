@@ -1,5 +1,6 @@
 trigger:
   - master
+  - develop
 
 pool:
   vmImage: 'ubuntu-latest'
@@ -14,8 +15,9 @@ steps:
   - task: DockerCompose@1
     displayName: 'Build services'
     inputs:
-      containerregistrytype: 'Container Registry'
-      dockerRegistryEndpoint: '$(registryServiceConnection)'
+      containerregistrytype: 'Azure Container Registry'
+      azureSubscription: '$(registryServiceConnection)'
+      azureContainerRegistry: '$(containerRegistry)'
       dockerComposeFile: 'docker-compose.yml'
       action: 'Build services'
       qualifyImageNames: true
@@ -25,8 +27,9 @@ steps:
   - task: DockerCompose@1
     displayName: 'Push services'
     inputs:
-      containerregistrytype: 'Container Registry'
-      dockerRegistryEndpoint: '$(registryServiceConnection)'
+      containerregistrytype: 'Azure Container Registry'
+      azureSubscription: '$(registryServiceConnection)'
+      azureContainerRegistry: '$(containerRegistry)'
       dockerComposeFile: 'docker-compose.yml'
       action: 'Push services'
       qualifyImageNames: true
