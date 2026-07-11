@@ -11,6 +11,45 @@ variables:
   containerRegistry: 'candlesticks.azurecr.io'
 
 steps:
+  # ─── FRONTEND SECURITY AUDIT ──────────────────────────────────────────
+  - task: NodeTool@0
+    displayName: 'Install Node.js'
+    inputs:
+      versionSpec: '20.x'
+
+  - script: |
+      cd frontend
+      npm audit --audit-level=high
+    displayName: 'Audit Frontend Dependencies (Security Scan)'
+    continueOnError: true # Set to false to break the build on high/critical security issues
+
+  # ─── PYTHON TESTING, SYNTAX CHECK & SECURITY SCAN ────────────────────
+  - task: UsePythonVersion@0
+    displayName: 'Set up Python 3.10'
+    inputs:
+      versionSpec: '3.10'
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install flake8 bandit
+    displayName: 'Install Code Quality & Security Tools'
+
+  - script: |
+      # Stop the build if there are critical Python syntax errors or undefined names
+      flake8 backend/ --exclude=backend/MarketDataFeedV3_pb2.py --count --select=E9,F63,F7,F82 --show-source --statistics
+    displayName: 'Run Syntax Check (Flake8)'
+
+  - script: |
+      # Run Python security scan using bandit (ignores generated Protobuf files)
+      bandit -r backend/ -x backend/MarketDataFeedV3_pb2.py -ll
+    displayName: 'Run Python Security Audit (Bandit)'
+
+  - script: |
+      # Execute Python unit tests
+      python -m unittest discover -s backend/tests -p "test_*.py"
+    displayName: 'Run Backend Unit Tests'
+
+  # ─── DOCKER BUILD & PUSH ──────────────────────────────────────────────
   # Build the images defined in docker-compose.yml using Docker Compose v2
   - task: DockerCompose@1
     displayName: 'Build services'
