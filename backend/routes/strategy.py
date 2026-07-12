@@ -5,6 +5,7 @@
 import time, traceback
 from datetime import datetime, timezone
 import pandas as pd
+import numpy as np
 from flask import Blueprint, request, jsonify
 
 from db import get_db_conn, read_sql_safe, chunk_execute as _chunk_execute
@@ -778,6 +779,43 @@ def offline_label_market_context():
             df["range_efficiency"] > 0.45
         )
 
+        # ------ Fetch preceding candles for warming up price structure swing detection ------
+        # To avoid a cold start, fetch the preceding 8 * SWING_N candles' high/low values.
+        warmup_limit = int(8 * SWING_N)
+        warmup_highs = np.array([], dtype=float)
+        warmup_lows = np.array([], dtype=float)
+        first_ts = df["ts"].iloc[0].to_pydatetime()
+
+        if timeframe == "1d":
+            warmup_query = """
+                SELECT timestamp, high, low
+                FROM daily_candles
+                WHERE symbol=%s AND exchange=%s AND timestamp < %s
+                ORDER BY timestamp DESC
+                LIMIT %s
+            """
+            warmup_params = (symbol, exchange, first_ts, warmup_limit)
+        else:
+            warmup_query = """
+                SELECT timestamp, high, low
+                FROM intraday_candles
+                WHERE symbol=%s AND exchange=%s AND timeframe=%s AND timestamp < %s
+                ORDER BY timestamp DESC
+                LIMIT %s
+            """
+            warmup_params = (symbol, exchange, timeframe, first_ts, warmup_limit)
+
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(warmup_query, warmup_params)
+                warmup_rows = cur.fetchall()
+
+        if warmup_rows:
+            # Reversing DESC order to chronological order
+            warmup_rows.reverse()
+            warmup_highs = np.array([float(r["high"]) for r in warmup_rows], dtype=float)
+            warmup_lows = np.array([float(r["low"]) for r in warmup_rows], dtype=float)
+
         # ------ IMPROVEMENT 1: numpy state machine ---------------------------------------------------------
         df = _run_state_machine(
             df,
@@ -800,14 +838,16 @@ def offline_label_market_context():
             distribution_break=distribution_break,
             vol_ma20=vol_ma20,
             GAP_AUCTION_MAX_BARS=GAP_AUCTION_MAX_BARS,
-            swing_n=3,
-            obv_window=10,
-            roll_20=20,
+            swing_n=SWING_N,
+            obv_window=OBV_WINDOW,
+            roll_20=ROLL_20,
             absorption_vol_thr=1.1,
             absorption_max_streak=6,
             distribution_max_streak=5,
             pullback_min_bars=2,
             trend_context_decay=20,
+            warmup_highs=warmup_highs,
+            warmup_lows=warmup_lows,
         )
         # ------ ORB quality (vectorized) ---------------------------------------------------------------------------------------
         df["orb_breakout"] = (

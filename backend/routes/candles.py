@@ -34,6 +34,58 @@ def detect_exchange(instrument_key: str) -> str:
     return "UNKNOWN"
 
 
+@candles_bp.route("/api/candles/check", methods=["POST"])
+def api_candles_check():
+    try:
+        payload = request.json or {}
+        symbol = payload.get("symbol", "").upper().strip()
+        timeframe = payload.get("timeframe", "").strip()
+        instrument_key = payload.get("instrument_key", "").strip()
+        exchange = detect_exchange(instrument_key) if instrument_key else payload.get("exchange", "NSE")
+
+        if not symbol or not timeframe:
+            return jsonify({"error": "symbol and timeframe required"}), 400
+
+        is_daily = timeframe.upper() in ["1D", "1DAY", "DAY", "1440"]
+        
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                if is_daily:
+                    cur.execute("""
+                        SELECT COUNT(*) as count 
+                        FROM daily_candles 
+                        WHERE symbol=%s AND exchange=%s AND timeframe='1D'
+                    """, (symbol, exchange))
+                else:
+                    db_tf = timeframe
+                    if db_tf.isdigit():
+                        db_tf = f"{db_tf}m"
+                    cur.execute("""
+                        SELECT COUNT(*) as count 
+                        FROM intraday_candles 
+                        WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                    """, (symbol, exchange, db_tf))
+                
+                res = cur.fetchone()
+                count = res["count"] if res else 0
+                
+        exists = count > 0
+        if exists:
+            print(f"\n>>> [Check] {symbol} ({exchange}) {timeframe} data is already present in database ({count} rows). Bypassing bulk fetch.\n")
+            
+        return jsonify({
+            "status": "success",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "exists": exists,
+            "count": count
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 # ── Timeframes ───────────────────────────────────────────────────
 # DB stores value as "1","3","5","15","30" and label as "1 Minute" etc.
 # Frontend needs short display like "1m","3m" — mapped here so DB needs no migration.
@@ -167,12 +219,43 @@ def api_candles_history():
         TF_MAP   = {"1m":"1","3m":"3","5m":"5","15m":"15","30m":"30","60m":"60"}
         api_tf   = TF_MAP.get(timeframe.lower(), timeframe)
 
+        start_dt = date.fromisoformat(min(start_date, end_date))
+        end_dt   = date.fromisoformat(max(start_date, end_date))
+
+        # Check if intraday candles already exist for this date range in DB
+        if not payload.get("force", False):
+            db_tf = api_tf
+            if db_tf.isdigit():
+                db_tf = f"{db_tf}m"
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT COUNT(*) as count 
+                        FROM intraday_candles 
+                        WHERE symbol=%s AND exchange=%s AND timeframe=%s AND timestamp::date >= %s::date AND timestamp::date <= %s::date
+                    """, (symbol, exchange, db_tf, start_date, end_date))
+                    res_count = cur.fetchone()
+                    existing_count = res_count["count"] if res_count else 0
+            if existing_count > 0:
+                print(f"\n>>> [Validation] {symbol} ({exchange}) {db_tf} candles are already present in database ({existing_count} rows). Skipping Upstox API fetch.\n")
+                return jsonify({
+                    "status": "success", 
+                    "symbol": symbol, 
+                    "exchange": exchange,
+                    "timeframe": timeframe, 
+                    "stored_tf": api_tf, 
+                    "chunks": 0,
+                    "inserted": 0, 
+                    "total": existing_count,
+                    "message": "Data already present in database",
+                    "from_date": start_date, 
+                    "to_date": end_date,
+                    "already_exists": True
+                })
+
         token = get_valid_token()
         if not token:
             return jsonify({"error": "No Upstox access token"}), 401
-
-        start_dt = date.fromisoformat(min(start_date, end_date))
-        end_dt   = date.fromisoformat(max(start_date, end_date))
 
         tf = str(timeframe).strip().lower()
         if tf.isdigit():       tf = f"{tf}m"
@@ -249,6 +332,32 @@ def api_daily_candles():
             return jsonify({"error": "symbol, instrument_key, start_date, end_date required"}), 400
 
         exchange = detect_exchange(instrument_key)
+
+        # Check if daily candles already exist for this date range in DB
+        if not payload.get("force", False):
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT COUNT(*) as count 
+                        FROM daily_candles 
+                        WHERE symbol=%s AND exchange=%s AND timeframe='1D' AND timestamp::date >= %s::date AND timestamp::date <= %s::date
+                    """, (symbol, exchange, start_date, end_date))
+                    res_count = cur.fetchone()
+                    existing_count = res_count["count"] if res_count else 0
+            if existing_count > 0:
+                print(f"\n>>> [Validation] {symbol} ({exchange}) daily (1D) candles are already present in database ({existing_count} rows). Skipping Upstox API fetch.\n")
+                return jsonify({
+                    "status": "success", 
+                    "symbol": symbol, 
+                    "exchange": exchange,
+                    "inserted": 0, 
+                    "total": existing_count,
+                    "message": "Data already present in database",
+                    "from_date": start_date,
+                    "to_date": end_date,
+                    "already_exists": True
+                })
+
         token    = get_valid_token()
         if not token:
             return jsonify({"error": "Missing Upstox access token"}), 401
@@ -284,7 +393,8 @@ def api_daily_candles():
                 """, rows, page_size=300)
 
         return jsonify({"status": "success", "symbol": symbol, "exchange": exchange,
-                        "inserted": len(rows), "total": len(candles)})
+                        "inserted": len(rows), "total": len(candles),
+                        "from_date": start_date, "to_date": end_date})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500

@@ -6,7 +6,8 @@ export async function fetchHistoricalCandlesAPI({
     instrument_key,
     timeframe,
     histStart,
-    histEnd
+    histEnd,
+    force = false
 }) {
 
     const s = formatYMD(histStart);
@@ -20,7 +21,8 @@ export async function fetchHistoricalCandlesAPI({
         symbol,
         instrument_key,
         start_date: s,
-        end_date: e
+        end_date: e,
+        force
     };
 
     if (["1D", "1DAY", "DAY", "1440"].includes(timeframe)) {

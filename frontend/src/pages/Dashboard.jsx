@@ -139,9 +139,36 @@ export default function Dashboard() {
     const [indexData,             setIndexData]             = useState({});
     const [marketSummary,         setMarketSummary]         = useState(null);
     const [asOf,                  setAsOf]                  = useState(null);
-    const [toast,                 setToast]                 = useState(null);
+    const [toast,                 setToastState]            = useState(null);
     const [activePanel,           setActivePanel]           = useState("instruments");
     const [profileOpen,           setProfileOpen]           = useState(false); // "instruments" | "tools"
+    const [operationResult,       setOperationResult]       = useState(null);
+    const [force,                 setForce]                 = useState(false);
+    // Removed local storageDownloadedRegistry to ensure manual DB deletes are immediately respected
+
+    const setToast = useCallback((val) => {
+        if (!val) {
+            setToastState(null);
+            return;
+        }
+        let message = "";
+        let type = "info";
+        if (typeof val === "object") {
+            message = val.message || "";
+            type = val.type || "info";
+        } else {
+            message = String(val);
+            const lower = message.toLowerCase();
+            if (lower.includes("success") || lower.includes("done") || lower.includes("saved") || lower.includes("stored") || lower.includes("subscribed") || lower.includes("downloaded") || lower.includes("complete")) {
+                type = "success";
+            } else if (lower.includes("error") || lower.includes("failed") || lower.includes("missing") || lower.includes("select a") || lower.includes("invalid") || lower.includes("require")) {
+                type = "error";
+            } else if (lower.includes("generating") || lower.includes("fetching") || lower.includes("loading") || lower.includes("applying")) {
+                type = "loading";
+            }
+        }
+        setToastState({ message, type, id: Date.now() });
+    }, []);
 
     const {
         search, setSearch, debouncedSearch,
@@ -166,7 +193,8 @@ export default function Dashboard() {
     useEffect(() => { setIndexData(INDEX_DEFAULTS); }, []);
     useEffect(() => {
         if (!toast) return;
-        const t = setTimeout(() => setToast(null), 3000);
+        if (toast.type === "loading") return;
+        const t = setTimeout(() => setToastState(null), 3000);
         return () => clearTimeout(t);
     }, [toast]);
     useEffect(() => {
@@ -325,6 +353,15 @@ export default function Dashboard() {
             setToast("Generating indicators...");
             const data = await generateIndicators(selectedSymbol, timeframe);
             setToast(`Saved ${data.count || data.rows || 0} rows for ${selectedSymbol}`);
+            setOperationResult({
+                title: "Indicators Generated",
+                type: "indicators",
+                symbol: selectedSymbol,
+                timeframe: timeframe === "1440" ? "1D" : timeframe,
+                rows: data.count || data.rows || 0,
+                fromDate: data.from_date || "N/A",
+                toDate: data.to_date || "N/A"
+            });
         } catch (err) { setToast(err.message || "Error"); }
         finally { setIsApplyingIndicators(false); }
     };
@@ -333,13 +370,56 @@ export default function Dashboard() {
         if (!selectedSymbol || !timeframe || !histStart || !histEnd)
             return setToast("Select symbol, timeframe and date range.");
         if (!selectedInstrument) return setToast("Select from search list first.");
+
         setIsFetchingHistory(true);
         try {
+            if (!force) {
+                const checkRes = await fetch("/api/candles/check", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        symbol: selectedSymbol,
+                        instrument_key: selectedInstrument.instrument_key,
+                        timeframe
+                    })
+                });
+                const check = await checkRes.json();
+                if (check.exists) {
+                    setToast(`Candles already present in database (Skipped Upstox call)`);
+                    setOperationResult({
+                        title: "Candles Already Present",
+                        type: "candles",
+                        symbol: selectedSymbol,
+                        timeframe: timeframe === "1440" ? "1D" : timeframe,
+                        rows: check.count,
+                        fromDate: formatYMD(histStart),
+                        toDate: formatYMD(histEnd),
+                        already_exists: true
+                    });
+                    setIsFetchingHistory(false);
+                    return;
+                }
+            }
+
             const r = await fetchHistoricalCandlesAPI({
                 symbol: selectedSymbol, instrument_key: selectedInstrument.instrument_key,
-                timeframe, histStart, histEnd
+                timeframe, histStart, histEnd, force
             });
-            setToast(`Stored ${r.inserted} candles`);
+            if (r.already_exists) {
+                setToast(`Candles already present in database (Skipped Upstox call)`);
+            } else {
+                setToast(`Stored ${r.inserted} candles`);
+            }
+            setOperationResult({
+                title: r.already_exists ? "Candles Already Present" : "Candles Fetched & Stored",
+                type: "candles",
+                symbol: selectedSymbol,
+                timeframe: timeframe === "1440" ? "1D" : timeframe,
+                rows: r.already_exists ? r.total : r.inserted,
+                fromDate: r.from_date || formatYMD(histStart),
+                toDate: r.to_date || formatYMD(histEnd),
+                already_exists: !!r.already_exists
+            });
         } catch (err) { setToast(err.message); }
         finally { setIsFetchingHistory(false); }
     };
@@ -350,20 +430,88 @@ export default function Dashboard() {
         const sym = selectedSymbol.toUpperCase();
         const key = selectedInstrument.instrument_key;
         const months = years * 12;
-        let today = new Date(), year = today.getFullYear(), month = today.getMonth();
-        setToast(`Fetching ${years} year(s)...`);
+
         setIsFetchingHistory(true);
         try {
+            if (!force) {
+                const checkRes = await fetch("/api/candles/check", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        symbol: sym,
+                        instrument_key: key,
+                        timeframe
+                    })
+                });
+                const check = await checkRes.json();
+                if (check.exists) {
+                    setToast(`All data already present in database (Skipped API calls).`);
+                    let today = new Date();
+                    let finalEndDate = formatYMD(new Date(today.getFullYear(), today.getMonth() + 1, 0));
+                    let finalStartDate = formatYMD(new Date(today.getFullYear() - years, today.getMonth(), 1));
+                    setOperationResult({
+                        title: "Bulk Fetch Bypassed",
+                        type: "candles",
+                        symbol: sym,
+                        timeframe: timeframe === "1440" ? "1D" : timeframe,
+                        rows: check.count,
+                        fromDate: finalStartDate,
+                        toDate: finalEndDate,
+                        duration: `${years} Year(s)`,
+                        already_exists: true,
+                        skippedChunks: months,
+                        totalChunks: months
+                    });
+                    setIsFetchingHistory(false);
+                    return;
+                }
+            }
+
+            let today = new Date(), year = today.getFullYear(), month = today.getMonth();
+            setToast(`Fetching ${years} year(s)...`);
+            let totalInserted = 0;
+            let totalSkippedMonths = 0;
+            let totalExisting = 0;
+            let finalEndDate = formatYMD(new Date(year, month + 1, 0));
+            let finalStartDate = "";
             for (let i = 0; i < months; i++) {
                 const start = new Date(year, month, 1);
                 const end   = new Date(year, month + 1, 0);
-                await fetchHistoricalCandlesAPI({ symbol: sym, instrument_key: key, timeframe, histStart: start, histEnd: end });
-                setToast(`Stored ${formatYMD(start)} → ${formatYMD(end)}`);
+                if (i === months - 1) {
+                    finalStartDate = formatYMD(start);
+                }
+                const r = await fetchHistoricalCandlesAPI({ symbol: sym, instrument_key: key, timeframe, histStart: start, histEnd: end, force });
+                if (r.already_exists) {
+                    totalSkippedMonths++;
+                    totalExisting += (r.total || 0);
+                    setToast(`Already present: ${formatYMD(start)} → ${formatYMD(end)}`);
+                } else {
+                    totalInserted += (r.inserted || 0);
+                    setToast(`Stored ${formatYMD(start)} → ${formatYMD(end)}`);
+                }
                 month--;
                 if (month < 0) { month = 11; year--; }
                 await new Promise(r => setTimeout(r, 300));
             }
-            setToast(`Done fetching ${years} year(s).`);
+            const allSkipped = totalSkippedMonths === months;
+            if (allSkipped) {
+                setToast(`All data already present in database (Skipped API calls).`);
+            } else {
+                setToast(`Done fetching ${years} year(s).`);
+            }
+            setOperationResult({
+                title: allSkipped ? "Bulk Fetch Bypassed" : "Bulk Candle Fetch Completed",
+                type: "candles",
+                symbol: sym,
+                timeframe: timeframe === "1440" ? "1D" : timeframe,
+                rows: allSkipped ? totalExisting : totalInserted,
+                fromDate: finalStartDate,
+                toDate: finalEndDate,
+                duration: `${years} Year(s)`,
+                already_exists: allSkipped,
+                skippedChunks: totalSkippedMonths,
+                totalChunks: months
+            });
         } catch (err) { setToast(err.message); }
         finally { setIsFetchingHistory(false); }
     };
@@ -403,25 +551,233 @@ export default function Dashboard() {
             background: "var(--bg-primary)",
             color:      "var(--text-primary)",
         }}>
+            <style>{`
+                @keyframes fadeIn {
+                    from { opacity: 0; }
+                    to { opacity: 1; }
+                }
+                @keyframes scaleIn {
+                    from { transform: scale(0.95); opacity: 0; }
+                    to { transform: scale(1); opacity: 1; }
+                }
+                @keyframes toastSlideIn {
+                    from { transform: translateX(120%); opacity: 0; }
+                    to { transform: translateX(0); opacity: 1; }
+                }
+                @keyframes toastSpin {
+                    to { transform: rotate(360deg); }
+                }
+                @keyframes toastProgress {
+                    from { width: 100%; }
+                    to { width: 0%; }
+                }
+            `}</style>
+
+            {/* ── Success Popup Modal ────────────────────────────────────────── */}
+            {operationResult && (
+                <div style={{
+                    position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+                    backgroundColor: "rgba(0, 0, 0, 0.65)",
+                    backdropFilter: "blur(6px)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    zIndex: 10000,
+                    animation: "fadeIn 0.2s ease"
+                }}>
+                    <div style={{
+                        background: "var(--bg-secondary)",
+                        border: "1px solid var(--border-color)",
+                        borderRadius: "12px",
+                        padding: "24px",
+                        width: "90%",
+                        maxWidth: "420px",
+                        boxShadow: "0 20px 25px -5px rgba(0,0,0,0.4), 0 10px 10px -5px rgba(0,0,0,0.4)",
+                        color: "var(--text-primary)",
+                        fontFamily: "var(--font-body)",
+                        animation: "scaleIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)"
+                    }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
+                            <div style={{
+                                width: "32px", height: "32px", borderRadius: "50%",
+                                background: operationResult.already_exists 
+                                    ? "linear-gradient(135deg, #3B82F6, #1D4ED8)" 
+                                    : "linear-gradient(135deg, #10B981, #059669)",
+                                display: "flex", alignItems: "center", justifyContent: "center",
+                                color: "#fff", fontSize: "1rem", fontWeight: "bold"
+                            }}>
+                                {operationResult.already_exists ? "i" : "✓"}
+                            </div>
+                            <h3 style={{
+                                margin: 0, fontSize: "1.15rem", fontWeight: "700",
+                                fontFamily: "var(--font-display)", color: "var(--text-primary)"
+                            }}>
+                                {operationResult.title}
+                            </h3>
+                        </div>
+
+                        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "20px" }}>
+                            {operationResult.type === "candles" && (
+                                <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
+                                    <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Status</span>
+                                    <span style={{ 
+                                        fontWeight: "700", 
+                                        fontSize: "0.75rem", 
+                                        color: operationResult.already_exists ? "#3B82F6" : "#10B981",
+                                        background: operationResult.already_exists ? "rgba(59, 130, 246, 0.15)" : "rgba(16, 185, 129, 0.15)",
+                                        padding: "2px 8px",
+                                        borderRadius: "4px",
+                                        border: operationResult.already_exists ? "1px solid rgba(59, 130, 246, 0.3)" : "1px solid rgba(16, 185, 129, 0.3)"
+                                    }}>
+                                        {operationResult.already_exists ? "Already Present (Bypassed API)" : "Newly Fetched & Stored"}
+                                    </span>
+                                </div>
+                            )}
+                            <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
+                                <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Symbol</span>
+                                <span style={{ fontWeight: "600", fontSize: "0.8rem", color: "var(--accent-blue)" }}>{operationResult.symbol}</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
+                                <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Timeframe</span>
+                                <span style={{ fontWeight: "600", fontSize: "0.8rem" }}>{operationResult.timeframe}</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
+                                <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Rows Processed</span>
+                                <span style={{ fontWeight: "700", fontSize: "0.8rem", color: "#10B981" }}>{Number(operationResult.rows).toLocaleString()}</span>
+                            </div>
+                            <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
+                                <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Date Range</span>
+                                <span style={{ fontWeight: "600", fontSize: "0.8rem" }}>{operationResult.fromDate} to {operationResult.toDate}</span>
+                            </div>
+                            {operationResult.duration && (
+                                <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
+                                    <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Requested Duration</span>
+                                    <span style={{ fontWeight: "600", fontSize: "0.8rem" }}>{operationResult.duration}</span>
+                                </div>
+                            )}
+                        </div>
+
+                        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                            <button 
+                                onClick={() => setOperationResult(null)}
+                                style={{
+                                    background: "linear-gradient(135deg, var(--accent-blue), #1D4ED8)",
+                                    color: "#fff",
+                                    border: "none",
+                                    borderRadius: "6px",
+                                    padding: "8px 18px",
+                                    fontSize: "0.8rem",
+                                    fontWeight: "600",
+                                    cursor: "pointer",
+                                    transition: "all 0.15s ease",
+                                    boxShadow: "var(--shadow-glow-blue)"
+                                }}
+                                onMouseEnter={(e) => {
+                                    e.target.style.filter = "brightness(1.1)";
+                                }}
+                                onMouseLeave={(e) => {
+                                    e.target.style.filter = "brightness(1)";
+                                }}
+                            >
+                                Close
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* ── Toast ────────────────────────────────────────── */}
             {toast && (
                 <div style={{
-                    position: "fixed", bottom: 20, right: 20, zIndex: 9999,
-                    background:   "var(--bg-secondary)",
-                    color:        "var(--text-primary)",
-                    border:       "1px solid var(--border-color)",
-                    borderLeft:   "3px solid var(--accent-blue)",
-                    borderRadius: "var(--card-radius)",
-                    padding:      "10px 16px",
-                    fontSize:     "0.8rem",
-                    fontFamily:   "var(--font-body)",
-                    fontWeight:   500,
-                    boxShadow:    "var(--shadow-card-hover)",
-                    maxWidth:     320,
-                    animation:    "slideIn 0.2s ease",
+                    position: "fixed", bottom: 24, right: 24, zIndex: 9999,
+                    background: "rgba(30, 41, 59, 0.85)",
+                    backdropFilter: "blur(12px)",
+                    border: "1px solid rgba(255, 255, 255, 0.08)",
+                    borderRadius: "10px",
+                    padding: "12px 18px",
+                    color: "#fff",
+                    boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5), 0 8px 10px -6px rgba(0,0,0,0.5), inset 0 1px 0 0 rgba(255,255,255,0.1)",
+                    display: "flex", alignItems: "center", gap: "12px",
+                    minWidth: "280px", maxWidth: "360px",
+                    animation: "toastSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
+                    overflow: "hidden"
                 }}>
-                    {toast}
+                    {/* Icon */}
+                    {toast.type === "success" && (
+                        <div style={{
+                            width: "20px", height: "20px", borderRadius: "50%",
+                            background: "rgba(16, 185, 129, 0.2)",
+                            border: "1px solid rgba(16, 185, 129, 0.4)",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            color: "#10B981", fontSize: "0.8rem", fontWeight: "bold", flexShrink: 0
+                        }}>
+                            ✓
+                        </div>
+                    )}
+                    {toast.type === "error" && (
+                        <div style={{
+                            width: "20px", height: "20px", borderRadius: "50%",
+                            background: "rgba(239, 68, 68, 0.2)",
+                            border: "1px solid rgba(239, 68, 68, 0.4)",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            color: "#EF4444", fontSize: "0.8rem", fontWeight: "bold", flexShrink: 0
+                        }}>
+                            ✕
+                        </div>
+                    )}
+                    {toast.type === "loading" && (
+                        <div style={{
+                            width: "16px", height: "16px",
+                            border: "2px solid rgba(255, 255, 255, 0.2)",
+                            borderTop: "2px solid var(--accent-blue)",
+                            borderRadius: "50%",
+                            animation: "toastSpin 0.8s linear infinite", flexShrink: 0
+                        }} />
+                    )}
+                    {toast.type === "info" && (
+                        <div style={{
+                            width: "20px", height: "20px", borderRadius: "50%",
+                            background: "rgba(59, 130, 246, 0.2)",
+                            border: "1px solid rgba(59, 130, 246, 0.4)",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            color: "#3B82F6", fontSize: "0.8rem", fontWeight: "bold", flexShrink: 0
+                        }}>
+                            i
+                        </div>
+                    )}
+
+                    {/* Message */}
+                    <div style={{
+                        flex: 1, fontSize: "0.8rem", fontWeight: "500",
+                        lineHeight: "1.4", fontFamily: "var(--font-body)", color: "#E2E8F0"
+                    }}>
+                        {toast.message}
+                    </div>
+
+                    {/* Close Button */}
+                    <button 
+                        onClick={() => setToastState(null)}
+                        style={{
+                            background: "transparent", border: "none", color: "rgba(255, 255, 255, 0.4)",
+                            fontSize: "0.8rem", cursor: "pointer", padding: "2px", display: "flex",
+                            alignItems: "center", justifyContent: "center", transition: "color 0.15s ease",
+                            fontFamily: "sans-serif"
+                        }}
+                        onMouseEnter={(e) => e.target.style.color = "#fff"}
+                        onMouseLeave={(e) => e.target.style.color = "rgba(255, 255, 255, 0.4)"}
+                    >
+                        ✕
+                    </button>
+
+                    {/* Progress Bar (except for loading) */}
+                    {toast.type !== "loading" && (
+                        <div style={{
+                            position: "absolute", bottom: 0, left: 0, height: "3px",
+                            background: toast.type === "success" ? "#10B981" : 
+                                        toast.type === "error" ? "#EF4444" : 
+                                        toast.type === "info" ? "#3B82F6" : "var(--accent-blue)",
+                            width: "100%",
+                            animation: "toastProgress 3s linear forwards"
+                        }} />
+                    )}
                 </div>
             )}
 
@@ -796,6 +1152,8 @@ export default function Dashboard() {
                                 applyIndicators={applyIndicators}
                                 fetchHistoricalCandles={fetchHistoricalCandles}
                                 downloadExcel={downloadExcel}
+                                force={force}
+                                setForce={setForce}
                             />
                         )}
 

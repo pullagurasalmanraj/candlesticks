@@ -873,6 +873,8 @@ def _run_state_machine(
     p5_fallback_re_min: float = 0.15,  # hysteresis RE floor (dead-market break)
     # ------ Debug mode ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
     debug: bool = False,  # if True, returns reason column
+    warmup_highs: np.ndarray = None,
+    warmup_lows: np.ndarray = None,
 ):
     """
     State machine v34 --- sole market-phase assigner.
@@ -918,6 +920,16 @@ def _run_state_machine(
     open_arr = df["open"].to_numpy(dtype=float)
     low_arr = df["low"].to_numpy(dtype=float)
     high_arr = df["high"].to_numpy(dtype=float)
+
+    # Prepended highs and lows for swing detection warmup
+    if warmup_highs is not None and len(warmup_highs) > 0:
+        prepended_highs = np.concatenate([warmup_highs, high_arr])
+        prepended_lows = np.concatenate([warmup_lows, low_arr])
+        K = len(warmup_highs)
+    else:
+        prepended_highs = high_arr
+        prepended_lows = low_arr
+        K = 0
     vol_arr = df["volume"].to_numpy(dtype=float)
     vol_ma20_arr = vol_ma20.to_numpy(dtype=float)
     range_eff_arr = df["range_efficiency"].to_numpy(dtype=float)
@@ -1111,7 +1123,7 @@ def _run_state_machine(
         if trend_context_bars >= trend_context_decay:
             trend_context = "NEUTRAL"
 
-        price_structure_arr[i] = _compute_price_structure(high_arr, low_arr, i, swing_n)
+        price_structure_arr[i] = _compute_price_structure(prepended_highs, prepended_lows, i + K, swing_n)
         macro_regime_arr[i] = _compute_macro_regime(
             close_arr[i], ema200_arr[i], atr_pct_arr[i]
         )

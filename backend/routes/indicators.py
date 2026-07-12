@@ -892,7 +892,16 @@ def api_indicators_daily():
                 )
                 execute_values(cur, _UPSERT_SQL, rows)
 
-        return jsonify({"status": "SUCCESS", "rows": len(rows)})
+        first_date = str(df["ts"].iloc[0].date()) if not df.empty else ""
+        last_date = str(df["ts"].iloc[-1].date()) if not df.empty else ""
+        return jsonify({
+            "status": "SUCCESS", 
+            "rows": len(rows),
+            "symbol": symbol,
+            "timeframe": "1D",
+            "from_date": first_date,
+            "to_date": last_date
+        })
 
     except Exception:
         traceback.print_exc()
@@ -1312,7 +1321,16 @@ def api_indicators_intraday():
                 execute_values(cur, _UPSERT_SQL, rows)
         _dbg(f"upsert_done rows={len(rows)} cutoff_ts={cutoff_ts}")
 
-        response = {"status": "SUCCESS", "rows": len(rows)}
+        first_date = str(df["ts"].iloc[0].date()) if not df.empty else ""
+        last_date = str(df["ts"].iloc[-1].date()) if not df.empty else ""
+        response = {
+            "status": "SUCCESS", 
+            "rows": len(rows),
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "from_date": first_date,
+            "to_date": last_date
+        }
         if debug_warmup:
             response["debug"] = {
                 "timeframe": timeframe,

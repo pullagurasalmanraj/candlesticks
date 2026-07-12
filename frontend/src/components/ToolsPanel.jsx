@@ -91,6 +91,7 @@ export default function ToolsPanel({
     isApplyingIndicators,
     runBulkFetch, applyIndicators,
     fetchHistoricalCandles, downloadExcel,
+    force, setForce,
 }) {
     const datepickerInputStyle = {
         ...inputStyle,
@@ -211,6 +212,30 @@ export default function ToolsPanel({
                                 className="dp-input"
                             />
                         </div>
+                    </div>
+
+                    {/* Force Refresh Checkbox */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 2px" }}>
+                        <input
+                            type="checkbox"
+                            id="forceRefresh"
+                            checked={force}
+                            onChange={e => setForce(e.target.checked)}
+                            style={{ cursor: "pointer", width: 14, height: 14, accentColor: "var(--accent-blue)" }}
+                        />
+                        <label 
+                            htmlFor="forceRefresh" 
+                            style={{ 
+                                fontSize: "0.72rem", 
+                                cursor: "pointer", 
+                                color: "var(--text-muted)", 
+                                fontFamily: "var(--font-body)",
+                                userSelect: "none",
+                                fontWeight: 500
+                            }}
+                        >
+                            Force re-fetch (bypasses cache check)
+                        </label>
                     </div>
 
                     {/* Action buttons */}
