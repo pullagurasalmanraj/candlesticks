@@ -145,6 +145,16 @@ export default function useWebSocketPrices(_instrumentByKey) {
         ws.onopen = () => {
             setIsConnected(true);
             setIsLoading(false);
+
+            try {
+                const savedSubs = JSON.parse(
+                    localStorage.getItem("activeSubscriptions") || "{}"
+                );
+                const keys = Object.keys(savedSubs);
+                if (keys.length > 0) {
+                    ws.send(JSON.stringify({ subscribe: keys, source: "restore" }));
+                }
+            } catch {}
         };
 
         ws.onmessage = handleMessage;

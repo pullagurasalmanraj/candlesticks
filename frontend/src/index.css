@@ -8,28 +8,30 @@
    DO NOT hardcode hex values here. Edit colours in ThemeContext.jsx.
    ================================================================ */
 
-/* ── CSS-only fallback defaults (dark theme) ───────────────────
+/* ── CSS-only fallback defaults (light theme) ───────────────────
    ThemeContext.jsx overrides these via JS on every load.
    These exist ONLY so the page never renders completely unstyled
-   if JS is slow. They match AURORA_DARK exactly.
+   if JS is slow. They match AURORA_LIGHT exactly.
    ──────────────────────────────────────────────────────────── */
 :root {
-    --bg-primary: #060b18;
-    --bg-secondary: #0d1526;
-    --bg-tertiary: #132038;
-    --bg-hover: #1a2d4a;
-    --border-color: #1e3a5f;
-    --border-subtle: #0f2040;
-    --text-primary: #e8f0fe;
-    --text-secondary: #8ba3c7;
-    --text-muted: #4a6080;
-    --accent-blue: #4f9eff;
-    --accent-blue-hover: #70b3ff;
-    --accent-blue-muted: rgba(79, 158, 255, 0.12);
-    --accent-up: #00e676;
-    --accent-down: #ff5252;
-    --accent-gold: #ffd54f;
-    --glow: rgba(79, 158, 255, 0.7);
+    --bg-primary: #f0f4ff;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #e4ecf8;
+    --bg-hover: #dae6f5;
+    --border-color: #c2d3ea;
+    --border-subtle: #dce8f5;
+    --text-primary: #0a1929;
+    --text-secondary: #3d5a7a;
+    --text-muted: #7a9bbf;
+    --accent-blue: #1565c0;
+    --accent-blue-hover: #0d47a1;
+    --accent-blue-muted: rgba(21, 101, 192, 0.1);
+    --accent-up: #1b5e20;
+    --accent-down: #b71c1c;
+    --accent-gold: #e65100;
+    --glow: rgba(21, 101, 192, 0.4);
+    --glow-green: rgba(27, 94, 32, 0.3);
+    --glow-red: rgba(183, 28, 28, 0.3);
     --navbar-height: 60px;
     --sidebar-width: 240px;
     --sidebar-collapsed: 64px;
@@ -228,6 +230,23 @@ pre,
 
     100% {
         box-shadow: 0 0 0px rgba(79, 158, 255, 0);
+    }
+}
+
+/* Stop stream button blinking animation */
+@keyframes stopPulse {
+    0%, 100% {
+        background-color: rgba(255, 82, 82, 0.2);
+        box-shadow: 0 0 4px rgba(255, 82, 82, 0.4);
+        border-color: rgba(255, 82, 82, 0.5);
+        color: #ff5252;
+    }
+
+    50% {
+        background-color: rgba(255, 82, 82, 0.9);
+        box-shadow: 0 0 12px rgba(255, 82, 82, 0.9);
+        border-color: #ff5252;
+        color: #ffffff;
     }
 }
 

@@ -2,7 +2,7 @@
 # ================================================================
 #  Strategy Route Handlers Blueprint
 # ================================================================
-import time, traceback
+import time, math, traceback
 from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
@@ -11,6 +11,8 @@ from flask import Blueprint, request, jsonify
 from db import get_db_conn, read_sql_safe, chunk_execute as _chunk_execute
 from routes.strategy_logic import (
     COST_R_MAX_GATE,
+    TOTAL_COST_PCT,
+    SLIPPAGE_PTS,
     PHASE_MODEL,
     _run_state_machine,
     _build_market_rows,
@@ -846,6 +848,7 @@ def offline_label_market_context():
             distribution_max_streak=5,
             pullback_min_bars=2,
             trend_context_decay=20,
+            debug=True,
             warmup_highs=warmup_highs,
             warmup_lows=warmup_lows,
         )
@@ -867,37 +870,11 @@ def offline_label_market_context():
             & (df["orb_location"] == 1)
         ).astype(int)
 
-        # ------ Trim warmup rows FIRST --- then fillna(0) ---------------------------------------
-        # WARMUP must cover the longest rolling window used:
-        #   ROLL_20           --- vol_ma20, bb_width_p33
-        #   4 * SWING_N       --- swing detection needs 4*n lookback bars
-        #   OBV_WINDOW        --- obv_slope lookback
-        #   roll_slope_slow   --- slowest EMA slope window
-        #   roll_vol_slow     --- longest volume baseline in low-vol regime
-        #
-        # VOL_BASELINE (1 session) intentionally NOT in WARMUP --- it uses
-        # min_periods=ROLL_20 so it starts producing values after ROLL_20 bars.
-        # Including VOL_BASELINE would discard 1 full session as warmup.
-        #
-        # Real-time cost of WARMUP per TF:
-        #   1m : max(60, 20, 30, 30, 120) = 120 bars = 120 min
-        #   3m : max(20, 20, 10, 10,  40) = 40  bars = 120 min
-        #   5m : max(12, 12,  6,  6,  24) = 24  bars = 120 min
-        #  15m : max(10,  8,  2,  6,  20) = 20  bars = 300 min
-        WARMUP = max(ROLL_20, 4 * SWING_N, OBV_WINDOW, roll_slope_slow, roll_vol_slow)
-        df = df.iloc[WARMUP:].reset_index(drop=True)
-        if df.empty:
-            return (
-                jsonify(
-                    {
-                        "error": (
-                            "No rows left after warmup trimming. "
-                            "Fetch more indicator history and retry."
-                        )
-                    }
-                ),
-                400,
-            )
+        # ------ Align market context start directly to indicators start (09:15 AM IST) ------------
+        is_915 = (df["ts_ist"].dt.hour == 9) & (df["ts_ist"].dt.minute == 15)
+        open_idx = np.flatnonzero(is_915.to_numpy())
+        if len(open_idx) > 0:
+            df = df.iloc[int(open_idx[0]):].reset_index(drop=True)
 
         # Now fillna is safe --- only genuine missing values remain
         for c in FEATURE_COLS:
@@ -906,8 +883,6 @@ def offline_label_market_context():
         now = datetime.now(timezone.utc)
 
         # ------ IMPROVEMENT 2: vectorized row building ---------------------------------------------
-        # Tag each bar with its TF role --- used by ML pipeline to know
-        # which model to train and how to combine signals across TFs
         tf_role = {"1m": "MICRO", "3m": "CONFIRM", "5m": "CONFIRM", "15m": "EXECUTE"}[
             timeframe
         ]
@@ -928,6 +903,8 @@ def offline_label_market_context():
                 price_structure,session_type,macro_regime,
                 vwap_dist_atr,
                 impulse_dir,
+                context_label,
+                phase_reason,
                 created_at
             ) VALUES %s
             ON CONFLICT (symbol,exchange,timeframe,ts) DO UPDATE SET
@@ -948,6 +925,8 @@ def offline_label_market_context():
                 macro_regime=EXCLUDED.macro_regime,
                 vwap_dist_atr=EXCLUDED.vwap_dist_atr,
                 impulse_dir=EXCLUDED.impulse_dir,
+                context_label=EXCLUDED.context_label,
+                phase_reason=EXCLUDED.phase_reason,
                 created_at=EXCLUDED.created_at
         """
         RULE_SQL = """
@@ -963,6 +942,10 @@ def offline_label_market_context():
 
         with get_db_conn() as conn:
             with conn.cursor() as cur:
+                cur.execute("ALTER TABLE market_context ADD COLUMN IF NOT EXISTS context_label text;")
+                cur.execute("ALTER TABLE market_context ADD COLUMN IF NOT EXISTS phase_reason text;")
+                cur.execute("ALTER TABLE strategy_outcomes ADD COLUMN IF NOT EXISTS phase_reason text;")
+
                 # Discard stale warmup-era labels from earlier runs.
                 cur.execute(
                     """
@@ -1072,6 +1055,19 @@ def calibrate_phase_params():
         if not symbol or not timeframe:
             return jsonify({"error": "symbol and timeframe required"}), 400
 
+        # Issue 1: Date filtering for walk-forward calibration
+        raw_from = data.get("from_date")
+        raw_to = data.get("to_date")
+        date_warning = None
+        if not raw_from or not raw_to:
+            date_warning = (
+                "No date range specified; calibrating over full available history. "
+                "Specify from_date and to_date for out-of-sample walk-forward calibration."
+            )
+
+        from_dt = pd.to_datetime(raw_from or "2000-01-01", utc=True)
+        to_dt = pd.to_datetime(raw_to or datetime.now(timezone.utc), utc=True)
+
         MIN_SAMPLES = int(data.get("min_samples", 30))
         TP_PERCENTILE = float(data.get("tp_percentile", 60))  # p60 of mfe_r
         SL_PERCENTILE = float(data.get("sl_percentile", 25))  # p25 of |mae_r|
@@ -1081,6 +1077,14 @@ def calibrate_phase_params():
         tf_min = TF_MIN_MAP.get(timeframe, 1)
 
         with get_db_conn() as conn:
+            # Ensure DB table schema has calibrated_from and calibrated_to columns
+            with conn.cursor() as cur:
+                cur.execute("""
+                    ALTER TABLE phase_params
+                    ADD COLUMN IF NOT EXISTS calibrated_from TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS calibrated_to TIMESTAMPTZ;
+                """)
+
             # Diagnostic: count total rows first so error message is specific
             total_df = read_sql_safe(
                 """
@@ -1090,9 +1094,10 @@ def calibrate_phase_params():
                        COUNT(exit_after_candles) AS has_exit_after
                 FROM strategy_outcomes
                 WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                  AND ts BETWEEN %s AND %s
             """,
                 conn,
-                params=[symbol, exchange, timeframe],
+                params=[symbol, exchange, timeframe, from_dt, to_dt],
             )
 
             total_rows = (
@@ -1110,12 +1115,13 @@ def calibrate_phase_params():
                        COALESCE(cost_r,  0)   AS cost_r
                 FROM strategy_outcomes
                 WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                  AND ts BETWEEN %s AND %s
                   AND mfe_r IS NOT NULL
                   AND mae_r IS NOT NULL
                   AND exit_after_candles IS NOT NULL
             """,
                 conn,
-                params=[symbol, exchange, timeframe],
+                params=[symbol, exchange, timeframe, from_dt, to_dt],
             )
 
         if df.empty:
@@ -1345,6 +1351,8 @@ def calibrate_phase_params():
                         viable
                     ),  # Constraint 2: written to DB so _load_phase_params can filter
                     now,
+                    from_dt,
+                    to_dt,
                 )
             )
 
@@ -1360,7 +1368,8 @@ def calibrate_phase_params():
                             optimal_tp,optimal_sl,optimal_lookahead_min,
                             samples,win_rate,avg_mfe_r,avg_mae_r,
                             p25_mfe_r,p50_mfe_r,p75_mfe_r,p25_mae_r,
-                            p75_exit_after,viable,computed_at
+                            p75_exit_after,viable,computed_at,
+                            calibrated_from,calibrated_to
                         ) VALUES %s
                         ON CONFLICT (symbol,exchange,timeframe,market_phase)
                         DO UPDATE SET
@@ -1377,7 +1386,9 @@ def calibrate_phase_params():
                             p25_mae_r=EXCLUDED.p25_mae_r,
                             p75_exit_after=EXCLUDED.p75_exit_after,
                             viable=EXCLUDED.viable,
-                            computed_at=EXCLUDED.computed_at
+                            computed_at=EXCLUDED.computed_at,
+                            calibrated_from=EXCLUDED.calibrated_from,
+                            calibrated_to=EXCLUDED.calibrated_to
                     """,
                         upsert_rows,
                     )
@@ -1390,22 +1401,26 @@ def calibrate_phase_params():
         unviable_count = sum(1 for v in results.values() if v.get("viable") is False)
         skipped = len(results) - calibrated
 
-        return jsonify(
-            {
-                "status": "SUCCESS",
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "phases_calibrated": calibrated,
-                "phases_viable": viable_count,
-                "phases_unviable": unviable_count,
-                "phases_unviable_note": "unviable phases fall back to PHASE_MODEL defaults in simulation",
-                "phases_skipped_insufficient_data": skipped,
-                "tp_percentile": TP_PERCENTILE,
-                "sl_percentile": SL_PERCENTILE,
-                "la_percentile": LA_PERCENTILE,
-                "phases": results,
-            }
-        )
+        res_payload = {
+            "status": "SUCCESS",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "phases_calibrated": calibrated,
+            "phases_viable": viable_count,
+            "phases_unviable": unviable_count,
+            "phases_unviable_note": "unviable phases fall back to PHASE_MODEL defaults in simulation",
+            "phases_skipped_insufficient_data": skipped,
+            "tp_percentile": TP_PERCENTILE,
+            "sl_percentile": SL_PERCENTILE,
+            "la_percentile": LA_PERCENTILE,
+            "calibrated_from": from_dt.isoformat(),
+            "calibrated_to": to_dt.isoformat(),
+            "phases": results,
+        }
+        if date_warning:
+            res_payload["calibration_warning"] = date_warning
+
+        return jsonify(res_payload)
 
     except Exception:
         traceback.print_exc()
@@ -1623,6 +1638,36 @@ def calc_strategy_outcomes():
         with get_db_conn() as conn:
             data_params = _load_phase_params(symbol, exchange, timeframe, conn)
 
+        # Issue 1: Detect calibration window overlap with evaluation request window
+        max_calibrated_to = None
+        for _pname, pinfo in data_params.items():
+            c_to = pinfo.get("calibrated_to")
+            if c_to is not None:
+                try:
+                    c_to_dt = pd.to_datetime(c_to, utc=True)
+                    if max_calibrated_to is None or c_to_dt > max_calibrated_to:
+                        max_calibrated_to = c_to_dt
+                except Exception:
+                    pass
+
+        params_overlap_warning = False
+        if max_calibrated_to is not None and from_dt <= max_calibrated_to:
+            params_overlap_warning = True
+
+        # Issue 2: Precompute session_end_idx to cap trade lookahead at session boundaries (zero overnight leakage)
+        # Convert timestamps to IST timezone so session dates correspond strictly to Indian trading days (09:15 to 15:30 IST)
+        ts_pd = pd.to_datetime(df["ts"])
+        if ts_pd.dt.tz is None:
+            ts_pd = ts_pd.dt.tz_localize("UTC")
+        session_dates = ts_pd.dt.tz_convert("Asia/Kolkata").dt.date.to_numpy()
+
+        session_end_idx = np.zeros(N, dtype=int)
+        last_idx = N - 1
+        for idx in range(N - 1, -1, -1):
+            if idx == N - 1 or session_dates[idx] != session_dates[idx + 1]:
+                last_idx = idx
+            session_end_idx[idx] = last_idx
+
         # Pre-compute effective params per phase (data-derived > hardcoded)
         # Also compute lookahead bars (min 2, max 375)
         _la_cache = {}
@@ -1677,8 +1722,18 @@ def calc_strategy_outcomes():
             if not cfg:
                 continue
             la = _la_cache.get(phases[i], 2)
-            if i + la + 2 >= N:
+            entry_idx = i + 1
+            if entry_idx >= N:
                 continue
+
+            # Issue 2: Session boundary capping relative to entry bar (entry_idx = i + 1)
+            session_end = session_end_idx[entry_idx]
+            max_bars_in_session = session_end - entry_idx + 1  # count of bars in session from entry_idx to session_end
+            if max_bars_in_session < 1:
+                continue  # Skip trade if no bars remain in the current session
+
+            la_capped = min(la, max_bars_in_session)
+
             atr = atrs[i]
             if atr <= 0:
                 continue
@@ -1870,16 +1925,16 @@ def calc_strategy_outcomes():
                 )  # sell TP fills lower (worse)
                 sl = entry - cfg["sl"] * atr  # stop loss fills at SL
 
-            # Exit simulation starts from bar i+2 (first full bar after entry)
+            # Issue 3: Exit simulation includes bar i+1 (the entry bar itself), capped at la_capped (Issue 2)
             exit_reason, exit_price, exit_after, mfe, mae = _simulate_exit_vectorized(
                 entry,
                 tp,
                 sl,
-                highs[i + 2 : i + 2 + la],
-                lows[i + 2 : i + 2 + la],
-                closes[i + 2 : i + 2 + la],
-                la,
-                is_short=is_short,  # FIX 14: direction-aware exit
+                highs[i + 1 : i + 1 + la_capped],
+                lows[i + 1 : i + 1 + la_capped],
+                closes[i + 1 : i + 1 + la_capped],
+                la_capped,
+                is_short=is_short,
             )
 
             ts = ts_arr[i]
@@ -1966,7 +2021,7 @@ def calc_strategy_outcomes():
                     float(realized_r_net) if rt("VOLUME_EXPANSION") else None,
                     str(exit_reason),  # str
                     pd.Timestamp(
-                        ts_arr[i + 1 + int(exit_after)]
+                        ts_arr[min(N - 1, entry_idx + int(exit_after) - 1)]
                     ).to_pydatetime(),  # exit_ts
                     float(mfe),
                     float(mae),
@@ -2044,24 +2099,30 @@ def calc_strategy_outcomes():
                 _chunk_execute(cur, OUTCOME_SQL, rows)
 
         elapsed = round(time.time() - t0, 1)
-        return jsonify(
-            {
-                "status": "SUCCESS",
-                "rows_written": len(rows),
-                "elapsed_sec": elapsed,
-                "phases_calibrated": n_calibrated,
-                "phases_default": len(_cfg_cache) - n_calibrated - n_unviable_fallback,
-                "phases_unviable_fallback": n_unviable_fallback,
-                "param_source": "calibrated" if n_calibrated > 0 else "default",
-                "cost_r_gate": cost_r_gate,
-                "skipped_by_cost": n_cost_skipped,
-                "pct_skipped_by_cost": round(n_cost_skipped / max(1, N) * 100, 1),
-                # v28 new gate stats
-                "skipped_by_eod": n_eod_skipped,
-                "skipped_by_min_rules": n_rules_skipped,
-                "min_rules_fired": min_rules_fired,
-            }
-        )
+        res_payload = {
+            "status": "SUCCESS",
+            "rows_written": len(rows),
+            "elapsed_sec": elapsed,
+            "phases_calibrated": n_calibrated,
+            "phases_default": len(_cfg_cache) - n_calibrated - n_unviable_fallback,
+            "phases_unviable_fallback": n_unviable_fallback,
+            "param_source": "calibrated" if n_calibrated > 0 else "default",
+            "params_overlap_warning": params_overlap_warning,
+            "max_calibrated_to": max_calibrated_to.isoformat() if max_calibrated_to else None,
+            "cost_r_gate": cost_r_gate,
+            "skipped_by_cost": n_cost_skipped,
+            "pct_skipped_by_cost": round(n_cost_skipped / max(1, N) * 100, 1),
+            "skipped_by_eod": n_eod_skipped,
+            "skipped_by_min_rules": n_rules_skipped,
+            "min_rules_fired": min_rules_fired,
+        }
+        if params_overlap_warning:
+            res_payload["overlap_warning_details"] = (
+                "Evaluation request start date overlaps or precedes the calibration window end date "
+                f"({max_calibrated_to.isoformat() if max_calibrated_to else 'N/A'}). "
+                "Recommend using a rolling out-of-sample walk-forward split to eliminate in-sample target leakage."
+            )
+        return jsonify(res_payload)
 
     except Exception:
         traceback.print_exc()
@@ -2137,6 +2198,64 @@ def get_rule_stats():
                 {"name": "VWAP_TREND", **stats("vwap_outcome")},
                 {"name": "VOLUME_EXPANSION", **stats("bb_outcome")},
             ],
+        }
+    )
+
+
+# ------ Debug & Label Reasons Inspection ------------------------------------------------------------------
+@strategy_bp.route("/api/market-context/reasons", methods=["GET"])
+def get_market_context_reasons():
+    """
+    Query market phase labels and the exact priority rule/condition reason
+    captured during debug-mode labelling.
+    """
+    symbol = (request.args.get("symbol") or "").upper().strip()
+    timeframe = (request.args.get("timeframe") or "").lower().strip()
+    limit = int(request.args.get("limit", 200))
+
+    if not symbol or not timeframe:
+        return jsonify({"error": "symbol and timeframe required"}), 400
+
+    with get_db_conn() as conn:
+        df = read_sql_safe(
+            """
+            SELECT ts, market_phase, ml_label, price_structure,
+                   COALESCE(context_label, '') AS context_label,
+                   COALESCE(phase_reason, '')  AS phase_reason
+            FROM market_context
+            WHERE symbol=%s AND timeframe=%s
+            ORDER BY ts DESC
+            LIMIT %s
+            """,
+            conn,
+            params=[symbol, timeframe, limit],
+        )
+
+    if df.empty:
+        return jsonify({"symbol": symbol, "timeframe": timeframe, "total": 0, "bars": [], "reasons_summary": {}})
+
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce")
+    summary = df["phase_reason"].value_counts().to_dict()
+
+    bars = [
+        {
+            "ts": row["ts"].isoformat() if pd.notnull(row["ts"]) else None,
+            "market_phase": row["market_phase"],
+            "ml_label": row["ml_label"],
+            "price_structure": row["price_structure"],
+            "context_label": row["context_label"],
+            "phase_reason": row["phase_reason"],
+        }
+        for _, row in df.iterrows()
+    ]
+
+    return jsonify(
+        {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "total": len(bars),
+            "reasons_summary": summary,
+            "bars": bars,
         }
     )
 

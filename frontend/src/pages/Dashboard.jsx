@@ -26,48 +26,48 @@ import {
     savePreferredWatchlistCap,
 } from "../utils/watchlistUtils";
 
-import SearchBar            from "../components/SearchBar";
-import WebSocketStatus      from "../components/WebSocketStatus";
-import MarketSummary        from "../components/MarketSummary";
-import IndexStrip           from "../components/IndexStrip";
-import SelectedInstruments  from "../components/SelectedInstruments";
-import ToolsPanel           from "../components/ToolsPanel";
+import SearchBar from "../components/SearchBar";
+import WebSocketStatus from "../components/WebSocketStatus";
+import MarketSummary from "../components/MarketSummary";
+import IndexStrip from "../components/IndexStrip";
+import SelectedInstruments from "../components/SelectedInstruments";
+import ToolsPanel from "../components/ToolsPanel";
 import ProfileDrawer, { Avatar } from "../components/ProfileDrawer";
-import StockLogo               from "../components/StockLogo";
-import useInstrumentSearch  from "../hooks/useInstrumentSearch";
-import useWebSocketPrices   from "../hooks/useWebSocketPrices.js";
-import { fetchTimeframes }  from "../services/timeframeService";
+import StockLogo from "../components/StockLogo";
+import useInstrumentSearch from "../hooks/useInstrumentSearch";
+import useWebSocketPrices from "../hooks/useWebSocketPrices.js";
+import { fetchTimeframes } from "../services/timeframeService";
 import { fetchHistoricalCandlesAPI } from "../services/candleService";
 import { subscribeSymbol, unsubscribeAllInstruments, unsubscribeInstrument } from "../services/subscriptionService";
 import { generateIndicators } from "../services/indicatorService";
-import { downloadExcelAPI }  from "../services/exportService";
+import { downloadExcelAPI } from "../services/exportService";
 
 // ── Section header component ─────────────────────────────────────
 function SectionHeader({ title, subtitle, action }) {
     return (
         <div style={{
-            display:        "flex",
-            alignItems:     "center",
+            display: "flex",
+            alignItems: "center",
             justifyContent: "space-between",
-            marginBottom:   14,
+            marginBottom: 14,
         }}>
             <div>
                 <div style={{
-                    fontSize:      "0.7rem",
-                    fontWeight:    700,
+                    fontSize: "0.7rem",
+                    fontWeight: 700,
                     letterSpacing: "0.08em",
                     textTransform: "uppercase",
-                    color:         "var(--text-muted)",
-                    fontFamily:    "var(--font-body)",
-                    marginBottom:  3,
+                    color: "var(--text-muted)",
+                    fontFamily: "var(--font-body)",
+                    marginBottom: 3,
                 }}>
                     {subtitle}
                 </div>
                 <div style={{
-                    fontSize:   "1rem",
+                    fontSize: "1rem",
                     fontWeight: 700,
                     fontFamily: "var(--font-display)",
-                    color:      "var(--text-primary)",
+                    color: "var(--text-primary)",
                     letterSpacing: "-0.01em",
                 }}>
                     {title}
@@ -82,11 +82,11 @@ function SectionHeader({ title, subtitle, action }) {
 function Panel({ children, style = {} }) {
     return (
         <div style={{
-            background:    "var(--bg-secondary)",
-            border:        "1px solid var(--border-color)",
-            borderRadius:  "var(--card-radius)",
-            boxShadow:     "var(--shadow-card)",
-            padding:       "20px",
+            background: "var(--bg-secondary)",
+            border: "1px solid var(--border-color)",
+            borderRadius: "var(--card-radius)",
+            boxShadow: "var(--shadow-card)",
+            padding: "20px",
             ...style,
         }}>
             {children}
@@ -117,33 +117,44 @@ function readStoredArray(key) {
     }
 }
 
+function readStoredObject(key) {
+    try {
+        const raw = localStorage.getItem(key);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
 export default function Dashboard() {
     const { theme } = useTheme();
 
     // ── State ────────────────────────────────────────────────────
-    const [selectedInstruments,   setSelectedInstruments]   = useState(() => readStoredArray("selectedInstruments"));
-    const [isApplyingIndicators,  setIsApplyingIndicators]  = useState(false);
-    const [watchlistsByCap,       setWatchlistsByCap]       = useState(() => readStoredWatchlistsByCap());
-    const [activeWatchlistCap,    setActiveWatchlistCap]    = useState(() => readPreferredWatchlistCap());
-    const [selectedSymbol,        setSelectedSymbol]        = useState("");
-    const [selectedInstrument,    setSelectedInstrument]    = useState(null);
-    const [activeSubscriptions,   setActiveSubscriptions]   = useState({});
-    const [startDate,             setStartDate]             = useState(null);
-    const [endDate,               setEndDate]               = useState(null);
-    const [timeframes,            setTimeframes]            = useState([]);
-    const [timeframe,             setTimeframe]             = useState("");
-    const [histStart,             setHistStart]             = useState(null);
-    const [histEnd,               setHistEnd]               = useState(null);
-    const [isFetchingHistory,     setIsFetchingHistory]     = useState(false);
-    const [years,                 setYears]                 = useState("");
-    const [indexData,             setIndexData]             = useState({});
-    const [marketSummary,         setMarketSummary]         = useState(null);
-    const [asOf,                  setAsOf]                  = useState(null);
-    const [toast,                 setToastState]            = useState(null);
-    const [activePanel,           setActivePanel]           = useState("instruments");
-    const [profileOpen,           setProfileOpen]           = useState(false); // "instruments" | "tools"
-    const [operationResult,       setOperationResult]       = useState(null);
-    const [force,                 setForce]                 = useState(false);
+    const [selectedInstruments, setSelectedInstruments] = useState(() => readStoredArray("selectedInstruments"));
+    const [isApplyingIndicators, setIsApplyingIndicators] = useState(false);
+    const [watchlistsByCap, setWatchlistsByCap] = useState(() => readStoredWatchlistsByCap());
+    const [activeWatchlistCap, setActiveWatchlistCap] = useState(() => readPreferredWatchlistCap());
+    const [selectedSymbol, setSelectedSymbol] = useState("");
+    const [selectedInstrument, setSelectedInstrument] = useState(null);
+    const [activeSubscriptions, setActiveSubscriptions] = useState(() => readStoredObject("activeSubscriptions"));
+    const [startDate, setStartDate] = useState(null);
+    const [endDate, setEndDate] = useState(null);
+    const [timeframes, setTimeframes] = useState([]);
+    const [timeframe, setTimeframe] = useState("");
+    const [histStart, setHistStart] = useState(null);
+    const [histEnd, setHistEnd] = useState(null);
+    const [isFetchingHistory, setIsFetchingHistory] = useState(false);
+    const [years, setYears] = useState("");
+    const [indexData, setIndexData] = useState({});
+    const [marketSummary, setMarketSummary] = useState(null);
+    const [asOf, setAsOf] = useState(null);
+    const [toast, setToastState] = useState(null);
+    const [activePanel, setActivePanel] = useState("instruments");
+    const [profileOpen, setProfileOpen] = useState(false); // "instruments" | "tools"
+    const [operationResult, setOperationResult] = useState(null);
+    const [force, setForce] = useState(false);
     // Removed local storageDownloadedRegistry to ensure manual DB deletes are immediately respected
 
     const setToast = useCallback((val) => {
@@ -198,17 +209,18 @@ export default function Dashboard() {
         return () => clearTimeout(t);
     }, [toast]);
     useEffect(() => {
-        // Explicit opt-in only: clear any stale backend subscriptions from prior sessions.
+        // Restore backend subscriptions for active subscriptions on mount (persists across page refresh)
         let cancelled = false;
-        (async () => {
-            try {
-                await unsubscribeAllInstruments();
-            } catch {
-                // keep UI usable even if cleanup endpoint is temporarily unavailable
-            } finally {
-                if (!cancelled) setActiveSubscriptions({});
-            }
-        })();
+        const keys = Object.keys(activeSubscriptions);
+        if (keys.length > 0) {
+            (async () => {
+                try {
+                    await subscribeInstruments(keys);
+                } catch {
+                    // keep UI usable even if subscription endpoint is temporarily unavailable
+                }
+            })();
+        }
         return () => { cancelled = true; };
     }, []);
     useEffect(() => {
@@ -262,7 +274,7 @@ export default function Dashboard() {
 
     // Stable references — memo on WebSocketStatus only works if these
     // don't get recreated on every render from search keystrokes
-    const stableConnect    = useCallback(() => connectWebSocket?.(),    [connectWebSocket]);
+    const stableConnect = useCallback(() => connectWebSocket?.(), [connectWebSocket]);
     const stableDisconnect = useCallback(() => disconnectWebSocket?.(), [disconnectWebSocket]);
 
     // ── Persist ──────────────────────────────────────────────────
@@ -270,6 +282,10 @@ export default function Dashboard() {
         try { localStorage.setItem("selectedInstruments", JSON.stringify(selectedInstruments)); }
         catch { }
     }, [selectedInstruments]);
+    useEffect(() => {
+        try { localStorage.setItem("activeSubscriptions", JSON.stringify(activeSubscriptions)); }
+        catch { }
+    }, [activeSubscriptions]);
     useEffect(() => {
         savePreferredWatchlistCap(activeWatchlistCap);
     }, [activeWatchlistCap]);
@@ -297,8 +313,8 @@ export default function Dashboard() {
     // ── Handlers (useCallback — prevents SearchBar re-render on keystroke)
     const subscribeToStock = useCallback(async (inst) => {
         if (!inst) return;
-        const key      = inst.instrument_key?.trim();
-        const sym      = inst.symbol?.toUpperCase().trim();
+        const key = inst.instrument_key?.trim();
+        const sym = inst.symbol?.toUpperCase().trim();
         const isActive = !!activeSubscriptions[key];
         if (!key) return setToast("Missing instrument key.");
         try {
@@ -350,12 +366,16 @@ export default function Dashboard() {
         if (!selectedSymbol || !timeframe) return setToast("Select a symbol and timeframe first.");
         setIsApplyingIndicators(true);
         try {
-            setToast("Generating indicators...");
-            const data = await generateIndicators(selectedSymbol, timeframe);
+            setToast(force ? "Force recalculating indicators & signals..." : "Generating indicators...");
+            const t0 = performance.now();
+            const data = await generateIndicators(selectedSymbol, timeframe, force);
+            const elapsedMs = data.execution_time_ms ? data.execution_time_ms : (performance.now() - t0).toFixed(1);
+            const timeStr = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
             const isCached = Boolean(data.db_validated);
-            setToast(isCached ? `⚡ Loaded ${data.rows || 0} rows from Database` : `Saved ${data.count || data.rows || 0} rows for ${selectedSymbol}`);
+
+            setToast(isCached ? `⚡ DB Cache (${timeStr}): Loaded ${data.rows || 0} rows` : `Saved ${data.count || data.rows || 0} rows for ${selectedSymbol} in ${timeStr}`);
             setOperationResult({
-                title: isCached ? "Indicators Loaded from DB Cache" : "Indicators Generated",
+                title: isCached ? `Indicators Loaded from DB Cache (${timeStr})` : `Indicators Generated & Saved (${timeStr})`,
                 type: "indicators",
                 symbol: selectedSymbol,
                 timeframe: timeframe === "1440" ? "1D" : timeframe,
@@ -363,6 +383,7 @@ export default function Dashboard() {
                 fromDate: data.from_date || "N/A",
                 toDate: data.to_date || "N/A",
                 dbValidated: isCached,
+                duration: timeStr,
                 message: data.message
             });
         } catch (err) { setToast(err.message || "Error"); }
@@ -375,6 +396,7 @@ export default function Dashboard() {
         if (!selectedInstrument) return setToast("Select from search list first.");
 
         setIsFetchingHistory(true);
+        const t0 = performance.now();
         try {
             if (!force) {
                 const checkRes = await fetch("/api/candles/check", {
@@ -388,16 +410,19 @@ export default function Dashboard() {
                 });
                 const check = await checkRes.json();
                 if (check.exists) {
-                    setToast(`Candles already present in database (Skipped Upstox call)`);
+                    const elapsedMs = (performance.now() - t0).toFixed(1);
+                    const timeStr = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
+                    setToast(`⚡ DB Cache (${timeStr}): Candles already present`);
                     setOperationResult({
-                        title: "Candles Already Present",
+                        title: `Candles Already Present (${timeStr})`,
                         type: "candles",
                         symbol: selectedSymbol,
                         timeframe: timeframe === "1440" ? "1D" : timeframe,
                         rows: check.count,
                         fromDate: formatYMD(histStart),
                         toDate: formatYMD(histEnd),
-                        already_exists: true
+                        already_exists: true,
+                        duration: timeStr
                     });
                     setIsFetchingHistory(false);
                     return;
@@ -408,20 +433,23 @@ export default function Dashboard() {
                 symbol: selectedSymbol, instrument_key: selectedInstrument.instrument_key,
                 timeframe, histStart, histEnd, force
             });
+            const elapsedMs = (performance.now() - t0).toFixed(1);
+            const timeStr = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
             if (r.already_exists) {
-                setToast(`Candles already present in database (Skipped Upstox call)`);
+                setToast(`⚡ DB Cache (${timeStr}): Candles already present`);
             } else {
-                setToast(`Stored ${r.inserted} candles`);
+                setToast(`🚀 Stored ${r.inserted} candles in ${timeStr}`);
             }
             setOperationResult({
-                title: r.already_exists ? "Candles Already Present" : "Candles Fetched & Stored",
+                title: r.already_exists ? `Candles Already Present (${timeStr})` : `Candles Fetched & Stored (${timeStr})`,
                 type: "candles",
                 symbol: selectedSymbol,
                 timeframe: timeframe === "1440" ? "1D" : timeframe,
                 rows: r.already_exists ? r.total : r.inserted,
                 fromDate: r.from_date || formatYMD(histStart),
                 toDate: r.to_date || formatYMD(histEnd),
-                already_exists: !!r.already_exists
+                already_exists: !!r.already_exists,
+                duration: timeStr
             });
         } catch (err) { setToast(err.message); }
         finally { setIsFetchingHistory(false); }
@@ -435,6 +463,7 @@ export default function Dashboard() {
         const months = years * 12;
 
         setIsFetchingHistory(true);
+        const t0 = performance.now();
         try {
             if (!force) {
                 const checkRes = await fetch("/api/candles/check", {
@@ -448,19 +477,21 @@ export default function Dashboard() {
                 });
                 const check = await checkRes.json();
                 if (check.exists) {
-                    setToast(`All data already present in database (Skipped API calls).`);
+                    const elapsedMs = (performance.now() - t0).toFixed(1);
+                    const timeStr = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
+                    setToast(`⚡ DB Cache (${timeStr}): All data already present.`);
                     let today = new Date();
                     let finalEndDate = formatYMD(new Date(today.getFullYear(), today.getMonth() + 1, 0));
                     let finalStartDate = formatYMD(new Date(today.getFullYear() - years, today.getMonth(), 1));
                     setOperationResult({
-                        title: "Bulk Fetch Bypassed",
+                        title: `Bulk Fetch Bypassed (${timeStr})`,
                         type: "candles",
                         symbol: sym,
                         timeframe: timeframe === "1440" ? "1D" : timeframe,
                         rows: check.count,
                         fromDate: finalStartDate,
                         toDate: finalEndDate,
-                        duration: `${years} Year(s)`,
+                        duration: `${years} Year(s) (${timeStr})`,
                         already_exists: true,
                         skippedChunks: months,
                         totalChunks: months
@@ -479,7 +510,7 @@ export default function Dashboard() {
             let finalStartDate = "";
             for (let i = 0; i < months; i++) {
                 const start = new Date(year, month, 1);
-                const end   = new Date(year, month + 1, 0);
+                const end = new Date(year, month + 1, 0);
                 if (i === months - 1) {
                     finalStartDate = formatYMD(start);
                 }
@@ -496,21 +527,23 @@ export default function Dashboard() {
                 if (month < 0) { month = 11; year--; }
                 await new Promise(r => setTimeout(r, 300));
             }
+            const elapsedMs = (performance.now() - t0).toFixed(1);
+            const timeStr = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
             const allSkipped = totalSkippedMonths === months;
             if (allSkipped) {
-                setToast(`All data already present in database (Skipped API calls).`);
+                setToast(`⚡ DB Cache (${timeStr}): All data already present.`);
             } else {
-                setToast(`Done fetching ${years} year(s).`);
+                setToast(`🚀 Done fetching ${years} year(s) in ${timeStr}.`);
             }
             setOperationResult({
-                title: allSkipped ? "Bulk Fetch Bypassed" : "Bulk Candle Fetch Completed",
+                title: allSkipped ? `Bulk Fetch Bypassed (${timeStr})` : `Bulk Candle Fetch Completed (${timeStr})`,
                 type: "candles",
                 symbol: sym,
                 timeframe: timeframe === "1440" ? "1D" : timeframe,
                 rows: allSkipped ? totalExisting : totalInserted,
                 fromDate: finalStartDate,
                 toDate: finalEndDate,
-                duration: `${years} Year(s)`,
+                duration: `${years} Year(s) (${timeStr})`,
                 already_exists: allSkipped,
                 skippedChunks: totalSkippedMonths,
                 totalChunks: months
@@ -526,8 +559,8 @@ export default function Dashboard() {
         if (!key) return setToast("No instrument_key found.");
         try {
             const blob = await downloadExcelAPI({ instrument_key: key, symbol: selectedSymbol.trim().toUpperCase(), startDate, endDate });
-            const url  = window.URL.createObjectURL(blob);
-            const a    = document.createElement("a");
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement("a");
             a.href = url; a.download = `${selectedSymbol}_data.xlsx`;
             document.body.appendChild(a); a.click(); a.remove();
             setToast("Excel downloaded.");
@@ -542,17 +575,17 @@ export default function Dashboard() {
         );
     }
 
-    const user     = localStorage.getItem("user") || "Trader";
+    const user = localStorage.getItem("user") || "Trader";
     const initials = user.slice(0, 2).toUpperCase();
-    const hour     = new Date().getHours();
+    const hour = new Date().getHours();
     const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
     // ── UI ───────────────────────────────────────────────────────
     return (
         <div style={{
-            minHeight:  "calc(100vh - var(--navbar-height))",
+            minHeight: "calc(100vh - var(--navbar-height))",
             background: "var(--bg-primary)",
-            color:      "var(--text-primary)",
+            color: "var(--text-primary)",
         }}>
             <style>{`
                 @keyframes fadeIn {
@@ -601,8 +634,8 @@ export default function Dashboard() {
                         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
                             <div style={{
                                 width: "32px", height: "32px", borderRadius: "50%",
-                                background: operationResult.already_exists 
-                                    ? "linear-gradient(135deg, #3B82F6, #1D4ED8)" 
+                                background: operationResult.already_exists
+                                    ? "linear-gradient(135deg, #3B82F6, #1D4ED8)"
                                     : "linear-gradient(135deg, #10B981, #059669)",
                                 display: "flex", alignItems: "center", justifyContent: "center",
                                 color: "#fff", fontSize: "1rem", fontWeight: "bold"
@@ -621,9 +654,9 @@ export default function Dashboard() {
                             {operationResult.type === "candles" && (
                                 <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
                                     <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Status</span>
-                                    <span style={{ 
-                                        fontWeight: "700", 
-                                        fontSize: "0.75rem", 
+                                    <span style={{
+                                        fontWeight: "700",
+                                        fontSize: "0.75rem",
                                         color: operationResult.already_exists ? "#3B82F6" : "#10B981",
                                         background: operationResult.already_exists ? "rgba(59, 130, 246, 0.15)" : "rgba(16, 185, 129, 0.15)",
                                         padding: "2px 8px",
@@ -659,7 +692,7 @@ export default function Dashboard() {
                         </div>
 
                         <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                            <button 
+                            <button
                                 onClick={() => setOperationResult(null)}
                                 style={{
                                     background: "linear-gradient(135deg, var(--accent-blue), #1D4ED8)",
@@ -756,7 +789,7 @@ export default function Dashboard() {
                     </div>
 
                     {/* Close Button */}
-                    <button 
+                    <button
                         onClick={() => setToastState(null)}
                         style={{
                             background: "transparent", border: "none", color: "rgba(255, 255, 255, 0.4)",
@@ -774,9 +807,9 @@ export default function Dashboard() {
                     {toast.type !== "loading" && (
                         <div style={{
                             position: "absolute", bottom: 0, left: 0, height: "3px",
-                            background: toast.type === "success" ? "#10B981" : 
-                                        toast.type === "error" ? "#EF4444" : 
-                                        toast.type === "info" ? "#3B82F6" : "var(--accent-blue)",
+                            background: toast.type === "success" ? "#10B981" :
+                                toast.type === "error" ? "#EF4444" :
+                                    toast.type === "info" ? "#3B82F6" : "var(--accent-blue)",
                             width: "100%",
                             animation: "toastProgress 3s linear forwards"
                         }} />
@@ -786,29 +819,29 @@ export default function Dashboard() {
 
             <div style={{
                 maxWidth: "var(--max-width)",
-                margin:   "0 auto",
-                padding:  "24px var(--content-padding)",
-                display:  "flex",
+                margin: "0 auto",
+                padding: "24px var(--content-padding)",
+                display: "flex",
                 flexDirection: "column",
-                gap:      20,
+                gap: 20,
             }}>
 
                 {/* ── ROW 1 — Greeting + Search + WS Status ────── */}
                 <div style={{
-                    display:        "flex",
-                    alignItems:     "center",
+                    display: "flex",
+                    alignItems: "center",
                     justifyContent: "space-between",
-                    gap:            20,
-                    flexWrap:       "wrap",
-                    width:          "100%",
+                    gap: 20,
+                    flexWrap: "wrap",
+                    width: "100%",
                 }}>
                     {/* Greeting + avatar */}
                     <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
                         <Avatar size={42} onClick={() => setProfileOpen(true)} />
                         <div>
                             <div style={{
-                                fontSize:   "0.72rem",
-                                color:      "var(--text-muted)",
+                                fontSize: "0.72rem",
+                                color: "var(--text-muted)",
                                 fontFamily: "var(--font-body)",
                                 fontWeight: 500,
                             }}>
@@ -817,13 +850,13 @@ export default function Dashboard() {
                             <div
                                 onClick={() => setProfileOpen(true)}
                                 style={{
-                                    fontSize:      "1.3rem",
-                                    fontWeight:    700,
-                                    fontFamily:    "var(--font-display)",
-                                    color:         "var(--text-primary)",
+                                    fontSize: "1.3rem",
+                                    fontWeight: 700,
+                                    fontFamily: "var(--font-display)",
+                                    color: "var(--text-primary)",
                                     letterSpacing: "-0.02em",
-                                    lineHeight:    1.2,
-                                    cursor:        "pointer",
+                                    lineHeight: 1.2,
+                                    cursor: "pointer",
                                 }}
                             >
                                 {user} <span style={{ color: "var(--accent-blue)" }}>↗</span>
@@ -832,11 +865,11 @@ export default function Dashboard() {
                     </div>
 
                     {/* Center Search Bar - Prominent & Highly Visible */}
-                    <div style={{ 
-                        flex: 1, 
-                        display: "flex", 
-                        justifyContent: "center", 
-                        maxWidth: 520, 
+                    <div style={{
+                        flex: 1,
+                        display: "flex",
+                        justifyContent: "center",
+                        maxWidth: 520,
                         minWidth: 280,
                     }}>
                         <SearchBar
@@ -858,11 +891,11 @@ export default function Dashboard() {
                     </div>
 
                     {/* WS Status + Market Summary */}
-                    <div style={{ 
-                        display: "flex", 
-                        alignItems: "center", 
-                        gap: 12, 
-                        justifyContent: "flex-end", 
+                    <div style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        justifyContent: "flex-end",
                         flexShrink: 0,
                     }}>
                         <WebSocketStatus
@@ -881,8 +914,8 @@ export default function Dashboard() {
                 <div style={{
                     display: "grid",
                     gridTemplateColumns: "1fr 1fr 360px",
-                    gridTemplateRows:    "auto",
-                    gap:                 16,
+                    gridTemplateRows: "auto",
+                    gap: 16,
                 }}>
 
                     {/* ── COL 1 — Watchlist ─────────────────────── */}
@@ -892,13 +925,13 @@ export default function Dashboard() {
                             title="Watchlist"
                             action={
                                 <span style={{
-                                    fontSize:     "0.7rem",
-                                    fontFamily:   "var(--font-mono)",
-                                    color:        "var(--text-muted)",
-                                    background:   "var(--bg-tertiary)",
-                                    border:       "1px solid var(--border-subtle)",
+                                    fontSize: "0.7rem",
+                                    fontFamily: "var(--font-mono)",
+                                    color: "var(--text-muted)",
+                                    background: "var(--bg-tertiary)",
+                                    border: "1px solid var(--border-subtle)",
                                     borderRadius: 6,
-                                    padding:      "2px 8px",
+                                    padding: "2px 8px",
                                 }}>
                                     {activeWatchlist.length} shown / {watchlist.length} total
                                 </span>
@@ -936,17 +969,17 @@ export default function Dashboard() {
                         </div>
                         {activeWatchlist.length === 0 ? (
                             <div style={{
-                                display:        "flex",
-                                flexDirection:  "column",
-                                alignItems:     "center",
+                                display: "flex",
+                                flexDirection: "column",
+                                alignItems: "center",
                                 justifyContent: "center",
-                                minHeight:      120,
-                                gap:            8,
-                                border:         "1px dashed var(--border-subtle)",
-                                borderRadius:   10,
-                                color:          "var(--text-muted)",
-                                fontSize:       "0.78rem",
-                                fontFamily:     "var(--font-body)",
+                                minHeight: 120,
+                                gap: 8,
+                                border: "1px dashed var(--border-subtle)",
+                                borderRadius: 10,
+                                color: "var(--text-muted)",
+                                fontSize: "0.78rem",
+                                fontFamily: "var(--font-body)",
                             }}>
                                 <span style={{ fontSize: "1.4rem" }}>☆</span>
                                 No symbols in {activeWatchlistLabel}
@@ -954,33 +987,33 @@ export default function Dashboard() {
                         ) : (
                             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                 {activeWatchlist.map((w) => {
-                                    const sym   = w.symbol?.toUpperCase();
-                                    const live  = prices?.[sym] || {};
-                                    const ltp   = live.ltp;
-                                    const pct   = live.percent ?? 0;
-                                    const isUp  = (live.change ?? 0) >= 0;
-                                    const hasP  = typeof ltp === "number";
+                                    const sym = w.symbol?.toUpperCase();
+                                    const live = prices?.[sym] || {};
+                                    const ltp = live.ltp;
+                                    const pct = live.percent ?? 0;
+                                    const isUp = (live.change ?? 0) >= 0;
+                                    const hasP = typeof ltp === "number";
                                     const isSel = selectedSymbol === sym;
                                     return (
                                         <div
                                             key={sym}
                                             onClick={() => { setSelectedSymbol(sym); setSelectedInstrument(w); }}
                                             style={{
-                                                display:        "flex",
-                                                alignItems:     "center",
+                                                display: "flex",
+                                                alignItems: "center",
                                                 justifyContent: "space-between",
-                                                padding:        "9px 11px",
-                                                borderRadius:   10,
-                                                cursor:         "pointer",
-                                                background:     isSel
+                                                padding: "9px 11px",
+                                                borderRadius: 10,
+                                                cursor: "pointer",
+                                                background: isSel
                                                     ? "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(59,130,246,0.08))"
                                                     : "var(--bg-secondary)",
-                                                border:         `1px solid ${isSel ? "var(--accent-blue)" : "var(--border-color)"}`,
-                                                boxShadow:      isSel
+                                                border: `1px solid ${isSel ? "var(--accent-blue)" : "var(--border-color)"}`,
+                                                boxShadow: isSel
                                                     ? "0 0 0 1px rgba(59,130,246,0.2), var(--shadow-card)"
                                                     : "var(--shadow-card)",
-                                                transition:     "all 0.12s ease",
-                                                gap:            10,
+                                                transition: "all 0.12s ease",
+                                                gap: 10,
                                             }}
                                             onMouseEnter={e => {
                                                 if (!isSel) {
@@ -1029,28 +1062,28 @@ export default function Dashboard() {
                                                 }}
                                                 title="Remove from watchlist"
                                                 style={{
-                                                    width:        26, height: 26,
+                                                    width: 26, height: 26,
                                                     borderRadius: 6,
-                                                    border:       "1px solid var(--border-color)",
-                                                    background:   "var(--bg-secondary)",
-                                                    color:        "var(--text-muted)",
-                                                    cursor:       "pointer",
-                                                    fontSize:     "0.65rem",
-                                                    display:      "flex",
-                                                    alignItems:   "center",
+                                                    border: "1px solid var(--border-color)",
+                                                    background: "var(--bg-secondary)",
+                                                    color: "var(--text-muted)",
+                                                    cursor: "pointer",
+                                                    fontSize: "0.65rem",
+                                                    display: "flex",
+                                                    alignItems: "center",
                                                     justifyContent: "center",
-                                                    flexShrink:   0,
-                                                    transition:   "all 0.12s ease",
+                                                    flexShrink: 0,
+                                                    transition: "all 0.12s ease",
                                                 }}
                                                 onMouseEnter={e => {
-                                                    e.currentTarget.style.background   = "rgba(255,82,82,0.12)";
-                                                    e.currentTarget.style.borderColor  = "var(--accent-down)";
-                                                    e.currentTarget.style.color        = "var(--accent-down)";
+                                                    e.currentTarget.style.background = "rgba(255,82,82,0.12)";
+                                                    e.currentTarget.style.borderColor = "var(--accent-down)";
+                                                    e.currentTarget.style.color = "var(--accent-down)";
                                                 }}
                                                 onMouseLeave={e => {
-                                                    e.currentTarget.style.background   = "var(--bg-secondary)";
-                                                    e.currentTarget.style.borderColor  = "var(--border-color)";
-                                                    e.currentTarget.style.color        = "var(--text-muted)";
+                                                    e.currentTarget.style.background = "var(--bg-secondary)";
+                                                    e.currentTarget.style.borderColor = "var(--border-color)";
+                                                    e.currentTarget.style.color = "var(--text-muted)";
                                                 }}
                                             >
                                                 ✕
@@ -1069,13 +1102,13 @@ export default function Dashboard() {
                             title="Instruments"
                             action={
                                 <span style={{
-                                    fontSize:     "0.7rem",
-                                    fontFamily:   "var(--font-mono)",
-                                    color:        "var(--text-muted)",
-                                    background:   "var(--bg-tertiary)",
-                                    border:       "1px solid var(--border-subtle)",
+                                    fontSize: "0.7rem",
+                                    fontFamily: "var(--font-mono)",
+                                    color: "var(--text-muted)",
+                                    background: "var(--bg-tertiary)",
+                                    border: "1px solid var(--border-subtle)",
                                     borderRadius: 6,
-                                    padding:      "2px 8px",
+                                    padding: "2px 8px",
                                 }}>
                                     {selectedInstruments.length} added
                                 </span>
@@ -1099,32 +1132,32 @@ export default function Dashboard() {
 
                         {/* Tab switcher */}
                         <div style={{
-                            display:      "flex",
-                            background:   "var(--bg-secondary)",
-                            border:       "1px solid var(--border-color)",
+                            display: "flex",
+                            background: "var(--bg-secondary)",
+                            border: "1px solid var(--border-color)",
                             borderRadius: "var(--card-radius)",
-                            padding:      4, gap: 4,
+                            padding: 4, gap: 4,
                         }}>
                             {[
-                                { key: "tools",    label: "Data Tools"  },
+                                { key: "tools", label: "Data Tools" },
                                 { key: "selected", label: "LTP Monitor" },
                             ].map(({ key, label }) => (
                                 <button
                                     key={key}
                                     onClick={() => setActivePanel(key)}
                                     style={{
-                                        flex:         1,
-                                        padding:      "7px 0",
+                                        flex: 1,
+                                        padding: "7px 0",
                                         borderRadius: 8,
-                                        border:       "none",
-                                        cursor:       "pointer",
-                                        fontFamily:   "var(--font-body)",
-                                        fontWeight:   600,
-                                        fontSize:     "0.78rem",
-                                        transition:   "all 0.15s ease",
-                                        background:   activePanel === key ? "var(--accent-blue)"   : "transparent",
-                                        color:        activePanel === key ? "#fff"                  : "var(--text-muted)",
-                                        boxShadow:    activePanel === key ? "var(--shadow-glow-blue)" : "none",
+                                        border: "none",
+                                        cursor: "pointer",
+                                        fontFamily: "var(--font-body)",
+                                        fontWeight: 600,
+                                        fontSize: "0.78rem",
+                                        transition: "all 0.15s ease",
+                                        background: activePanel === key ? "var(--accent-blue)" : "transparent",
+                                        color: activePanel === key ? "#fff" : "var(--text-muted)",
+                                        boxShadow: activePanel === key ? "var(--shadow-glow-blue)" : "none",
                                     }}
                                 >
                                     {label}
@@ -1166,10 +1199,10 @@ export default function Dashboard() {
                                 <SectionHeader subtitle="Live Prices" title="LTP Monitor" />
                                 {selectedInstruments.length === 0 ? (
                                     <div style={{
-                                        textAlign:  "center",
-                                        padding:    "24px 0",
-                                        color:      "var(--text-muted)",
-                                        fontSize:   "0.78rem",
+                                        textAlign: "center",
+                                        padding: "24px 0",
+                                        color: "var(--text-muted)",
+                                        fontSize: "0.78rem",
                                         fontFamily: "var(--font-body)",
                                     }}>
                                         Add instruments from search
@@ -1177,11 +1210,11 @@ export default function Dashboard() {
                                 ) : (
                                     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                                         {selectedInstruments.map((item) => {
-                                            const sym  = (item.symbol || "").toUpperCase();
-                                            const key  = normalizeKey(item);
+                                            const sym = (item.symbol || "").toUpperCase();
+                                            const key = normalizeKey(item);
                                             const live = prices?.[key] || {};
-                                            const ltp  = live.ltp;
-                                            const pct  = live.percent ?? 0;
+                                            const ltp = live.ltp;
+                                            const pct = live.percent ?? 0;
                                             const isUp = (live.change ?? 0) >= 0;
                                             const hasP = typeof ltp === "number";
                                             const isRunning = !!activeSubscriptions[key];
@@ -1189,49 +1222,49 @@ export default function Dashboard() {
 
                                             return (
                                                 <div key={key} style={{
-                                                    display:        "flex",
-                                                    alignItems:     "center",
+                                                    display: "flex",
+                                                    alignItems: "center",
                                                     justifyContent: "space-between",
-                                                    padding:        "10px 12px",
-                                                    borderRadius:   8,
-                                                    background:     "var(--bg-tertiary)",
-                                                    border:         `1px solid ${isRunning ? "rgba(0,230,118,0.3)" : "var(--border-subtle)"}`,
+                                                    padding: "10px 12px",
+                                                    borderRadius: 8,
+                                                    background: "var(--bg-tertiary)",
+                                                    border: `1px solid ${isRunning ? "rgba(0,230,118,0.3)" : "var(--border-subtle)"}`,
                                                 }}>
                                                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                                         <StockLogo symbol={sym} size={28} borderRadius={6} />
                                                         <div>
-                                                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                                            {isRunning && (
-                                                                <span style={{
-                                                                    width: 6, height: 6, borderRadius: "50%",
-                                                                    background: "var(--accent-up)",
-                                                                    boxShadow: "0 0 6px var(--accent-up)",
-                                                                    animation: "ltsPulse 2s infinite",
-                                                                    display: "inline-block",
-                                                                }} />
-                                                            )}
-                                                            <span style={{ fontSize: "0.82rem", fontWeight: 700, fontFamily: "var(--font-display)", color: "var(--text-primary)" }}>
-                                                                {sym}
-                                                            </span>
-                                                        </div>
-                                                        <div style={{ fontSize: "0.65rem", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
-                                                            {item.exchange || ""}
-                                                        </div>
+                                                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                                                {isRunning && (
+                                                                    <span style={{
+                                                                        width: 6, height: 6, borderRadius: "50%",
+                                                                        background: "var(--accent-up)",
+                                                                        boxShadow: "0 0 6px var(--accent-up)",
+                                                                        animation: "ltsPulse 2s infinite",
+                                                                        display: "inline-block",
+                                                                    }} />
+                                                                )}
+                                                                <span style={{ fontSize: "0.82rem", fontWeight: 700, fontFamily: "var(--font-display)", color: "var(--text-primary)" }}>
+                                                                    {sym}
+                                                                </span>
+                                                            </div>
+                                                            <div style={{ fontSize: "0.65rem", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
+                                                                {item.exchange || ""}
+                                                            </div>
                                                         </div>
                                                     </div>
                                                     <div style={{ textAlign: "right" }}>
                                                         <div style={{
-                                                            fontSize:   "0.9rem",
+                                                            fontSize: "0.9rem",
                                                             fontWeight: 700,
                                                             fontFamily: "var(--font-mono)",
-                                                            color:      canShowLive ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
+                                                            color: canShowLive ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
                                                         }}>
                                                             {canShowLive ? `₹${ltp.toLocaleString("en-IN")}` : "--"}
                                                         </div>
                                                         <div style={{
-                                                            fontSize:   "0.65rem",
+                                                            fontSize: "0.65rem",
                                                             fontFamily: "var(--font-mono)",
-                                                            color:      canShowLive ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
+                                                            color: canShowLive ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
                                                         }}>
                                                             {canShowLive ? `${isUp ? "+" : ""}${pct.toFixed(2)}%` : "--"}
                                                         </div>

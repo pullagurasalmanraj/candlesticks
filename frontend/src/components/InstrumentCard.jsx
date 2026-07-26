@@ -160,14 +160,14 @@ const InstrumentCard = memo(function InstrumentCard({
                 {/* Stream toggle */}
                 <button
                     onClick={() => subscribeToStock(item)}
-                    title={isRunning ? "Stop stream" : "Start stream"}
+                    title={isRunning ? "Stop stream (Streaming live ticks)" : "Start stream"}
                     style={{
                         width: 26,
                         height: 26,
                         borderRadius: 7,
-                        border: "1px solid transparent",
+                        border: isRunning ? "1px solid var(--accent-down)" : "1px solid transparent",
                         background: isRunning
-                            ? "rgba(255,82,82,0.15)"
+                            ? "rgba(255,82,82,0.3)"
                             : "rgba(0,230,118,0.16)",
                         color: isRunning ? "var(--accent-down)" : "var(--accent-up)",
                         cursor: "pointer",
@@ -178,9 +178,10 @@ const InstrumentCard = memo(function InstrumentCard({
                         justifyContent: "center",
                         transition: "all 0.15s ease",
                         flexShrink: 0,
+                        animation: isRunning ? "stopPulse 1.2s infinite ease-in-out" : "none",
                     }}
                     onMouseEnter={e => {
-                        e.currentTarget.style.opacity = "0.75";
+                        e.currentTarget.style.opacity = "0.85";
                         e.currentTarget.style.transform = "scale(1.08)";
                     }}
                     onMouseLeave={e => {

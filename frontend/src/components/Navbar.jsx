@@ -75,7 +75,7 @@ const MENU_SECTIONS = [
                     { label: "Edge Gate",          sub: "LightGBM · AUC-based filter"  },
                     { label: "Context Expectancy", sub: "Realized-R regression model"  },
                     { label: "Edge Decay",         sub: "Rolling edge velocity tracker" },
-                    { label: "LSTM Predictor",     sub: "Sequence model · 200 candles" },
+                    { label: "Quant ML Strategy", sub: "End-to-End ML Strategy Engine" },
                 ],
             },
             {

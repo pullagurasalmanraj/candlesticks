@@ -392,23 +392,38 @@ async def upstox_wss_worker(loop, subscription_queue: asyncio.Queue):
             async with websockets.connect(uri, ssl=ssl_ctx, max_size=None) as ws:
                 log("✅ Connected to Upstox feed")
 
-                # Re-subscribe on every (re)connect from persisted Redis SET
+                # Auto-seed default index subscriptions if active_subscriptions is empty
                 saved_subs = redis_call("smembers", REDIS_ACTIVE_SUBS_KEY, default=set())
-                if saved_subs:
-                    normalized_subs = canonicalize_instrument_keys(saved_subs)
-                    stale_subs = set(saved_subs) - set(normalized_subs)
-                    for old_key in stale_subs:
-                        redis_call("srem", REDIS_ACTIVE_SUBS_KEY, old_key, default=0)
-                    for new_key in normalized_subs:
-                        redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, new_key, default=0)
+                if not saved_subs:
+                    log("ℹ️ No active subscriptions in Redis — auto-seeding default index subscriptions...")
+                    default_keys = canonicalize_instrument_keys(DEFAULT_INDEX_SUBSCRIPTIONS)
+                    for k in default_keys:
+                        redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, k, default=0)
+                    saved_subs = set(default_keys)
 
-                    CURRENT_SUBS.update(normalized_subs)
-                    await subscription_queue.put({
-                        "instrumentKeys": normalized_subs,
-                        "method": "sub",
-                        "mode": "full",
-                    })
-                    log(f"🔄 Re-subscribing {len(normalized_subs)} saved instrument(s): {normalized_subs}")
+                normalized_subs = canonicalize_instrument_keys(saved_subs)
+                stale_subs = set(saved_subs) - set(normalized_subs)
+                for old_key in stale_subs:
+                    redis_call("srem", REDIS_ACTIVE_SUBS_KEY, old_key, default=0)
+                for new_key in normalized_subs:
+                    redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, new_key, default=0)
+
+                CURRENT_SUBS.update(normalized_subs)
+                await subscription_queue.put({
+                    "instrumentKeys": normalized_subs,
+                    "method": "sub",
+                    "mode": "full",
+                })
+                log(f"🔄 Subscribed {len(normalized_subs)} instrument(s): {normalized_subs}")
+
+                # Maintain persistent stream status heartbeat key in Redis for visibility
+                status_payload = json.dumps({
+                    "status": "ONLINE",
+                    "connected_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "subscriptions": list(normalized_subs),
+                    "subscription_count": len(normalized_subs),
+                })
+                redis_call("set", "ticks:stream:status", status_payload, default=False)
 
                 # ── Consumer ──────────────────────────────────────
                 async def consumer():
@@ -430,6 +445,11 @@ async def upstox_wss_worker(loop, subscription_queue: asyncio.Queue):
                                         key = daily_tick_storage_key(ik, today)
                                         redis_call("lpush", key, payload, default=0)
                                         redis_call("expire", key, 86400, default=False)
+
+                                redis_call("set", "ticks:stream:last_tick", json.dumps({
+                                    "last_tick_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                    "ts_ms": int(time.time() * 1000),
+                                }), default=False)
                             except Exception:
                                 traceback.print_exc()
 

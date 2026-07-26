@@ -126,7 +126,7 @@ const NAV_MAIN = [
 ];
 
 const NAV_AI = [
-    { key: "lstm",        label: "LSTM Predictor",        icon: Brain, path: "/lstm",        newTab: true  },
+    { key: "lstm",        label: "Quant ML Strategy",     icon: Brain, path: "/lstm",        newTab: false },
     { key: "transformer", label: "Transformer Predictor", icon: Cpu,   path: "/transformer", newTab: false },
 ];
 
@@ -137,9 +137,11 @@ function Sidebar({ collapsed, setCollapsed }) {
     const activePath = location.pathname;
 
     const handleLogout = () => {
-        localStorage.removeItem("upstox_connected");
-        localStorage.removeItem("upstox_access_token");
-        localStorage.removeItem("upstox_token_expiry");
+        Object.keys(localStorage).forEach(key => {
+            if (key.startsWith("quant_ml_") || key.startsWith("upstox_")) {
+                localStorage.removeItem(key);
+            }
+        });
         window.location.href = "/brokers";
     };
 
@@ -201,7 +203,7 @@ function Sidebar({ collapsed, setCollapsed }) {
                                 fontFamily: "var(--font-display)",
                                 color: "var(--text-primary)", lineHeight: 1.2,
                             }}>
-                                TradingDesk
+                                Candlesticks
                             </div>
                             <div style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
                                 Internal console
@@ -357,7 +359,7 @@ function getPageTitle(pathname) {
         "/portfolio":  "Portfolio",
         "/options":    "Options Trading",
         "/settings":   "Settings",
-        "/lstm":       "LSTM Predictor",
+        "/lstm":       "Quant ML Strategy",
         "/transformer":"Transformer Predictor",
     };
     return map[pathname] || pathname.replace("/", "").replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase());

@@ -1,4 +1,4 @@
-export async function generateIndicators(symbol, timeframe) {
+export async function generateIndicators(symbol, timeframe, force = false) {
 
     const normalizeTF = (tf) => {
         const t = tf.toString().toLowerCase();
@@ -19,10 +19,11 @@ export async function generateIndicators(symbol, timeframe) {
 
     const finalTF = normalizeTF(timeframe);
     const isDaily = finalTF === "1d";
+    const forceParam = force ? "&force=true" : "";
 
     const url = isDaily
-        ? `/api/indicators/daily?symbol=${symbol}&store=true`
-        : `/api/indicators/intraday?symbol=${symbol}&timeframe=${finalTF}&store=true`;
+        ? `/api/indicators/daily?symbol=${symbol}&store=true${forceParam}`
+        : `/api/indicators/intraday?symbol=${symbol}&timeframe=${finalTF}&store=true${forceParam}`;
 
     const res = await fetch(url);
     const data = await res.json();

@@ -445,7 +445,8 @@ CREATE TABLE public.market_context (
     macro_regime text DEFAULT 'NEUTRAL_MACRO'::text,
     vol_ratio double precision DEFAULT 1.0,
     vwap_dist_atr double precision,
-    impulse_dir text
+    impulse_dir text,
+    phase_reason text
 );
 
 
@@ -877,6 +878,7 @@ CREATE TABLE public.strategy_outcomes (
     outcome_timing text,
     realized_r_gross double precision,
     cost_r double precision,
+    phase_reason text,
     CONSTRAINT strategy_outcomes_exit_reason_check CHECK ((exit_reason = ANY (ARRAY['TP_HIT'::text, 'SL_HIT'::text, 'TIME_EXIT'::text])))
 );
 

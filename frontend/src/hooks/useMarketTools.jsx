@@ -24,24 +24,27 @@ export default function useMarketTools({
         setIsApplyingIndicators(true);
 
         const tf = timeframe === "1440" ? "1d" : timeframe;
+        const forceParam = force ? "&force=true" : "";
 
         const url = tf === "1d"
-            ? `/api/indicators/daily?symbol=${selectedSymbol}&store=true`
-            : `/api/indicators/intraday?symbol=${selectedSymbol}&timeframe=${tf}&store=true`;
+            ? `/api/indicators/daily?symbol=${selectedSymbol}&store=true${forceParam}`
+            : `/api/indicators/intraday?symbol=${selectedSymbol}&timeframe=${tf}&store=true${forceParam}`;
 
         try {
-
+            const t0 = performance.now();
             const res = await fetch(url);
             const data = await res.json();
+            const elapsedMs = data.execution_time_ms ? data.execution_time_ms : (performance.now() - t0).toFixed(1);
+            const timeFormatted = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
 
             if (!res.ok || data.error) {
                 return setToast(data.error || "Indicator processing failed");
             }
 
             if (data.db_validated || data.message) {
-                setToast(`⚡ DB Cache: ${data.message || `Loaded ${data.rows || 0} pre-stored rows from Database`}`);
+                setToast(`⚡ DB Cache (${timeFormatted}): ${data.message || `Loaded ${data.rows || 0} pre-stored rows`}`);
             } else {
-                setToast(`Saved ${data.count || data.rows || 0} rows to Database`);
+                setToast(`Saved ${data.count || data.rows || 0} rows`);
             }
 
         } catch {

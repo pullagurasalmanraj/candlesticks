@@ -38,6 +38,7 @@
 #    GET /api/indicators/intraday
 # ================================================================
 
+import time
 import traceback
 from datetime import datetime, date, time as dtime, timezone
 from dateutil.relativedelta import relativedelta
@@ -60,6 +61,7 @@ from services.indicator_service import (
     calculate_bollinger as _bollinger,
     calculate_obv as _obv,
     calculate_supertrend as _supertrend,
+    calculate_signals as _signals,
 )
 from utils.symbol_map import SYMBOL_TO_KEY
 
@@ -67,7 +69,15 @@ indicators_bp = Blueprint("indicators", __name__)
 
 MIN_CANDLES_INTRADAY = 200
 MIN_CANDLES_DAILY    = 60
-INDICATOR_WARMUP_BARS = 700
+INDICATOR_WARMUP_BARS = 100
+TIMEFRAME_WARMUP_BARS = {
+    "1m": 300,   # ~5 trading hours
+    "3m": 200,   # ~1.6 trading days
+    "5m": 150,   # ~2.0 trading days
+    "15m": 100,  # ~4.0 trading days (recovers 600 candles on 15m!)
+    "30m": 60,   # ~5.0 trading days
+    "60m": 60,   # ~5.0 trading days
+}
 INTRADAY_ALIGN_YEARS_DEFAULT = 2
 INTRADAY_STABILIZE_WITH_TF_DEFAULT = "15m"
 INTRADAY_TF_MAP = {"1": "1m", "3": "3m", "5": "5m", "15": "15m", "30": "30m", "60": "60m"}
@@ -179,9 +189,11 @@ _UPSERT_SQL = """
 
 
 def _nan_to_none(arr: np.ndarray) -> list:
-    """Convert numpy array to Python list with NaN â†’ None for psycopg2."""
-    return [None if (v is None or (isinstance(v, float) and np.isnan(v))) else v
-            for v in arr.tolist()]
+    """Vectorized conversion of numpy float array to Python list with NaN -> None for psycopg2."""
+    arr_f = np.asarray(arr, dtype=float)
+    obj_arr = arr_f.astype(object)
+    obj_arr[np.isnan(arr_f)] = None
+    return obj_arr.tolist()
 
 
 def _build_rows(symbol, exchange, timeframe, ts_list,
@@ -207,6 +219,9 @@ def _build_rows(symbol, exchange, timeframe, ts_list,
     """
     n = len(ts_list)
 
+    # Calculate consensus signal and signal_strength before list conversion
+    signals, strengths = _signals(c, ema9, ema21, rsi, macd_h, st_sig_str)
+
     # Convert all float arrays â€” NaN â†’ None
     def f(arr): return _nan_to_none(np.asarray(arr, dtype=float))
 
@@ -224,6 +239,7 @@ def _build_rows(symbol, exchange, timeframe, ts_list,
     _brk  = [bool(x) for x in orb_brk]
     _brd  = [bool(x) for x in orb_brd]
 
+
     rows = []
     for i in range(n):
         rows.append((
@@ -235,7 +251,7 @@ def _build_rows(symbol, exchange, timeframe, ts_list,
             _bm[i], _bu[i], _bl[i], _tr[i],
             _v20[i], _v200[i], _vr[i], _obv[i],
             _oh[i], _ol[i], _brk[i], _brd[i],
-            None, None, st_sig_str[i],   # signal, signal_strength always NULL
+            signals[i], float(strengths[i]), st_sig_str[i],
             now, now,
         ))
     return rows
@@ -270,26 +286,36 @@ def _intraday_aligned_cutoff_ist(years: int = INTRADAY_ALIGN_YEARS_DEFAULT) -> p
 
 def _slice_from_ist_open(df: pd.DataFrame, *arrays, cutoff_ist: pd.Timestamp):
     """
-    Slice dataframe and arrays from first 09:15 IST bar on/after cutoff.
-    If 09:15 bar is missing, falls back to first bar on/after cutoff.
+    Slice dataframe and arrays starting strictly from the first 09:15 AM IST bar
+    on or after cutoff_ist. If cutoff falls mid-session, advances to 09:15 AM IST
+    of the next trading day.
     """
     if df.empty:
         return df.copy(), tuple(np.asarray(a) for a in arrays)
 
     ts = pd.to_datetime(df["ts"], errors="coerce")
-    ge_cutoff = ts >= cutoff_ist
-    is_open_915 = (ts.dt.hour == 9) & (ts.dt.minute == 15)
+    if ts.dt.tz is None:
+        ts = ts.dt.tz_localize("UTC")
+    ts_ist = ts.dt.tz_convert("Asia/Kolkata")
+    ge_cutoff = ts_ist >= cutoff_ist
+    is_open_915 = (ts_ist.dt.hour == 9) & (ts_ist.dt.minute == 15)
 
     open_candidates = np.flatnonzero((ge_cutoff & is_open_915).to_numpy())
     if len(open_candidates) > 0:
         start_idx = int(open_candidates[0])
     else:
-        fallback_candidates = np.flatnonzero(ge_cutoff.to_numpy())
-        if len(fallback_candidates) == 0:
-            empty_df = df.iloc[0:0].copy().reset_index(drop=True)
-            empty_arrays = tuple(np.asarray(a)[0:0] for a in arrays)
-            return empty_df, empty_arrays
-        start_idx = int(fallback_candidates[0])
+        # Fallback: search for any 09:15 bar after cutoff_ist in the dataset
+        all_915 = np.flatnonzero(is_open_915.to_numpy())
+        after_cutoff_915 = [i for i in all_915 if ts_ist.iloc[i] >= cutoff_ist]
+        if len(after_cutoff_915) > 0:
+            start_idx = int(after_cutoff_915[0])
+        else:
+            fallback_candidates = np.flatnonzero(ge_cutoff.to_numpy())
+            if len(fallback_candidates) == 0:
+                empty_df = df.iloc[0:0].copy().reset_index(drop=True)
+                empty_arrays = tuple(np.asarray(a)[0:0] for a in arrays)
+                return empty_df, empty_arrays
+            start_idx = int(fallback_candidates[0])
 
     keep = slice(start_idx, None)
     df_out = df.iloc[keep].copy().reset_index(drop=True)
@@ -752,6 +778,7 @@ def api_indicators_daily():
                     (symbol, exchange, "1D", cutoff_ts),
                 )
                 execute_values(cur, _UPSERT_SQL, rows)
+                conn.commit()
 
         first_date = str(df["ts"].iloc[0].date()) if not df.empty else ""
         last_date = str(df["ts"].iloc[-1].date()) if not df.empty else ""
@@ -772,6 +799,7 @@ def api_indicators_daily():
 # â”€â”€ Intraday indicators â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @indicators_bp.route("/api/indicators/intraday", methods=["GET"])
 def api_indicators_intraday():
+    t_start = time.perf_counter()
     try:
         symbol    = request.args.get("symbol",    "").upper().strip()
         timeframe = _normalize_intraday_timeframe(request.args.get("timeframe", ""))
@@ -782,7 +810,9 @@ def api_indicators_intraday():
         auto_pad_raw = (request.args.get("auto_pad") or "").strip().lower()
         stabilize_with_raw = (request.args.get("stabilize_with_tf") or "").strip()
         debug_warmup = debug_warmup_raw in {"1", "true", "yes", "y", "on"}
-        auto_pad = auto_pad_raw not in {"0", "false", "no", "off"}
+        auto_pad_requested = auto_pad_raw in {"1", "true", "yes", "y", "on"}
+        auto_pad_disabled = auto_pad_raw in {"0", "false", "no", "off"}
+        auto_pad = auto_pad_requested or (not auto_pad_disabled and history_years_raw != "")
 
         def _dbg(msg: str):
             if debug_warmup:
@@ -794,7 +824,7 @@ def api_indicators_intraday():
         if timeframe not in INTRADAY_TF_MINUTES:
             return jsonify({"error": f"Unsupported timeframe: {timeframe}"}), 400
 
-        history_years = INTRADAY_ALIGN_YEARS_DEFAULT
+        history_years = None
         if history_years_raw:
             try:
                 history_years = int(history_years_raw)
@@ -803,7 +833,7 @@ def api_indicators_intraday():
             if history_years <= 0:
                 return jsonify({"error": "history_years must be >= 1"}), 400
 
-        required_warmup_bars = INDICATOR_WARMUP_BARS
+        required_warmup_bars = TIMEFRAME_WARMUP_BARS.get(timeframe, 100)
         if warmup_bars_raw:
             try:
                 required_warmup_bars = int(warmup_bars_raw)
@@ -825,7 +855,33 @@ def api_indicators_intraday():
             required_warmup_bars, warmup_tf_min
         )
 
-        aligned_start_ist = _intraday_aligned_cutoff_ist(history_years)
+        # Check existing intraday candles start date if history_years is not explicitly requested
+        if history_years is None:
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    # Query earliest available timestamp across ALL timeframes for this symbol
+                    cur.execute(
+                        "SELECT MIN(timestamp) FROM intraday_candles WHERE symbol=%s AND exchange=%s",
+                        (symbol, exchange)
+                    )
+                    min_res = cur.fetchone()
+                    db_min_ts = list(min_res.values())[0] if isinstance(min_res, dict) else (min_res[0] if min_res else None)
+                    if db_min_ts is not None:
+                        min_dt = pd.to_datetime(db_min_ts)
+                        if min_dt.tz is None:
+                            min_dt = min_dt.tz_localize("UTC")
+                        min_dt_ist = min_dt.tz_convert("Asia/Kolkata")
+                        
+                        # Add shared multi-timeframe warmup margin (~15 trading days = 21 calendar days)
+                        # so 15m, 5m, 3m, AND 1m all have full warmup and start on the EXACT SAME DATE
+                        shared_start_ist = (min_dt_ist + pd.Timedelta(days=21)).normalize() + pd.Timedelta(hours=9, minutes=15)
+                        aligned_start_ist = shared_start_ist
+                    else:
+                        history_years = INTRADAY_ALIGN_YEARS_DEFAULT
+                        aligned_start_ist = _intraday_aligned_cutoff_ist(history_years)
+        else:
+            aligned_start_ist = _intraday_aligned_cutoff_ist(history_years)
+
         warmup_cutoff_ist = aligned_start_ist - pd.Timedelta(days=warmup_calendar_days)
         _dbg(
             "symbol={symbol} exchange={exchange} timeframe={timeframe} "
@@ -1051,33 +1107,20 @@ def api_indicators_intraday():
         anchor_cutoff_ist = None
         if stabilize_with_tf != timeframe:
             anchor_ts_ist = _load_intraday_ts_ist(symbol, exchange, stabilize_with_tf)
-            if anchor_ts_ist.empty:
-                return jsonify({
-                    "error": (
-                        f"Cannot align for labeling: no {stabilize_with_tf} candles found for "
-                        f"{symbol}/{exchange}."
-                    )
-                }), 400
-
-            anchor_cutoff_ist = _stabilized_cutoff_ist(
-                anchor_ts_ist, aligned_start_ist, required_warmup_bars
-            )
-            if anchor_cutoff_ist is None:
-                return jsonify({
-                    "error": (
-                        f"Cannot align for labeling: insufficient {stabilize_with_tf} history "
-                        "to satisfy warmup bars."
-                    )
-                }), 400
-            effective_cutoff_ist = max(effective_cutoff_ist, anchor_cutoff_ist)
-            _dbg(
-                "anchor_alignment anchor_tf={anchor_tf} anchor_cutoff_ist={anchor_cutoff} "
-                "effective_cutoff_ist={effective}".format(
-                    anchor_tf=stabilize_with_tf,
-                    anchor_cutoff=anchor_cutoff_ist,
-                    effective=effective_cutoff_ist,
+            if not anchor_ts_ist.empty:
+                anchor_cutoff_ist = _stabilized_cutoff_ist(
+                    anchor_ts_ist, aligned_start_ist, required_warmup_bars
                 )
-            )
+                if anchor_cutoff_ist is not None:
+                    effective_cutoff_ist = max(effective_cutoff_ist, anchor_cutoff_ist)
+                    _dbg(
+                        "anchor_alignment anchor_tf={anchor_tf} anchor_cutoff_ist={anchor_cutoff} "
+                        "effective_cutoff_ist={effective}".format(
+                            anchor_tf=stabilize_with_tf,
+                            anchor_cutoff=anchor_cutoff_ist,
+                            effective=effective_cutoff_ist,
+                        )
+                    )
 
         _dbg(
             "stage1_done rows_in={rows_in} rows_out={rows_out} start_idx={start_idx} "
@@ -1196,8 +1239,8 @@ def api_indicators_intraday():
             )
         )
 
-        # â”€â”€ Build rows and upsert â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        ts_list = [pd.Timestamp(t).to_pydatetime() for t in df["ts"].values]
+        # ── Build rows and upsert (Stored in UTC) ──────────────────
+        ts_list = [pd.Timestamp(t).tz_convert("UTC").to_pydatetime() if hasattr(t, "tz") and t.tz is not None else pd.Timestamp(t).tz_localize("UTC").to_pydatetime() for t in df["ts"]]
         now     = datetime.now(timezone.utc)
 
         rows = _build_rows(
@@ -1225,17 +1268,21 @@ def api_indicators_intraday():
                     (symbol, exchange, timeframe, cutoff_ts),
                 )
                 execute_values(cur, _UPSERT_SQL, rows)
+                conn.commit()
         _dbg(f"upsert_done rows={len(rows)} cutoff_ts={cutoff_ts}")
 
         first_date = str(df["ts"].iloc[0].date()) if not df.empty else ""
         last_date = str(df["ts"].iloc[-1].date()) if not df.empty else ""
+        exec_ms = round((time.perf_counter() - t_start) * 1000, 2)
         response = {
             "status": "SUCCESS", 
             "rows": len(rows),
             "symbol": symbol,
             "timeframe": timeframe,
             "from_date": first_date,
-            "to_date": last_date
+            "to_date": last_date,
+            "execution_time_ms": exec_ms,
+            "execution_time_sec": round(exec_ms / 1000, 3)
         }
         if debug_warmup:
             response["debug"] = {

@@ -400,13 +400,12 @@ function injectCSSVariables(mode) {
 // ================================================================
 export const ThemeProvider = ({ children }) => {
     const [theme, setTheme] = useState(() => {
-        // Priority: 1. saved  2. system preference  3. dark
-        const saved  = localStorage.getItem("theme");
-        const active = (saved === "light" || saved === "dark")
+        // Priority: 1. explicit user choice  2. default light theme
+        const saved   = localStorage.getItem("theme");
+        const userSet = localStorage.getItem("theme_user_set");
+        const active  = (userSet === "true" && (saved === "light" || saved === "dark"))
             ? saved
-            : window.matchMedia("(prefers-color-scheme: light)").matches
-                ? "light"
-                : "dark";
+            : "light";
 
         // ── CRITICAL: inject BEFORE first render ──────────────────
         // useEffect fires AFTER render — one frame with no vars = flash.
@@ -429,8 +428,10 @@ export const ThemeProvider = ({ children }) => {
         localStorage.setItem("theme", theme);
     }, [theme]);
 
-    const toggleTheme = () =>
+    const toggleTheme = () => {
+        localStorage.setItem("theme_user_set", "true");
         setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+    };
 
     const muiTheme = useMemo(() => buildMuiTheme(theme), [theme]);
 

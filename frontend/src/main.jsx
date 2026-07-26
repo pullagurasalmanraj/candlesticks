@@ -9,15 +9,14 @@ import "./index.css";
 // Prevents wrong-theme flash on hard reload and OAuth redirect return.
 // ThemeContext will also inject vars on mount — this is just the safety net.
 ;(function () {
-    const saved  = localStorage.getItem("theme");
-    const theme  = (saved === "dark" || saved === "light")
+    const saved   = localStorage.getItem("theme");
+    const userSet = localStorage.getItem("theme_user_set");
+    const theme   = (userSet === "true" && (saved === "dark" || saved === "light"))
         ? saved
-        : window.matchMedia("(prefers-color-scheme: light)").matches
-            ? "light"
-            : "dark";
+        : "light";
     document.documentElement.classList.toggle("dark",  theme === "dark");
     document.documentElement.classList.toggle("light", theme === "light");
-    if (!saved) localStorage.setItem("theme", theme);
+    if (!userSet) localStorage.setItem("theme", theme);
 })();
 
 // ── Single ThemeProvider — only here, never in App.jsx ──────────
