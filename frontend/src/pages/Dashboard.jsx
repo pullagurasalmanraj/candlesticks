@@ -352,15 +352,18 @@ export default function Dashboard() {
         try {
             setToast("Generating indicators...");
             const data = await generateIndicators(selectedSymbol, timeframe);
-            setToast(`Saved ${data.count || data.rows || 0} rows for ${selectedSymbol}`);
+            const isCached = Boolean(data.db_validated);
+            setToast(isCached ? `⚡ Loaded ${data.rows || 0} rows from Database` : `Saved ${data.count || data.rows || 0} rows for ${selectedSymbol}`);
             setOperationResult({
-                title: "Indicators Generated",
+                title: isCached ? "Indicators Loaded from DB Cache" : "Indicators Generated",
                 type: "indicators",
                 symbol: selectedSymbol,
                 timeframe: timeframe === "1440" ? "1D" : timeframe,
                 rows: data.count || data.rows || 0,
                 fromDate: data.from_date || "N/A",
-                toDate: data.to_date || "N/A"
+                toDate: data.to_date || "N/A",
+                dbValidated: isCached,
+                message: data.message
             });
         } catch (err) { setToast(err.message || "Error"); }
         finally { setIsApplyingIndicators(false); }

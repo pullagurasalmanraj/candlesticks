@@ -26,7 +26,7 @@ services:
         restart: unless-stopped
         command: [ "redis-server", "--appendonly", "yes", "--requirepass", "linux123" ]
         ports:
-            - "6379:6379"
+            - "6380:6379"
         volumes:
             - redis_data:/data
         healthcheck:
@@ -45,6 +45,8 @@ services:
         restart: unless-stopped
         working_dir: /app/backend
         command: [ "python", "app.py" ]
+        volumes:
+            - ./backend:/app/backend
         environment:
             PYTHONUNBUFFERED: "1"
             PYTHONDONTWRITEBYTECODE: "1"
@@ -58,7 +60,7 @@ services:
             DB_NAME: ${DOCKER_DB_NAME:-candleticks}
             DB_USER: ${DOCKER_DB_USER:-postgres}
             DB_PASSWORD: ${DOCKER_DB_PASSWORD:-postgres}
-            REDIS_URL: ${DOCKER_REDIS_URL:-redis://:linux123@redis:6379/10}
+            REDIS_URL: ${DOCKER_REDIS_URL:-redis://:linux123@redis:6379/0}
             UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
             UPSTOX_CLIENT_ID: ${UPSTOX_CLIENT_ID:-}
             UPSTOX_CLIENT_SECRET: ${UPSTOX_CLIENT_SECRET:-}
@@ -68,6 +70,8 @@ services:
             GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
         ports:
             - "8000:8000"
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
         depends_on:
             postgres:
                 condition: service_healthy
@@ -79,16 +83,20 @@ services:
         restart: unless-stopped
         working_dir: /app/backend
         command: [ "python", "wsserver.py" ]
+        volumes:
+            - ./backend:/app/backend
         environment:
             PYTHONUNBUFFERED: "1"
             PYTHONDONTWRITEBYTECODE: "1"
-            REDIS_URL: ${DOCKER_REDIS_URL:-redis://:linux123@redis:6379/10}
+            REDIS_URL: ${DOCKER_REDIS_URL:-redis://:linux123@redis:6379/0}
             WS_HOST: 0.0.0.0
             WS_PORT: "9000"
             UPSTOX_ACCESS_TOKEN: ${UPSTOX_ACCESS_TOKEN:-}
             SKIP_SSL_VERIFY: ${SKIP_SSL_VERIFY:-0}
         ports:
             - "9000:9000"
+        extra_hosts:
+            - "host.docker.internal:host-gateway"
         depends_on:
             redis:
                 condition: service_healthy
@@ -101,6 +109,7 @@ services:
         restart: unless-stopped
         working_dir: /app/frontend
         volumes:
+            - ./frontend:/app/frontend
             - frontend_node_modules:/app/frontend/node_modules
         command: >
             sh -c " if [ ! -x ./node_modules/.bin/vite ]; then npm install --include=dev; fi && node ./node_modules/vite/bin/vite.js --host 0.0.0.0 --port 5173 --force "
@@ -130,7 +139,45 @@ services:
             - backend
             - wsserver
 
+    loki:
+        image: grafana/loki:2.9.4
+        container_name: candlesticks-loki
+        restart: unless-stopped
+        command: -config.file=/etc/loki/loki-config.yml
+        volumes:
+            - ./monitoring/loki-config.yml:/etc/loki/loki-config.yml
+        ports:
+            - "3100:3100"
+
+    promtail:
+        image: grafana/promtail:2.9.4
+        container_name: candlesticks-promtail
+        restart: unless-stopped
+        command: -config.file=/etc/promtail/promtail-config.yml
+        volumes:
+            - ./monitoring/promtail-config.yml:/etc/promtail/promtail-config.yml
+            - /var/run/docker.sock:/var/run/docker.sock
+            - /var/lib/docker/containers:/var/lib/docker/containers:ro
+        depends_on:
+            - loki
+
+    grafana:
+        image: grafana/grafana:10.2.3
+        container_name: candlesticks-grafana
+        restart: unless-stopped
+        environment:
+            - GF_SECURITY_ADMIN_PASSWORD=admin
+            - GF_USERS_ALLOW_SIGN_UP=false
+        volumes:
+            - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+            - grafana_data:/var/lib/grafana
+        ports:
+            - "3000:3000"
+        depends_on:
+            - loki
+
 volumes:
     pg_data:
     redis_data:
     frontend_node_modules:
+    grafana_data:

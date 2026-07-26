@@ -22,7 +22,7 @@ from config                  import (UPSTOX_API_BASE, UPSTOX_CLIENT_ID,
                                      UPSTOX_CLIENT_SECRET, UPSTOX_REDIRECT_URI,
                                      FRONTEND_DIR, safe_requests)
 from db                      import get_db_conn
-from services.token_service  import save_tokens, token_is_fresh
+from services.token_service  import save_tokens, token_is_fresh, clear_saved_tokens
 from extensions              import google   # registered in app.py via init_oauth()
 
 auth_bp = Blueprint("auth", __name__)
@@ -142,7 +142,7 @@ def root_or_callback():
             data = r.json()
             if r.status_code == 200 and "access_token" in data:
                 save_tokens(data)
-                return redirect(f"/login-success?token={data['access_token']}")
+                return redirect("/login-success?status=connected")
             return f"<h3>Token exchange failed</h3><pre>{data}</pre>", 400
         except Exception as e:
             traceback.print_exc()
@@ -158,3 +158,18 @@ def login_success():
     response = send_from_directory(FRONTEND_DIR, "index.html")
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@auth_bp.route("/api/auth/status", methods=["GET"])
+def auth_status():
+    is_authenticated = token_is_fresh()
+    return jsonify({
+        "connected": is_authenticated,
+        "broker": "Upstox" if is_authenticated else None,
+    })
+
+
+@auth_bp.route("/api/auth/disconnect", methods=["POST"])
+def disconnect_broker():
+    clear_saved_tokens()
+    return jsonify({"success": True, "message": "Disconnected Upstox"})

@@ -75,10 +75,31 @@ export default function BrokersPage() {
     const user     = localStorage.getItem("user") || "User";
     const initials = user.slice(0, 2).toUpperCase();
 
-    // Broker disconnect only — keeps user session
+    const [isUpstoxConnected, setIsUpstoxConnected] = useState(() => {
+        return localStorage.getItem("upstox_connected") === "true" || Boolean(localStorage.getItem("upstox_access_token"));
+    });
+
+    React.useEffect(() => {
+        fetch("/api/auth/status")
+            .then(r => r.json())
+            .then(data => {
+                if (data && data.connected) {
+                    localStorage.setItem("upstox_connected", "true");
+                    if (!localStorage.getItem("user")) {
+                        localStorage.setItem("user", "Trader");
+                    }
+                    setIsUpstoxConnected(true);
+                }
+            })
+            .catch(() => {});
+    }, []);
+
+    // Broker disconnect only — resets view state without wiping server token
     const handleDisconnect = () => {
+        localStorage.removeItem("upstox_connected");
         localStorage.removeItem("upstox_access_token");
         localStorage.removeItem("upstox_token_expiry");
+        setIsUpstoxConnected(false);
         window.location.reload();
     };
 
@@ -91,6 +112,10 @@ export default function BrokersPage() {
     const handleAction = (broker) => {
         if (!broker.available) {
             setNotified(p => ({ ...p, [broker.name]: true }));
+            return;
+        }
+        if (broker.name === "Upstox" && isUpstoxConnected) {
+            window.location.href = "/";
             return;
         }
         if (broker.action) window.location.href = broker.action;
@@ -458,7 +483,7 @@ export default function BrokersPage() {
                                         </>
                                     ) : (
                                         <>
-                                            {broker.cta}
+                                            {broker.name === "Upstox" && isUpstoxConnected ? "Go to Dashboard" : broker.cta}
                                             {broker.available && <ArrowRight size={15} />}
                                         </>
                                     )}

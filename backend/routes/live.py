@@ -22,6 +22,9 @@ import numpy as np
 import pandas as pd
 import ta
 from flask import Blueprint, request, jsonify
+from services.indicator_service import (
+    calculate_rsi, calculate_ema, calculate_macd, calculate_atr, calculate_bollinger
+)
 
 from extensions             import redis_client, REDIS_ENABLED
 from utils.symbol_map       import SYMBOL_TO_KEY
@@ -97,24 +100,26 @@ def compute_and_store_last_n_indicators(symbol: str, timeframe: str = "1m", n: i
     df.sort_values("ts", inplace=True)
     df["date"] = df["ts"].dt.date
 
-    close = df["close"].astype(float)
-    high  = df["high"].astype(float)
-    low   = df["low"].astype(float)
-    vol   = df["volume"].astype(float)
+    c = close.to_numpy(dtype=float)
+    h = high.to_numpy(dtype=float)
+    l = low.to_numpy(dtype=float)
 
-    df["rsi_14"]  = ta.momentum.RSIIndicator(close, 14).rsi()
-    df["ema_9"]   = ta.trend.EMAIndicator(close,  9).ema_indicator()
-    df["ema_21"]  = ta.trend.EMAIndicator(close, 21).ema_indicator()
-    df["ema_50"]  = ta.trend.EMAIndicator(close, 50).ema_indicator()
-    df["ema_200"] = ta.trend.EMAIndicator(close,200).ema_indicator()
-    macd = ta.trend.MACD(close)
-    df["macd"], df["macd_signal"], df["macd_hist"] = macd.macd(), macd.macd_signal(), macd.macd_diff()
-    df["atr_14"]     = ta.volatility.AverageTrueRange(high, low, close, 14).average_true_range()
+    df["rsi_14"]  = calculate_rsi(c, 14)
+    df["ema_9"]   = calculate_ema(c, 9)
+    df["ema_21"]  = calculate_ema(c, 21)
+    df["ema_50"]  = calculate_ema(c, 50)
+    df["ema_200"] = calculate_ema(c, 200)
+
+    macd_line, macd_sig, macd_hist = calculate_macd(c)
+    df["macd"], df["macd_signal"], df["macd_hist"] = macd_line, macd_sig, macd_hist
+
+    df["atr_14"]     = calculate_atr(h, l, c, 14)
     df["atr_percent"]= df["atr_14"] / close * 100
-    bb = ta.volatility.BollingerBands(close, 20, 2)
-    df["bollinger_mid"]   = bb.bollinger_mavg()
-    df["bollinger_upper"] = bb.bollinger_hband()
-    df["bollinger_lower"] = bb.bollinger_lband()
+
+    bb_mid, bb_upper, bb_lower = calculate_bollinger(c)
+    df["bollinger_mid"]   = bb_mid
+    df["bollinger_upper"] = bb_upper
+    df["bollinger_lower"] = bb_lower
     typical = (high + low + close) / 3
     df["vwap"] = (typical * vol).groupby(df["date"]).cumsum() / vol.groupby(df["date"]).cumsum()
 

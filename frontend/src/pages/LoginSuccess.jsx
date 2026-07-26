@@ -11,15 +11,14 @@ export default function LoginSuccess() {
         const code   = params.get("code");
         const via    = params.get("via");
         const user   = params.get("user");
+        const statusParam = params.get("status");
 
-        // ── DEBUG: log what params arrived ────────────────────────
-        console.log("[LoginSuccess] params →", {
-            via, user, token: token ? "present" : null, code: code ? "present" : null
-        });
+        // Immediately strip query parameters from address bar for URL security
+        if (window.location.search) {
+            window.history.replaceState({}, document.title, window.location.pathname);
+        }
 
         // ── Google OAuth callback ──────────────────────────────────
-        // Arrives here when Flask google_callback does:
-        // return redirect(f"/login-success?via=google&user={quote(email)}")
         if (via === "google" && user) {
             setStatus("Google sign-in successful…");
             localStorage.setItem("user",          decodeURIComponent(user));
@@ -28,12 +27,13 @@ export default function LoginSuccess() {
             return;
         }
 
-        // ── Upstox token callback ──────────────────────────────────
-        // Arrives here when Flask root_or_callback does:
-        // return redirect(f"/login-success?token={data['access_token']}")
-        if (token) {
+        // ── Upstox status callback (clean URL) ────────────────────
+        if (statusParam === "connected" || token) {
             setStatus("Upstox connected…");
-            localStorage.setItem("upstox_access_token", token);
+            localStorage.setItem("upstox_connected", "true");
+            if (!localStorage.getItem("user")) {
+                localStorage.setItem("user", "Trader");
+            }
             localStorage.setItem(
                 "upstox_token_expiry",
                 (Date.now() + 24 * 60 * 60 * 1000).toString()
@@ -48,14 +48,11 @@ export default function LoginSuccess() {
             return;
         }
 
-        // ── No params — check what we have and route accordingly ──
-        // This happens if Flask still redirects to /login-success without params
-        // OR if the user navigates here directly
-        console.warn("[LoginSuccess] No OAuth params found in URL. Check app.py google_callback redirect.");
+        // ── No params — check session via API or state ────────────
         setStatus("Checking session…");
-        const hasToken = localStorage.getItem("upstox_access_token");
-        const hasUser  = localStorage.getItem("user");
-        navigate(hasToken ? "/" : hasUser ? "/brokers" : "/login", { replace: true });
+        const isConnected = localStorage.getItem("upstox_connected") === "true" || localStorage.getItem("upstox_access_token");
+        const hasUser     = localStorage.getItem("user");
+        navigate(isConnected ? "/" : hasUser ? "/brokers" : "/login", { replace: true });
 
     }, [navigate]);
 

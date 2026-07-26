@@ -16,6 +16,7 @@ FIXES:
                               written by backend after OAuth. Using the env var caused
                               permanent 401 after token refresh because the old token
                               was truthy and short-circuited the Redis lookup.
+
 """
 
 import os
@@ -51,7 +52,7 @@ except Exception:
     ApiClient = None
 
 # ── Config ────────────────────────────────────────────────────────
-REDIS_URL = os.getenv("REDIS_URL", "redis://:linux123@127.0.0.1:6379/10")
+REDIS_URL = os.getenv("REDIS_URL", "redis://:linux123@127.0.0.1:6379/0")
 WS_HOST = os.getenv("WS_HOST", "0.0.0.0")
 WS_PORT = int(os.getenv("WS_PORT", "9000"))
 SKIP_SSL_VERIFY = os.getenv("SKIP_SSL_VERIFY", "0") in ("1", "true", "True")
@@ -102,11 +103,29 @@ DEFAULT_INDEX_SUBSCRIPTIONS = [
 ]
 
 
-def canonicalize_instrument_key(key: str) -> str:
+try:
+    from utils.symbol_map import load_symbol_map, SYMBOL_TO_KEY
+    load_symbol_map()
+except Exception:
+    SYMBOL_TO_KEY = {}
+
+
+def canonicalize_instrument_key(key: str, exchange: str = "NSE") -> str:
     raw = str(key or "").strip()
     if not raw:
         return ""
-    return INDEX_KEY_ALIASES.get(raw.upper(), raw)
+    alias = INDEX_KEY_ALIASES.get(raw.upper())
+    if alias:
+        return alias
+    if "|" in raw:
+        return raw
+    mapped = SYMBOL_TO_KEY.get(raw.upper())
+    if mapped:
+        if isinstance(mapped, str):
+            return mapped
+        elif isinstance(mapped, dict):
+            return mapped.get(exchange) or mapped.get("NSE") or mapped.get("BSE") or list(mapped.values())[0]
+    return raw
 
 
 def canonicalize_instrument_keys(keys) -> list[str]:
@@ -125,12 +144,12 @@ def extract_instrument_keys(payload: dict, action: str = "") -> list[str]:
     Accept both single and multi-key payload formats from Redis/WS clients.
     Supported keys:
       - instrument_key / instrumentKey / symbol
-      - instrument_keys / instrumentKeys
+      - instrument_keys / instrumentKeys / symbols
       - subscribe / unsubscribe
     """
     raw_keys = []
 
-    for field in ("instrument_keys", "instrumentKeys", "subscribe", "unsubscribe"):
+    for field in ("instrument_keys", "instrumentKeys", "symbols", "subscribe", "unsubscribe"):
         val = payload.get(field)
         if isinstance(val, list):
             raw_keys.extend(val)
@@ -149,24 +168,22 @@ def extract_instrument_keys(payload: dict, action: str = "") -> list[str]:
     return canonicalize_instrument_keys(raw_keys)
 
 
-def subscribe_keys(keys: list[str]) -> list[str]:
+def subscribe_keys(keys: list[str], force: bool = False) -> list[str]:
     new_keys = []
     for key in keys:
-        if key in CURRENT_SUBS:
-            continue
-        CURRENT_SUBS.add(key)
         redis_call("sadd", REDIS_ACTIVE_SUBS_KEY, key, default=0)
-        new_keys.append(key)
+        if force or key not in CURRENT_SUBS:
+            CURRENT_SUBS.add(key)
+            new_keys.append(key)
     return new_keys
 
 
 def unsubscribe_keys(keys: list[str]) -> list[str]:
     removed = []
     for key in keys:
-        if key in CURRENT_SUBS:
-            CURRENT_SUBS.discard(key)
-            removed.append(key)
+        CURRENT_SUBS.discard(key)
         redis_call("srem", REDIS_ACTIVE_SUBS_KEY, key, default=0)
+        removed.append(key)
     return removed
 
 
@@ -226,22 +243,29 @@ def redis_call(method, *args, default=None, **kwargs):
             time.sleep(REDIS_OP_RETRY_DELAY * attempt)
 
 
+try:
+    from services.token_service import load_saved_tokens, decrypt_token
+except Exception:
+    def load_saved_tokens():
+        return {}
+    def decrypt_token(tok):
+        return tok or ""
+
+
 # ── Token ─────────────────────────────────────────────────────────
 def get_access_token_from_redis() -> str:
     """
-    Always read token from Redis.
-    Never use os.getenv("UPSTOX_ACCESS_TOKEN") for authorize calls — the env var
-    is frozen at container start and may hold a stale/expired token even after
-    the backend has refreshed it via OAuth. Redis always has the latest token.
+    Returns valid access token using centralized token service.
+    Reads from Redis with AES decryption, falling back seamlessly to disk/env.
     """
     try:
-        raw = redis_call("get", "upstox:tokens", default="")
-        if not raw:
-            return ""
-        data = json.loads(raw)
-        return data.get("access_token", "")
-    except Exception:
-        return ""
+        tokens = load_saved_tokens()
+        if isinstance(tokens, dict) and tokens.get("access_token"):
+            return tokens["access_token"]
+    except Exception as e:
+        log(f"⚠️ Error loading access token: {e}")
+
+    return ""
 
 
 # ── Protobuf decode ───────────────────────────────────────────────

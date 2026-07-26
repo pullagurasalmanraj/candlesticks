@@ -5,7 +5,7 @@ import os
 # Add the backend directory to python path so we can import wsserver
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from wsserver import canonicalize_instrument_key, canonicalize_instrument_keys
+from wsserver import canonicalize_instrument_key, canonicalize_instrument_keys, extract_instrument_keys
 
 class TestWsServer(unittest.TestCase):
     def test_canonicalize_instrument_key(self):
@@ -29,6 +29,11 @@ class TestWsServer(unittest.TestCase):
         inputs = ["nifty", "NSE_EQ|INE002A01018", "banknifty", "nifty"]
         expected = ["NSE_INDEX|Nifty 50", "NSE_EQ|INE002A01018", "NSE_INDEX|Nifty Bank"]
         self.assertEqual(canonicalize_instrument_keys(inputs), expected)
+
+    def test_extract_instrument_keys(self):
+        payload = {"symbols": ["nifty", "NSE_EQ|INE002A01018"]}
+        expected = ["NSE_INDEX|Nifty 50", "NSE_EQ|INE002A01018"]
+        self.assertEqual(extract_instrument_keys(payload), expected)
 
 if __name__ == '__main__':
     unittest.main()

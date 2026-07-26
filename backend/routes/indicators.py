@@ -50,6 +50,17 @@ from psycopg2.extras import execute_values, execute_batch
 from config import UPSTOX_V3_BASE, safe_requests
 from db import get_db_conn
 from services.token_service import get_valid_token
+from services.indicator_service import (
+    calculate_ema as _ema,
+    calculate_sma as _sma,
+    calculate_rsi as _rsi,
+    calculate_macd as _macd,
+    calculate_true_range as _true_range,
+    calculate_atr as _atr,
+    calculate_bollinger as _bollinger,
+    calculate_obv as _obv,
+    calculate_supertrend as _supertrend,
+)
 from utils.symbol_map import SYMBOL_TO_KEY
 
 indicators_bp = Blueprint("indicators", __name__)
@@ -70,156 +81,6 @@ INTRADAY_PAD_BUFFER_CALENDAR_DAYS = 14
 #  All operate on raw numpy arrays or pandas Series.
 #  No ta library. No class instantiation overhead.
 # ================================================================
-
-def _ema(arr: np.ndarray, period: int) -> np.ndarray:
-    """
-    Exponential moving average using pandas ewm (C-level).
-    Equivalent to ta.trend.EMAIndicator(close, period).ema_indicator()
-    but ~8x faster because ewm.mean() is a single C call.
-    """
-    return pd.Series(arr).ewm(span=period, adjust=False).mean().to_numpy()
-
-
-def _sma(arr: np.ndarray, period: int) -> np.ndarray:
-    """Simple rolling mean. Used for Bollinger mid and volume baselines."""
-    return pd.Series(arr).rolling(period).mean().to_numpy()
-
-
-def _rsi(arr: np.ndarray, period: int = 14) -> np.ndarray:
-    """
-    RSI using Wilder smoothing (EWM with com=period-1).
-    Equivalent to ta.momentum.RSIIndicator(close, period).rsi()
-    """
-    delta  = np.diff(arr, prepend=arr[0])
-    gain   = np.where(delta > 0,  delta, 0.0)
-    loss   = np.where(delta < 0, -delta, 0.0)
-    avg_g  = pd.Series(gain).ewm(com=period - 1, adjust=False).mean().to_numpy()
-    avg_l  = pd.Series(loss).ewm(com=period - 1, adjust=False).mean().to_numpy()
-    with np.errstate(divide="ignore", invalid="ignore"):
-        rs  = np.where(avg_l == 0, np.inf, avg_g / avg_l)
-    return np.where(avg_l == 0, 100.0, 100.0 - 100.0 / (1.0 + rs))
-
-
-def _macd(arr: np.ndarray,
-           fast: int = 12, slow: int = 26, signal: int = 9
-           ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    MACD line, signal line, histogram.
-    Equivalent to ta.trend.MACD(close) â€” all three values.
-    """
-    ema_f    = pd.Series(arr).ewm(span=fast,   adjust=False).mean().to_numpy()
-    ema_s    = pd.Series(arr).ewm(span=slow,   adjust=False).mean().to_numpy()
-    macd_line = ema_f - ema_s
-    sig_line  = pd.Series(macd_line).ewm(span=signal, adjust=False).mean().to_numpy()
-    histogram = macd_line - sig_line
-    return macd_line, sig_line, histogram
-
-
-def _true_range(h: np.ndarray, l: np.ndarray, c: np.ndarray) -> np.ndarray:
-    """
-    True range: max(H-L, |H-prevC|, |L-prevC|).
-    Vectorised â€” no loop.
-    """
-    prev_c = np.roll(c, 1)
-    prev_c[0] = c[0]   # first bar: no previous close, use same close
-    return np.maximum(h - l,
-           np.maximum(np.abs(h - prev_c), np.abs(l - prev_c)))
-
-
-def _atr(h: np.ndarray, l: np.ndarray, c: np.ndarray,
-          period: int = 14) -> np.ndarray:
-    """
-    ATR using Wilder smoothing (EWM com=period-1).
-    Equivalent to ta.volatility.AverageTrueRange(...).average_true_range()
-    """
-    tr = _true_range(h, l, c)
-    return pd.Series(tr).ewm(com=period - 1, adjust=False).mean().to_numpy()
-
-
-def _bollinger(arr: np.ndarray,
-               period: int = 20, std_dev: float = 2.0
-               ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Bollinger Bands: mid, upper, lower.
-    Uses population std (ddof=0) to match ta library default.
-    """
-    s   = pd.Series(arr)
-    mid = s.rolling(period).mean().to_numpy()
-    std = s.rolling(period).std(ddof=0).to_numpy()
-    return mid, mid + std_dev * std, mid - std_dev * std
-
-
-def _obv(c: np.ndarray, v: np.ndarray) -> np.ndarray:
-    """
-    On-Balance Volume.
-    direction = sign of price change; OBV = cumsum(direction Ã— volume).
-    Equivalent to ta.volume.OnBalanceVolumeIndicator(close, volume).
-    """
-    direction = np.sign(np.diff(c, prepend=c[0]))
-    return np.cumsum(direction * v)
-
-
-def _supertrend(h: np.ndarray, l: np.ndarray, c: np.ndarray,
-                period: int = 10, mult: float = 3.0
-                ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Supertrend indicator.
-
-    Returns:
-        st_values : float array â€” supertrend line price
-        st_signal : int8 array â€” 1 = bullish (price above ST), -1 = bearish
-
-    The band update has a dependency on the previous bar's band value so
-    it cannot be fully vectorised. However using numpy arrays instead of
-    pandas Series inside the loop eliminates pandas indexing overhead and
-    gives ~10x speedup over the original implementation.
-
-    Two-pass approach:
-      Pass 1: compute final upper/lower bands with numpy arrays (fast loop)
-      Pass 2: assign ST line and signal (fast loop, same cost)
-    """
-    n   = len(c)
-    atr = _atr(h, l, c, period)
-    hl2 = (h + l) * 0.5
-    ub  = hl2 + mult * atr   # basic upper band
-    lb  = hl2 - mult * atr   # basic lower band
-
-    # Pass 1 â€” finalise bands
-    # Rule: upper band only tightens; lower band only rises.
-    # Only recalculate if previous close crossed the band.
-    final_ub = np.empty(n, dtype=np.float64)
-    final_lb = np.empty(n, dtype=np.float64)
-    final_ub[0] = ub[0]
-    final_lb[0] = lb[0]
-
-    for i in range(1, n):
-        # Upper band: use new value only if it tightens OR previous close was above it
-        final_ub[i] = ub[i] if (ub[i] < final_ub[i-1] or c[i-1] > final_ub[i-1]) \
-                             else final_ub[i-1]
-        # Lower band: use new value only if it rises OR previous close was below it
-        final_lb[i] = lb[i] if (lb[i] > final_lb[i-1] or c[i-1] < final_lb[i-1]) \
-                             else final_lb[i-1]
-
-    # Pass 2 â€” assign supertrend line and signal
-    st_val = np.full(n, np.nan, dtype=np.float64)
-    st_sig = np.zeros(n, dtype=np.int8)
-
-    # Seed at period-1 (enough ATR history)
-    st_val[period - 1] = final_lb[period - 1]
-    st_sig[period - 1] = 1
-
-    for i in range(period, n):
-        if st_sig[i-1] == 1:
-            # Currently bullish
-            st_val[i] = final_lb[i]
-            st_sig[i] = -1 if c[i] < final_lb[i] else 1
-        else:
-            # Currently bearish
-            st_val[i] = final_ub[i]
-            st_sig[i] =  1 if c[i] > final_ub[i] else -1
-
-    return st_val, st_sig
-
 
 def _vwap_intraday(h: np.ndarray, l: np.ndarray, c: np.ndarray,
                    v: np.ndarray, date_int: np.ndarray) -> np.ndarray:
@@ -985,6 +846,51 @@ def api_indicators_intraday():
                 warmup_cutoff_ist=warmup_cutoff_ist,
             )
         )
+
+        # DB Validation: Check if pre-computed indicators already exist in database
+        force_recompute = (request.args.get("force") or "").strip().lower() in {"1", "true", "yes"}
+        if not force_recompute:
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM indicators
+                        WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                          AND ts >= %s
+                        """,
+                        (symbol, exchange, timeframe, aligned_start_ist),
+                    )
+                    row_count = cur.fetchone()
+                    existing_ind_count = list(row_count.values())[0] if isinstance(row_count, dict) else row_count[0]
+                    if existing_ind_count > 50:
+                        cur.execute(
+                            """
+                            SELECT MIN(ts), MAX(ts)
+                            FROM indicators
+                            WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                            """,
+                            (symbol, exchange, timeframe),
+                        )
+                        range_res = cur.fetchone()
+                        min_ts = list(range_res.values())[0] if isinstance(range_res, dict) else range_res[0]
+                        max_ts = list(range_res.values())[1] if isinstance(range_res, dict) else range_res[1]
+                        from_date_str = str(min_ts.date()) if min_ts else ""
+                        to_date_str = str(max_ts.date()) if max_ts else ""
+
+                        db_msg = f"{symbol} ({exchange}) {timeframe} indicators are already present in PostgreSQL database ({existing_ind_count} rows). Skipping recalculation."
+                        print(f"\n>>> [DB Validation] {db_msg}\n", flush=True)
+                        if request.args.get("store", "").lower() in {"true", "1", "yes"}:
+                            return jsonify({
+                                "status": "SUCCESS",
+                                "db_validated": True,
+                                "message": db_msg,
+                                "rows": existing_ind_count,
+                                "symbol": symbol,
+                                "timeframe": timeframe,
+                                "from_date": from_date_str,
+                                "to_date": to_date_str,
+                            })
 
         def _load_rows():
             with get_db_conn() as conn:

@@ -74,9 +74,45 @@ function ProtectedRoute({ children }) {
 }
 
 function BrokerProtectedRoute({ children }) {
-    const token  = localStorage.getItem("upstox_access_token");
-    const expiry = Number(localStorage.getItem("upstox_token_expiry") || 0);
-    if (!token || Date.now() > expiry) return <Navigate to="/brokers" replace />;
+    const [status, setStatus] = useState(() => {
+        const isConn = localStorage.getItem("upstox_connected") === "true" || Boolean(localStorage.getItem("upstox_access_token"));
+        return isConn ? "connected" : "checking";
+    });
+
+    React.useEffect(() => {
+        let isMounted = true;
+        fetch("/api/auth/status")
+            .then(res => res.json())
+            .then(data => {
+                if (!isMounted) return;
+                if (data && data.connected) {
+                    localStorage.setItem("upstox_connected", "true");
+                    if (!localStorage.getItem("user")) {
+                        localStorage.setItem("user", "Trader");
+                    }
+                    setStatus("connected");
+                } else {
+                    localStorage.removeItem("upstox_connected");
+                    localStorage.removeItem("upstox_access_token");
+                    setStatus("disconnected");
+                }
+            })
+            .catch(() => {
+                if (!isMounted) return;
+                const isConn = localStorage.getItem("upstox_connected") === "true" || Boolean(localStorage.getItem("upstox_access_token"));
+                setStatus(isConn ? "connected" : "disconnected");
+            });
+        return () => { isMounted = false; };
+    }, []);
+
+    if (status === "checking") {
+        return <SkeletonLoader />;
+    }
+
+    if (status === "disconnected") {
+        return <Navigate to="/brokers" replace />;
+    }
+
     return children;
 }
 
@@ -101,8 +137,7 @@ function Sidebar({ collapsed, setCollapsed }) {
     const activePath = location.pathname;
 
     const handleLogout = () => {
-        // Only disconnect broker — keep user session intact
-        // User goes back to /brokers to reconnect, not back to login
+        localStorage.removeItem("upstox_connected");
         localStorage.removeItem("upstox_access_token");
         localStorage.removeItem("upstox_token_expiry");
         window.location.href = "/brokers";

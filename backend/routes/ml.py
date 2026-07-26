@@ -241,24 +241,32 @@ def _align_htf(df_ltf: pd.DataFrame, df_htf: pd.DataFrame,
         return df_ltf
 
     df_htf_reset = df_htf.reset_index()  # ts back as column
+    if "ts" in df_htf_reset.columns:
+        df_htf_reset = df_htf_reset.rename(columns={"ts": "htf_orig_ts"})
+
     df_ltf_reset = df_ltf.reset_index() if df_ltf.index.name == "ts" else df_ltf.copy()
 
     # Ensure both are UTC-naive for merge
-    for col in ["ts"]:
-        if col in df_ltf_reset.columns:
-            if hasattr(df_ltf_reset[col], 'dt') and df_ltf_reset[col].dt.tz is not None:
-                df_ltf_reset[col] = df_ltf_reset[col].dt.tz_localize(None)
-        if col in df_htf_reset.columns:
-            if hasattr(df_htf_reset[col], 'dt') and df_htf_reset[col].dt.tz is not None:
-                df_htf_reset[col] = df_htf_reset[col].dt.tz_localize(None)
+    if "ts" in df_ltf_reset.columns and hasattr(df_ltf_reset["ts"], 'dt') and df_ltf_reset["ts"].dt.tz is not None:
+        df_ltf_reset["ts"] = df_ltf_reset["ts"].dt.tz_localize(None)
+
+    if "htf_orig_ts" in df_htf_reset.columns and hasattr(df_htf_reset["htf_orig_ts"], 'dt') and df_htf_reset["htf_orig_ts"].dt.tz is not None:
+        df_htf_reset["htf_orig_ts"] = df_htf_reset["htf_orig_ts"].dt.tz_localize(None)
+
+    # Shift HTF timestamps to bar completion time (htf_orig_ts + htf_min) so LTF bars only see CLOSED HTF bars
+    df_htf_reset["ts_closed"] = df_htf_reset["htf_orig_ts"] + pd.Timedelta(minutes=htf_min)
 
     merged = pd.merge_asof(
         df_ltf_reset.sort_values("ts"),
-        df_htf_reset.sort_values("ts"),
-        on="ts",
-        direction="backward",   # ← last closed HTF bar, never a future bar
+        df_htf_reset.sort_values("ts_closed"),
+        left_on="ts",
+        right_on="ts_closed",
+        direction="backward",   # ← last CLOSED HTF bar, guarantees 0% look-ahead bias
         tolerance=pd.Timedelta(minutes=htf_min * 3),  # max gap = 3 HTF periods
     )
+    cols_to_drop = [c for c in ["ts_closed", "htf_orig_ts"] if c in merged.columns]
+    if cols_to_drop:
+        merged = merged.drop(columns=cols_to_drop)
     return merged
 
 

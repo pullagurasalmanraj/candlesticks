@@ -32,7 +32,7 @@ PG_USER = os.getenv("PGUSER", "postgres")
 PG_PASSWORD = os.getenv("PGPASSWORD", "postgres")
 
 # ── Redis ────────────────────────────────────────────────────────
-REDIS_URL = os.getenv("REDIS_URL", "redis://:linux123@127.0.0.1:6379/10")
+REDIS_URL = os.getenv("REDIS_URL", "redis://:linux123@127.0.0.1:6379/0")
 
 # ── Flask ────────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("SECRET_KEY", "candlesticks_super_secret_key")

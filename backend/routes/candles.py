@@ -22,6 +22,9 @@ from psycopg2.extras import execute_batch
 from config                 import UPSTOX_V3_BASE, safe_requests
 from db                     import get_db_conn
 from services.token_service import get_valid_token
+from services.indicator_service import (
+    calculate_rsi, calculate_ema, calculate_sma, calculate_macd
+)
 from utils.symbol_map       import SYMBOL_TO_KEY
 
 candles_bp = Blueprint("candles", __name__)
@@ -439,14 +442,14 @@ def download_daily_upstox():
         df[["Open","High","Low","Close","Volume","OI"]] = df[["Open","High","Low","Close","Volume","OI"]].apply(pd.to_numeric, errors="coerce")
         df["Volume"] = df["Volume"].fillna(0).astype(int)
 
-        close, high, low  = df["Close"], df["High"], df["Low"]
-        df["RSI_14"]      = ta.momentum.RSIIndicator(close, 14).rsi()
-        df["EMA_20"]      = ta.trend.EMAIndicator(close, 20).ema_indicator()
-        df["SMA_20"]      = ta.trend.SMAIndicator(close, 20).sma_indicator()
-        macd              = ta.trend.MACD(close)
-        df["MACD"]        = macd.macd()
-        df["MACD_Signal"] = macd.macd_signal()
-        df["MACD_Hist"]   = macd.macd_diff()
+        c = close.to_numpy(dtype=float)
+        df["RSI_14"]      = calculate_rsi(c, 14)
+        df["EMA_20"]      = calculate_ema(c, 20)
+        df["SMA_20"]      = calculate_sma(c, 20)
+        macd_line, macd_sig, macd_hist = calculate_macd(c)
+        df["MACD"]        = macd_line
+        df["MACD_Signal"] = macd_sig
+        df["MACD_Hist"]   = macd_hist
         df["ADX_14"]      = ta.trend.ADXIndicator(high, low, close, 14).adx()
         df = df.dropna().reset_index(drop=True)
 

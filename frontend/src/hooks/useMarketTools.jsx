@@ -38,7 +38,11 @@ export default function useMarketTools({
                 return setToast(data.error || "Indicator processing failed");
             }
 
-            setToast(`Saved ${data.count || data.rows || 0} rows`);
+            if (data.db_validated || data.message) {
+                setToast(`⚡ DB Cache: ${data.message || `Loaded ${data.rows || 0} pre-stored rows from Database`}`);
+            } else {
+                setToast(`Saved ${data.count || data.rows || 0} rows to Database`);
+            }
 
         } catch {
             setToast("Indicator error");
