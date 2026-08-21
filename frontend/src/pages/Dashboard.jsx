@@ -1,6 +1,5 @@
 // src/pages/Dashboard.jsx
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import DatePicker from "react-datepicker";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import "react-datepicker/dist/react-datepicker.css";
 import { useTheme } from "../context/ThemeContext";
 import SkeletonLoader from "../components/SkeletonLoader";
@@ -8,10 +7,8 @@ import SkeletonLoader from "../components/SkeletonLoader";
 import { INDEX_DEFAULTS, INDEX_NAME_TO_SYMBOL } from "../context/indexes";
 import { normalizeKey } from "../utils/instrumentUtils";
 import { getLtpForInstrument } from "../utils/priceUtils";
-import { formatYMD } from "../utils/dateUtils";
-import { startOfDay } from "../utils/dateUtils";
+import { formatYMD, startOfDay } from "../utils/dateUtils";
 import {
-    DEFAULT_WATCHLIST_CAP,
     WATCHLIST_CAP_KEYS,
     WATCHLIST_CAP_OPTIONS,
     WATCHLIST_LEGACY_KEY,
@@ -30,15 +27,23 @@ import SearchBar from "../components/SearchBar";
 import WebSocketStatus from "../components/WebSocketStatus";
 import MarketSummary from "../components/MarketSummary";
 import IndexStrip from "../components/IndexStrip";
-import SelectedInstruments from "../components/SelectedInstruments";
-import ToolsPanel from "../components/ToolsPanel";
+import LiveTickCard from "../components/LiveTickCard";
+import LiveHeatmap from "../components/LiveHeatmap";
+import DataToolsDrawer from "../components/DataToolsDrawer";
+import ScreenerMetricsCard from "../components/ScreenerMetricsCard";
 import ProfileDrawer, { Avatar } from "../components/ProfileDrawer";
 import StockLogo from "../components/StockLogo";
+
 import useInstrumentSearch from "../hooks/useInstrumentSearch";
 import useWebSocketPrices from "../hooks/useWebSocketPrices.js";
 import { fetchTimeframes } from "../services/timeframeService";
 import { fetchHistoricalCandlesAPI } from "../services/candleService";
-import { subscribeSymbol, unsubscribeAllInstruments, unsubscribeInstrument } from "../services/subscriptionService";
+import {
+    subscribeSymbol,
+    subscribeInstruments,
+    unsubscribeAllInstruments,
+    unsubscribeInstrument
+} from "../services/subscriptionService";
 import { generateIndicators } from "../services/indicatorService";
 import { downloadExcelAPI } from "../services/exportService";
 
@@ -131,7 +136,7 @@ function readStoredObject(key) {
 export default function Dashboard() {
     const { theme } = useTheme();
 
-    // ── State ────────────────────────────────────────────────────
+    // ── Primary State ────────────────────────────────────────────
     const [selectedInstruments, setSelectedInstruments] = useState(() => readStoredArray("selectedInstruments"));
     const [isApplyingIndicators, setIsApplyingIndicators] = useState(false);
     const [watchlistsByCap, setWatchlistsByCap] = useState(() => readStoredWatchlistsByCap());
@@ -139,6 +144,22 @@ export default function Dashboard() {
     const [selectedSymbol, setSelectedSymbol] = useState("");
     const [selectedInstrument, setSelectedInstrument] = useState(null);
     const [activeSubscriptions, setActiveSubscriptions] = useState(() => readStoredObject("activeSubscriptions"));
+
+    // ── View & Layout State ──────────────────────────────────────
+    const [viewMode, setViewMode] = useState("command_center"); // "command_center" | "heatmap" | "workbench"
+    const [isToolsOpen, setIsToolsOpen] = useState(false);
+    const [sortBy, setSortBy] = useState("default"); // "default" | "gainers" | "losers" | "symbol" | "price" | "subscribed"
+    const [filterCategory, setFilterCategory] = useState("all"); // "all" | "gainers" | "losers" | "subscribed"
+    const [fetchedLtpMap, setFetchedLtpMap] = useState({});
+
+    const handleFundamentalsLoaded = useCallback((data) => {
+        if (data && typeof data.currentPrice === "number" && selectedSymbol) {
+            const cleanSym = String(selectedSymbol || "").split("|").pop().replace(/^(NSE_EQ|NSE_INDEX|BSE_EQ|BSE_INDEX)/, "").replace(/[^A-Z0-9]/g, "");
+            setFetchedLtpMap(prev => ({ ...prev, [cleanSym]: data.currentPrice }));
+        }
+    }, [selectedSymbol]);
+
+    // ── Data Tools State ─────────────────────────────────────────
     const [startDate, setStartDate] = useState(null);
     const [endDate, setEndDate] = useState(null);
     const [timeframes, setTimeframes] = useState([]);
@@ -147,15 +168,15 @@ export default function Dashboard() {
     const [histEnd, setHistEnd] = useState(null);
     const [isFetchingHistory, setIsFetchingHistory] = useState(false);
     const [years, setYears] = useState("");
+    const [force, setForce] = useState(false);
+
+    // ── Summary & Modal State ────────────────────────────────────
     const [indexData, setIndexData] = useState({});
     const [marketSummary, setMarketSummary] = useState(null);
     const [asOf, setAsOf] = useState(null);
     const [toast, setToastState] = useState(null);
-    const [activePanel, setActivePanel] = useState("instruments");
-    const [profileOpen, setProfileOpen] = useState(false); // "instruments" | "tools"
+    const [profileOpen, setProfileOpen] = useState(false);
     const [operationResult, setOperationResult] = useState(null);
-    const [force, setForce] = useState(false);
-    // Removed local storageDownloadedRegistry to ensure manual DB deletes are immediately respected
 
     const setToast = useCallback((val) => {
         if (!val) {
@@ -209,7 +230,6 @@ export default function Dashboard() {
         return () => clearTimeout(t);
     }, [toast]);
     useEffect(() => {
-        // Restore backend subscriptions for active subscriptions on mount (persists across page refresh)
         let cancelled = false;
         const keys = Object.keys(activeSubscriptions);
         if (keys.length > 0) {
@@ -272,8 +292,6 @@ export default function Dashboard() {
 
     const { prices, isConnected, isLoading, connectWebSocket, disconnectWebSocket } = useWebSocketPrices(instrumentByKey);
 
-    // Stable references — memo on WebSocketStatus only works if these
-    // don't get recreated on every render from search keystrokes
     const stableConnect = useCallback(() => connectWebSocket?.(), [connectWebSocket]);
     const stableDisconnect = useCallback(() => disconnectWebSocket?.(), [disconnectWebSocket]);
 
@@ -310,7 +328,7 @@ export default function Dashboard() {
         return () => { mounted = false; };
     }, []);
 
-    // ── Handlers (useCallback — prevents SearchBar re-render on keystroke)
+    // ── Handlers ────────────────────────────────────────────────
     const subscribeToStock = useCallback(async (inst) => {
         if (!inst) return;
         const key = inst.instrument_key?.trim();
@@ -330,7 +348,7 @@ export default function Dashboard() {
                 setToast(`Unsubscribed: ${sym}`);
             }
         } catch { setToast("Failed to update subscription"); }
-    }, [activeSubscriptions]);
+    }, [activeSubscriptions, setToast]);
 
     const toggleWatchlist = useCallback((inst) => {
         const sym = normalizeSymbol(inst?.symbol);
@@ -362,6 +380,100 @@ export default function Dashboard() {
         });
     }, [activeWatchlistCap]);
 
+    // ── Batch Action Handlers ────────────────────────────────────
+    const streamAllWorkingList = useCallback(async () => {
+        const keys = selectedInstruments.map((inst) => inst.instrument_key?.trim()).filter(Boolean);
+        if (keys.length === 0) return setToast("No instruments in working list.");
+        try {
+            setToast("Subscribing to all working list instruments...");
+            await subscribeInstruments(keys);
+            const next = { ...activeSubscriptions };
+            keys.forEach((k) => { next[k] = true; });
+            setActiveSubscriptions(next);
+            setToast(`Streaming ${keys.length} instruments`);
+        } catch {
+            setToast("Failed to subscribe all instruments.");
+        }
+    }, [selectedInstruments, activeSubscriptions, setToast]);
+
+    const pauseAllStreams = useCallback(async () => {
+        try {
+            setToast("Pausing all live streams...");
+            await unsubscribeAllInstruments();
+            setActiveSubscriptions({});
+            setToast("All live streams paused.");
+        } catch {
+            setToast("Failed to pause streams.");
+        }
+    }, [setToast]);
+
+    const handleOpenToolsForSymbol = useCallback((sym) => {
+        if (sym) {
+            setSelectedSymbol(sym);
+            const found = selectedInstruments.find(i => (i.symbol || "").toUpperCase() === sym) || watchlist.find(i => (i.symbol || "").toUpperCase() === sym);
+            if (found) setSelectedInstrument(found);
+        }
+        setIsToolsOpen(true);
+    }, [selectedInstruments, watchlist]);
+
+    // ── Process Dynamic Sorting & Filtering ──────────────────────
+    const processList = useCallback((list) => {
+        let result = [...list];
+
+        if (filterCategory === "gainers") {
+            result = result.filter(item => {
+                const key = normalizeKey(item);
+                const p = prices[key] || prices[(item.symbol || "").toUpperCase()];
+                return p && (p.percent ?? 0) > 0;
+            });
+        } else if (filterCategory === "losers") {
+            result = result.filter(item => {
+                const key = normalizeKey(item);
+                const p = prices[key] || prices[(item.symbol || "").toUpperCase()];
+                return p && (p.percent ?? 0) < 0;
+            });
+        } else if (filterCategory === "subscribed") {
+            result = result.filter(item => {
+                const key = normalizeKey(item);
+                return !!activeSubscriptions[key];
+            });
+        }
+
+        result.sort((a, b) => {
+            const keyA = normalizeKey(a);
+            const keyB = normalizeKey(b);
+            const pA = prices[keyA] || prices[(a.symbol || "").toUpperCase()] || {};
+            const pB = prices[keyB] || prices[(b.symbol || "").toUpperCase()] || {};
+
+            if (sortBy === "gainers") return (pB.percent ?? -999) - (pA.percent ?? -999);
+            if (sortBy === "losers") return (pA.percent ?? 999) - (pB.percent ?? 999);
+            if (sortBy === "price") return (pB.ltp ?? 0) - (pA.ltp ?? 0);
+            if (sortBy === "symbol") return (a.symbol || "").localeCompare(b.symbol || "");
+            if (sortBy === "subscribed") return (activeSubscriptions[keyB] ? 1 : 0) - (activeSubscriptions[keyA] ? 1 : 0);
+            return 0;
+        });
+
+        return result;
+    }, [filterCategory, sortBy, prices, activeSubscriptions]);
+
+    const filteredWorkingList = useMemo(() => processList(selectedInstruments), [processList, selectedInstruments]);
+    const filteredWatchlist = useMemo(() => processList(activeWatchlist), [processList, activeWatchlist]);
+
+    // Combine unique items for Heatmap
+    const heatmapItems = useMemo(() => {
+        const map = new Map();
+        selectedInstruments.forEach(item => {
+            const sym = (item.symbol || "").toUpperCase();
+            if (sym) map.set(sym, item);
+        });
+        watchlist.forEach(item => {
+            const sym = (item.symbol || "").toUpperCase();
+            if (sym && !map.has(sym)) map.set(sym, item);
+        });
+        return processList(Array.from(map.values()));
+    }, [selectedInstruments, watchlist, processList]);
+
+    // ── Data Tools API Calls ─────────────────────────────────────
     const applyIndicators = async () => {
         if (!selectedSymbol || !timeframe) return setToast("Select a symbol and timeframe first.");
         setIsApplyingIndicators(true);
@@ -576,39 +688,15 @@ export default function Dashboard() {
     }
 
     const user = localStorage.getItem("user") || "Trader";
-    const initials = user.slice(0, 2).toUpperCase();
     const hour = new Date().getHours();
     const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
-    // ── UI ───────────────────────────────────────────────────────
     return (
         <div style={{
             minHeight: "calc(100vh - var(--navbar-height))",
             background: "var(--bg-primary)",
             color: "var(--text-primary)",
         }}>
-            <style>{`
-                @keyframes fadeIn {
-                    from { opacity: 0; }
-                    to { opacity: 1; }
-                }
-                @keyframes scaleIn {
-                    from { transform: scale(0.95); opacity: 0; }
-                    to { transform: scale(1); opacity: 1; }
-                }
-                @keyframes toastSlideIn {
-                    from { transform: translateX(120%); opacity: 0; }
-                    to { transform: translateX(0); opacity: 1; }
-                }
-                @keyframes toastSpin {
-                    to { transform: rotate(360deg); }
-                }
-                @keyframes toastProgress {
-                    from { width: 100%; }
-                    to { width: 0%; }
-                }
-            `}</style>
-
             {/* ── Success Popup Modal ────────────────────────────────────────── */}
             {operationResult && (
                 <div style={{
@@ -629,7 +717,6 @@ export default function Dashboard() {
                         boxShadow: "0 20px 25px -5px rgba(0,0,0,0.4), 0 10px 10px -5px rgba(0,0,0,0.4)",
                         color: "var(--text-primary)",
                         fontFamily: "var(--font-body)",
-                        animation: "scaleIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)"
                     }}>
                         <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "18px" }}>
                             <div style={{
@@ -651,22 +738,6 @@ export default function Dashboard() {
                         </div>
 
                         <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "20px" }}>
-                            {operationResult.type === "candles" && (
-                                <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
-                                    <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Status</span>
-                                    <span style={{
-                                        fontWeight: "700",
-                                        fontSize: "0.75rem",
-                                        color: operationResult.already_exists ? "#3B82F6" : "#10B981",
-                                        background: operationResult.already_exists ? "rgba(59, 130, 246, 0.15)" : "rgba(16, 185, 129, 0.15)",
-                                        padding: "2px 8px",
-                                        borderRadius: "4px",
-                                        border: operationResult.already_exists ? "1px solid rgba(59, 130, 246, 0.3)" : "1px solid rgba(16, 185, 129, 0.3)"
-                                    }}>
-                                        {operationResult.already_exists ? "Already Present (Bypassed API)" : "Newly Fetched & Stored"}
-                                    </span>
-                                </div>
-                            )}
                             <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
                                 <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Symbol</span>
                                 <span style={{ fontWeight: "600", fontSize: "0.8rem", color: "var(--accent-blue)" }}>{operationResult.symbol}</span>
@@ -679,16 +750,6 @@ export default function Dashboard() {
                                 <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Rows Processed</span>
                                 <span style={{ fontWeight: "700", fontSize: "0.8rem", color: "#10B981" }}>{Number(operationResult.rows).toLocaleString()}</span>
                             </div>
-                            <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
-                                <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Date Range</span>
-                                <span style={{ fontWeight: "600", fontSize: "0.8rem" }}>{operationResult.fromDate} to {operationResult.toDate}</span>
-                            </div>
-                            {operationResult.duration && (
-                                <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
-                                    <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Requested Duration</span>
-                                    <span style={{ fontWeight: "600", fontSize: "0.8rem" }}>{operationResult.duration}</span>
-                                </div>
-                            )}
                         </div>
 
                         <div style={{ display: "flex", justifyContent: "flex-end" }}>
@@ -696,21 +757,9 @@ export default function Dashboard() {
                                 onClick={() => setOperationResult(null)}
                                 style={{
                                     background: "linear-gradient(135deg, var(--accent-blue), #1D4ED8)",
-                                    color: "#fff",
-                                    border: "none",
-                                    borderRadius: "6px",
-                                    padding: "8px 18px",
-                                    fontSize: "0.8rem",
-                                    fontWeight: "600",
-                                    cursor: "pointer",
-                                    transition: "all 0.15s ease",
-                                    boxShadow: "var(--shadow-glow-blue)"
-                                }}
-                                onMouseEnter={(e) => {
-                                    e.target.style.filter = "brightness(1.1)";
-                                }}
-                                onMouseLeave={(e) => {
-                                    e.target.style.filter = "brightness(1)";
+                                    color: "#fff", border: "none", borderRadius: "6px",
+                                    padding: "8px 18px", fontSize: "0.8rem", fontWeight: "600",
+                                    cursor: "pointer", boxShadow: "var(--shadow-glow-blue)"
                                 }}
                             >
                                 Close
@@ -720,102 +769,50 @@ export default function Dashboard() {
                 </div>
             )}
 
-            {/* ── Toast ────────────────────────────────────────── */}
+            {/* ── Toast Notification ─────────────────────────────────── */}
             {toast && (
                 <div style={{
                     position: "fixed", bottom: 24, right: 24, zIndex: 9999,
-                    background: "rgba(30, 41, 59, 0.85)",
-                    backdropFilter: "blur(12px)",
-                    border: "1px solid rgba(255, 255, 255, 0.08)",
-                    borderRadius: "10px",
-                    padding: "12px 18px",
-                    color: "#fff",
-                    boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5), 0 8px 10px -6px rgba(0,0,0,0.5), inset 0 1px 0 0 rgba(255,255,255,0.1)",
+                    background: "rgba(30, 41, 59, 0.9)", backdropFilter: "blur(12px)",
+                    border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "10px",
+                    padding: "12px 18px", color: "#fff",
+                    boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5)",
                     display: "flex", alignItems: "center", gap: "12px",
-                    minWidth: "280px", maxWidth: "360px",
-                    animation: "toastSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)",
-                    overflow: "hidden"
+                    minWidth: "280px", maxWidth: "360px"
                 }}>
-                    {/* Icon */}
-                    {toast.type === "success" && (
-                        <div style={{
-                            width: "20px", height: "20px", borderRadius: "50%",
-                            background: "rgba(16, 185, 129, 0.2)",
-                            border: "1px solid rgba(16, 185, 129, 0.4)",
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            color: "#10B981", fontSize: "0.8rem", fontWeight: "bold", flexShrink: 0
-                        }}>
-                            ✓
-                        </div>
-                    )}
-                    {toast.type === "error" && (
-                        <div style={{
-                            width: "20px", height: "20px", borderRadius: "50%",
-                            background: "rgba(239, 68, 68, 0.2)",
-                            border: "1px solid rgba(239, 68, 68, 0.4)",
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            color: "#EF4444", fontSize: "0.8rem", fontWeight: "bold", flexShrink: 0
-                        }}>
-                            ✕
-                        </div>
-                    )}
-                    {toast.type === "loading" && (
-                        <div style={{
-                            width: "16px", height: "16px",
-                            border: "2px solid rgba(255, 255, 255, 0.2)",
-                            borderTop: "2px solid var(--accent-blue)",
-                            borderRadius: "50%",
-                            animation: "toastSpin 0.8s linear infinite", flexShrink: 0
-                        }} />
-                    )}
-                    {toast.type === "info" && (
-                        <div style={{
-                            width: "20px", height: "20px", borderRadius: "50%",
-                            background: "rgba(59, 130, 246, 0.2)",
-                            border: "1px solid rgba(59, 130, 246, 0.4)",
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            color: "#3B82F6", fontSize: "0.8rem", fontWeight: "bold", flexShrink: 0
-                        }}>
-                            i
-                        </div>
-                    )}
-
-                    {/* Message */}
-                    <div style={{
-                        flex: 1, fontSize: "0.8rem", fontWeight: "500",
-                        lineHeight: "1.4", fontFamily: "var(--font-body)", color: "#E2E8F0"
-                    }}>
-                        {toast.message}
-                    </div>
-
-                    {/* Close Button */}
-                    <button
-                        onClick={() => setToastState(null)}
-                        style={{
-                            background: "transparent", border: "none", color: "rgba(255, 255, 255, 0.4)",
-                            fontSize: "0.8rem", cursor: "pointer", padding: "2px", display: "flex",
-                            alignItems: "center", justifyContent: "center", transition: "color 0.15s ease",
-                            fontFamily: "sans-serif"
-                        }}
-                        onMouseEnter={(e) => e.target.style.color = "#fff"}
-                        onMouseLeave={(e) => e.target.style.color = "rgba(255, 255, 255, 0.4)"}
-                    >
-                        ✕
-                    </button>
-
-                    {/* Progress Bar (except for loading) */}
-                    {toast.type !== "loading" && (
-                        <div style={{
-                            position: "absolute", bottom: 0, left: 0, height: "3px",
-                            background: toast.type === "success" ? "#10B981" :
-                                toast.type === "error" ? "#EF4444" :
-                                    toast.type === "info" ? "#3B82F6" : "var(--accent-blue)",
-                            width: "100%",
-                            animation: "toastProgress 3s linear forwards"
-                        }} />
-                    )}
+                    <div style={{ flex: 1, fontSize: "0.8rem", fontWeight: "500" }}>{toast.message}</div>
+                    <button onClick={() => setToastState(null)} style={{ background: "transparent", border: "none", color: "#888", cursor: "pointer" }}>✕</button>
                 </div>
             )}
+
+            {/* ── Floating Data Tools Drawer ───────────────────────────── */}
+            <DataToolsDrawer
+                isOpen={isToolsOpen}
+                onClose={() => setIsToolsOpen(false)}
+                selectedSymbol={selectedSymbol}
+                setSelectedSymbol={setSelectedSymbol}
+                selectedInstrument={selectedInstrument}
+                startDate={startDate}
+                endDate={endDate}
+                setStartDate={setStartDate}
+                setEndDate={setEndDate}
+                histStart={histStart}
+                histEnd={histEnd}
+                setHistStart={setHistStart}
+                setHistEnd={setHistEnd}
+                timeframe={timeframe}
+                setTimeframe={setTimeframe}
+                timeframes={timeframes}
+                years={years}
+                setYears={setYears}
+                isApplyingIndicators={isApplyingIndicators}
+                runBulkFetch={runBulkFetch}
+                applyIndicators={applyIndicators}
+                fetchHistoricalCandles={fetchHistoricalCandles}
+                downloadExcel={downloadExcel}
+                force={force}
+                setForce={setForce}
+            />
 
             <div style={{
                 maxWidth: "var(--max-width)",
@@ -825,38 +822,27 @@ export default function Dashboard() {
                 flexDirection: "column",
                 gap: 20,
             }}>
-
-                {/* ── ROW 1 — Greeting + Search + WS Status ────── */}
+                {/* ── HEADER TOOLBAR — Greeting + Search + View Switcher + Data Tools Trigger ── */}
                 <div style={{
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
-                    gap: 20,
+                    gap: 16,
                     flexWrap: "wrap",
                     width: "100%",
                 }}>
-                    {/* Greeting + avatar */}
+                    {/* Greeting & Avatar */}
                     <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
                         <Avatar size={42} onClick={() => setProfileOpen(true)} />
                         <div>
-                            <div style={{
-                                fontSize: "0.72rem",
-                                color: "var(--text-muted)",
-                                fontFamily: "var(--font-body)",
-                                fontWeight: 500,
-                            }}>
+                            <div style={{ fontSize: "0.72rem", color: "var(--text-muted)", fontWeight: 500 }}>
                                 {greeting},
                             </div>
                             <div
                                 onClick={() => setProfileOpen(true)}
                                 style={{
-                                    fontSize: "1.3rem",
-                                    fontWeight: 700,
-                                    fontFamily: "var(--font-display)",
-                                    color: "var(--text-primary)",
-                                    letterSpacing: "-0.02em",
-                                    lineHeight: 1.2,
-                                    cursor: "pointer",
+                                    fontSize: "1.25rem", fontWeight: 700, fontFamily: "var(--font-display)",
+                                    color: "var(--text-primary)", cursor: "pointer",
                                 }}
                             >
                                 {user} <span style={{ color: "var(--accent-blue)" }}>↗</span>
@@ -864,14 +850,8 @@ export default function Dashboard() {
                         </div>
                     </div>
 
-                    {/* Center Search Bar - Prominent & Highly Visible */}
-                    <div style={{
-                        flex: 1,
-                        display: "flex",
-                        justifyContent: "center",
-                        maxWidth: 520,
-                        minWidth: 280,
-                    }}>
+                    {/* Search Bar */}
+                    <div style={{ flex: 1, display: "flex", justifyContent: "center", maxWidth: 480, minWidth: 260 }}>
                         <SearchBar
                             search={search}
                             setSearch={setSearch}
@@ -890,14 +870,72 @@ export default function Dashboard() {
                         />
                     </div>
 
-                    {/* WS Status + Market Summary */}
-                    <div style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 12,
-                        justifyContent: "flex-end",
-                        flexShrink: 0,
-                    }}>
+                    {/* View Switcher + Data Tools Trigger + WS Status */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+
+                        {/* View Switcher Tabs */}
+                        <div style={{
+                            display: "flex", background: "var(--bg-secondary)",
+                            border: "1px solid var(--border-color)", borderRadius: 8, padding: 3, gap: 3
+                        }}>
+                            {[
+                                { id: "command_center", label: "📊 Stream Terminal" },
+                                { id: "heatmap", label: "🔥 Heatmap Matrix" },
+                                { id: "workbench", label: "🎯 Analytical Focus" },
+                            ].map(tab => (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => setViewMode(tab.id)}
+                                    style={{
+                                        border: "none", borderRadius: 6, padding: "6px 12px",
+                                        fontSize: "0.74rem", fontWeight: 600, cursor: "pointer",
+                                        background: viewMode === tab.id ? "var(--accent-blue)" : "transparent",
+                                        color: viewMode === tab.id ? "#fff" : "var(--text-muted)",
+                                        transition: "all 0.15s ease",
+                                    }}
+                                >
+                                    {tab.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* ⚡ Data Tools Floating Drawer Button */}
+                        <button
+                            type="button"
+                            onClick={() => setIsToolsOpen(true)}
+                            style={{
+                                border: "1px solid var(--accent-blue)",
+                                borderRadius: 8,
+                                background: "rgba(59,130,246,0.15)",
+                                color: "var(--accent-blue)",
+                                padding: "7px 14px",
+                                fontSize: "0.78rem",
+                                fontWeight: 700,
+                                fontFamily: "var(--font-body)",
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                boxShadow: "var(--shadow-glow-blue)",
+                                transition: "all 0.15s ease",
+                            }}
+                            onMouseEnter={(e) => e.currentTarget.style.transform = "scale(1.04)"}
+                            onMouseLeave={(e) => e.currentTarget.style.transform = "scale(1)"}
+                        >
+                            <span>⚡ Data Tools</span>
+                            {selectedSymbol && (
+                                <span style={{
+                                    fontSize: "0.62rem",
+                                    background: "var(--accent-blue)",
+                                    color: "#fff",
+                                    borderRadius: 4,
+                                    padding: "1px 5px"
+                                }}>
+                                    {selectedSymbol}
+                                </span>
+                            )}
+                        </button>
+
                         <WebSocketStatus
                             isConnected={isConnected}
                             connectWebSocket={stableConnect}
@@ -910,388 +948,482 @@ export default function Dashboard() {
                 {/* ── ROW 2 — Index Strip ──────────────────────── */}
                 <IndexStrip prices={prices} indexData={indexData} />
 
-                {/* ── ROW 3 — Main 3-column layout ─────────────── */}
+                {/* ── CONTROL BAR — Filters, Sorting & Batch Actions ─────── */}
                 <div style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr 360px",
-                    gridTemplateRows: "auto",
-                    gap: 16,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 12,
+                    flexWrap: "wrap",
+                    background: "var(--bg-secondary)",
+                    border: "1px solid var(--border-color)",
+                    borderRadius: "var(--card-radius)",
+                    padding: "10px 16px",
                 }}>
+                    {/* Filter Category Pills */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700 }}>
+                            Filter:
+                        </span>
+                        {[
+                            { id: "all", label: "All Stocks" },
+                            { id: "gainers", label: "🟢 Gainers" },
+                            { id: "losers", label: "🔴 Losers" },
+                            { id: "subscribed", label: "⚡ Streaming" },
+                        ].map(f => (
+                            <button
+                                key={f.id}
+                                onClick={() => setFilterCategory(f.id)}
+                                style={{
+                                    borderRadius: 20,
+                                    border: `1px solid ${filterCategory === f.id ? "var(--accent-blue)" : "var(--border-subtle)"}`,
+                                    background: filterCategory === f.id ? "rgba(59,130,246,0.18)" : "transparent",
+                                    color: filterCategory === f.id ? "var(--accent-blue)" : "var(--text-muted)",
+                                    fontSize: "0.7rem", fontWeight: 600, padding: "3px 10px", cursor: "pointer",
+                                }}
+                            >
+                                {f.label}
+                            </button>
+                        ))}
+                    </div>
 
-                    {/* ── COL 1 — Watchlist ─────────────────────── */}
-                    <Panel style={{ width: "100%", maxWidth: 520, justifySelf: "start" }}>
-                        <SectionHeader
-                            subtitle="Monitoring"
-                            title="Watchlist"
-                            action={
-                                <span style={{
-                                    fontSize: "0.7rem",
-                                    fontFamily: "var(--font-mono)",
-                                    color: "var(--text-muted)",
+                    {/* Sorting Dropdown & Batch Stream Controls */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", fontWeight: 700 }}>Sort By:</span>
+                            <select
+                                value={sortBy}
+                                onChange={(e) => setSortBy(e.target.value)}
+                                style={{
                                     background: "var(--bg-tertiary)",
-                                    border: "1px solid var(--border-subtle)",
+                                    border: "1px solid var(--border-color)",
                                     borderRadius: 6,
-                                    padding: "2px 8px",
-                                }}>
-                                    {activeWatchlist.length} shown / {watchlist.length} total
-                                </span>
-                            }
-                        />
-                        <div style={{
-                            display: "flex",
-                            gap: 6,
-                            marginBottom: 10,
-                            flexWrap: "wrap",
-                        }}>
-                            {WATCHLIST_CAP_OPTIONS.map((capItem) => {
-                                const isActive = activeWatchlistCap === capItem.key;
-                                return (
-                                    <button
-                                        key={capItem.key}
-                                        onClick={() => setActiveWatchlistCap(capItem.key)}
-                                        style={{
-                                            borderRadius: 999,
-                                            border: `1px solid ${isActive ? "var(--accent-blue)" : "var(--border-color)"}`,
-                                            background: isActive ? "rgba(59,130,246,0.15)" : "var(--bg-secondary)",
-                                            color: isActive ? "var(--accent-blue)" : "var(--text-muted)",
-                                            fontSize: "0.68rem",
-                                            fontFamily: "var(--font-body)",
-                                            fontWeight: 600,
-                                            padding: "5px 9px",
-                                            cursor: "pointer",
-                                        }}
-                                        title={`Show ${capItem.label} list`}
-                                    >
-                                        {capItem.label} ({watchlistCountByCap[capItem.key] || 0})
-                                    </button>
-                                );
-                            })}
+                                    color: "var(--text-primary)",
+                                    fontSize: "0.74rem",
+                                    padding: "4px 8px",
+                                    outline: "none",
+                                }}
+                            >
+                                <option value="default">Default Order</option>
+                                <option value="gainers">Top Gainers (% High to Low)</option>
+                                <option value="losers">Top Losers (% Low to High)</option>
+                                <option value="symbol">Symbol Name (A-Z)</option>
+                                <option value="price">Price (LTP High to Low)</option>
+                                <option value="subscribed">Streaming Active First</option>
+                            </select>
                         </div>
-                        {activeWatchlist.length === 0 ? (
-                            <div style={{
-                                display: "flex",
-                                flexDirection: "column",
-                                alignItems: "center",
-                                justifyContent: "center",
-                                minHeight: 120,
-                                gap: 8,
-                                border: "1px dashed var(--border-subtle)",
-                                borderRadius: 10,
-                                color: "var(--text-muted)",
-                                fontSize: "0.78rem",
-                                fontFamily: "var(--font-body)",
-                            }}>
-                                <span style={{ fontSize: "1.4rem" }}>☆</span>
-                                No symbols in {activeWatchlistLabel}
-                            </div>
-                        ) : (
-                            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                                {activeWatchlist.map((w) => {
-                                    const sym = w.symbol?.toUpperCase();
-                                    const live = prices?.[sym] || {};
-                                    const ltp = live.ltp;
-                                    const pct = live.percent ?? 0;
-                                    const isUp = (live.change ?? 0) >= 0;
-                                    const hasP = typeof ltp === "number";
-                                    const isSel = selectedSymbol === sym;
+
+                        {/* Batch Action Buttons */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <button
+                                type="button"
+                                onClick={streamAllWorkingList}
+                                title="Subscribe WSS ticks for all working list stocks"
+                                style={{
+                                    border: "1px solid rgba(0,230,118,0.4)",
+                                    background: "rgba(0,230,118,0.15)",
+                                    color: "var(--accent-up)",
+                                    borderRadius: 6, padding: "4px 10px",
+                                    fontSize: "0.7rem", fontWeight: 700, cursor: "pointer",
+                                }}
+                            >
+                                ▶ Stream All
+                            </button>
+
+                            <button
+                                type="button"
+                                onClick={pauseAllStreams}
+                                title="Pause all live WSS tick subscriptions"
+                                style={{
+                                    border: "1px solid rgba(255,82,82,0.4)",
+                                    background: "rgba(255,82,82,0.15)",
+                                    color: "var(--accent-down)",
+                                    borderRadius: 6, padding: "4px 10px",
+                                    fontSize: "0.7rem", fontWeight: 700, cursor: "pointer",
+                                }}
+                            >
+                                ■ Pause All
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                {/* ── MAIN CONTENT GRID — Dynamic views occupy 100% of Grid ────────── */}
+
+                {/* VIEW MODE 1: COMMAND CENTER (Default Split Live Stream Grid) */}
+                {viewMode === "command_center" && (
+                    <div style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 16,
+                        width: "100%",
+                    }}>
+                        {/* COLUMN 1: Dynamic Watchlist Stream */}
+                        <Panel>
+                            <SectionHeader
+                                subtitle="Market Watchlist"
+                                title={activeWatchlistLabel}
+                                action={
+                                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                        <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                                            {filteredWatchlist.length} shown / {watchlist.length} total
+                                        </span>
+                                    </div>
+                                }
+                            />
+
+                            {/* Market Cap Filter Pills */}
+                            <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+                                {WATCHLIST_CAP_OPTIONS.map((capItem) => {
+                                    const isActive = activeWatchlistCap === capItem.key;
                                     return (
-                                        <div
-                                            key={sym}
-                                            onClick={() => { setSelectedSymbol(sym); setSelectedInstrument(w); }}
+                                        <button
+                                            key={capItem.key}
+                                            onClick={() => setActiveWatchlistCap(capItem.key)}
                                             style={{
-                                                display: "flex",
-                                                alignItems: "center",
-                                                justifyContent: "space-between",
-                                                padding: "9px 11px",
-                                                borderRadius: 10,
-                                                cursor: "pointer",
-                                                background: isSel
-                                                    ? "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(59,130,246,0.08))"
-                                                    : "var(--bg-secondary)",
-                                                border: `1px solid ${isSel ? "var(--accent-blue)" : "var(--border-color)"}`,
-                                                boxShadow: isSel
-                                                    ? "0 0 0 1px rgba(59,130,246,0.2), var(--shadow-card)"
-                                                    : "var(--shadow-card)",
-                                                transition: "all 0.12s ease",
-                                                gap: 10,
-                                            }}
-                                            onMouseEnter={e => {
-                                                if (!isSel) {
-                                                    e.currentTarget.style.background = "var(--bg-tertiary)";
-                                                    e.currentTarget.style.borderColor = "var(--accent-blue)";
-                                                }
-                                            }}
-                                            onMouseLeave={e => {
-                                                if (!isSel) {
-                                                    e.currentTarget.style.background = "var(--bg-secondary)";
-                                                    e.currentTarget.style.border = "1px solid var(--border-color)";
-                                                }
+                                                borderRadius: 999,
+                                                border: `1px solid ${isActive ? "var(--accent-blue)" : "var(--border-color)"}`,
+                                                background: isActive ? "rgba(59,130,246,0.18)" : "var(--bg-secondary)",
+                                                color: isActive ? "var(--accent-blue)" : "var(--text-muted)",
+                                                fontSize: "0.68rem", fontWeight: 600, padding: "4px 10px", cursor: "pointer",
                                             }}
                                         >
-                                            {/* Logo + symbol + exchange */}
-                                            <StockLogo symbol={sym} size={30} borderRadius={7} />
-                                            <div style={{ flex: 1, minWidth: 0 }}>
-                                                <div style={{ fontSize: "0.82rem", fontWeight: 700, fontFamily: "var(--font-display)", color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                                    {sym}
-                                                </div>
-                                                <div style={{ fontSize: "0.62rem", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                                                    {w.exchange || w.segment || ""}
-                                                </div>
-                                            </div>
-
-                                            {/* Price */}
-                                            <div style={{ textAlign: "right", flexShrink: 0, minWidth: 92 }}>
-                                                <div style={{ fontSize: "0.82rem", fontWeight: 700, fontFamily: "var(--font-mono)", color: hasP ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)" }}>
-                                                    {hasP ? `₹${ltp.toLocaleString("en-IN")}` : "--"}
-                                                </div>
-                                                <div style={{ fontSize: "0.62rem", fontFamily: "var(--font-mono)", color: hasP ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)" }}>
-                                                    {hasP ? `${isUp ? "▲" : "▼"} ${Math.abs(pct).toFixed(2)}%` : "--"}
-                                                </div>
-                                            </div>
-
-                                            {/* Remove button */}
-                                            <button
-                                                onClick={e => {
-                                                    e.stopPropagation();
-                                                    toggleWatchlist(w);
-                                                    // If this was the selected symbol, clear it
-                                                    if (selectedSymbol === sym) {
-                                                        setSelectedSymbol("");
-                                                        setSelectedInstrument(null);
-                                                    }
-                                                }}
-                                                title="Remove from watchlist"
-                                                style={{
-                                                    width: 26, height: 26,
-                                                    borderRadius: 6,
-                                                    border: "1px solid var(--border-color)",
-                                                    background: "var(--bg-secondary)",
-                                                    color: "var(--text-muted)",
-                                                    cursor: "pointer",
-                                                    fontSize: "0.65rem",
-                                                    display: "flex",
-                                                    alignItems: "center",
-                                                    justifyContent: "center",
-                                                    flexShrink: 0,
-                                                    transition: "all 0.12s ease",
-                                                }}
-                                                onMouseEnter={e => {
-                                                    e.currentTarget.style.background = "rgba(255,82,82,0.12)";
-                                                    e.currentTarget.style.borderColor = "var(--accent-down)";
-                                                    e.currentTarget.style.color = "var(--accent-down)";
-                                                }}
-                                                onMouseLeave={e => {
-                                                    e.currentTarget.style.background = "var(--bg-secondary)";
-                                                    e.currentTarget.style.borderColor = "var(--border-color)";
-                                                    e.currentTarget.style.color = "var(--text-muted)";
-                                                }}
-                                            >
-                                                ✕
-                                            </button>
-                                        </div>
+                                            {capItem.label} ({watchlistCountByCap[capItem.key] || 0})
+                                        </button>
                                     );
                                 })}
                             </div>
-                        )}
-                    </Panel>
 
-                    {/* ── COL 2 — Active Instruments ───────────── */}
-                    <Panel style={{ width: "100%", maxWidth: 520, justifySelf: "start" }}>
-                        <SectionHeader
-                            subtitle="Working List"
-                            title="Instruments"
-                            action={
-                                <span style={{
-                                    fontSize: "0.7rem",
-                                    fontFamily: "var(--font-mono)",
-                                    color: "var(--text-muted)",
-                                    background: "var(--bg-tertiary)",
-                                    border: "1px solid var(--border-subtle)",
-                                    borderRadius: 6,
-                                    padding: "2px 8px",
+                            {/* Watchlist Cards List */}
+                            {filteredWatchlist.length === 0 ? (
+                                <div style={{
+                                    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                                    minHeight: 160, border: "1px dashed var(--border-subtle)", borderRadius: 10,
+                                    color: "var(--text-muted)", fontSize: "0.8rem", gap: 6
                                 }}>
-                                    {selectedInstruments.length} added
+                                    <span>☆</span> No symbols match filter in {activeWatchlistLabel}
+                                </div>
+                            ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                                    {filteredWatchlist.map((w) => {
+                                        const sym = (w.symbol || "").toUpperCase();
+                                        const key = normalizeKey(w);
+                                        return (
+                                            <LiveTickCard
+                                                key={key || sym}
+                                                item={w}
+                                                priceData={prices[key] || prices[sym]}
+                                                selectedSymbol={selectedSymbol}
+                                                activeSubscriptions={activeSubscriptions}
+                                                normalizeKey={normalizeKey}
+                                                setSelectedSymbol={setSelectedSymbol}
+                                                setSelectedInstrument={setSelectedInstrument}
+                                                subscribeToStock={subscribeToStock}
+                                                onOpenTools={handleOpenToolsForSymbol}
+                                                onRemove={(inst) => toggleWatchlist(inst)}
+                                            />
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </Panel>
+
+                        {/* COLUMN 2: Working List & Active Live Stream Cards */}
+                        <Panel>
+                            <SectionHeader
+                                subtitle="Working Stream List"
+                                title="Active Streaming Tickers"
+                                action={
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                        <span style={{
+                                            fontSize: "0.7rem", fontFamily: "var(--font-mono)",
+                                            color: "var(--accent-up)", background: "rgba(0,230,118,0.12)",
+                                            border: "1px solid rgba(0,230,118,0.3)", borderRadius: 6, padding: "2px 8px"
+                                        }}>
+                                            {Object.keys(activeSubscriptions).length} active WSS streams
+                                        </span>
+                                        {selectedInstruments.length > 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setSelectedInstruments([])}
+                                                style={{
+                                                    background: "transparent", border: "none",
+                                                    color: "var(--accent-down)", fontSize: "0.7rem", cursor: "pointer",
+                                                    fontWeight: 600,
+                                                }}
+                                            >
+                                                Clear All
+                                            </button>
+                                        )}
+                                    </div>
+                                }
+                            />
+
+                            {filteredWorkingList.length === 0 ? (
+                                <div style={{
+                                    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                                    minHeight: 180, border: "1px dashed var(--border-subtle)", borderRadius: 10,
+                                    color: "var(--text-muted)", fontSize: "0.8rem", textAlign: "center", gap: 8, padding: 20
+                                }}>
+                                    <div style={{ fontSize: "1.5rem" }}>🔍</div>
+                                    <div>Use the search bar above to add stocks to your working list.</div>
+                                </div>
+                            ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                                    {filteredWorkingList.map((item) => {
+                                        const sym = (item.symbol || "").toUpperCase();
+                                        const key = normalizeKey(item);
+                                        return (
+                                            <LiveTickCard
+                                                key={key || sym}
+                                                item={item}
+                                                priceData={prices[key] || prices[sym]}
+                                                selectedSymbol={selectedSymbol}
+                                                activeSubscriptions={activeSubscriptions}
+                                                normalizeKey={normalizeKey}
+                                                setSelectedSymbol={setSelectedSymbol}
+                                                setSelectedInstrument={setSelectedInstrument}
+                                                subscribeToStock={subscribeToStock}
+                                                onOpenTools={handleOpenToolsForSymbol}
+                                                onRemove={(inst) => {
+                                                    setSelectedInstruments(prev => prev.filter(p => normalizeKey(p) !== normalizeKey(inst)));
+                                                }}
+                                            />
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </Panel>
+                    </div>
+                )}
+
+                {/* VIEW MODE 2: HEATMAP MATRIX (Full-width dynamic visual grid) */}
+                {viewMode === "heatmap" && (
+                    <Panel>
+                        <SectionHeader
+                            subtitle="Visual Stream Matrix"
+                            title="Live Performance Heatmap"
+                            action={
+                                <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
+                                    {heatmapItems.length} symbols in matrix
                                 </span>
                             }
                         />
-                        <SelectedInstruments
-                            selectedInstruments={selectedInstruments}
+                        <LiveHeatmap
+                            items={heatmapItems}
                             prices={prices}
                             selectedSymbol={selectedSymbol}
                             activeSubscriptions={activeSubscriptions}
                             normalizeKey={normalizeKey}
                             setSelectedSymbol={setSelectedSymbol}
                             setSelectedInstrument={setSelectedInstrument}
-                            setSelectedInstruments={setSelectedInstruments}
-                            subscribeToStock={subscribeToStock}
+                            onOpenTools={handleOpenToolsForSymbol}
                         />
                     </Panel>
+                )}
 
-                    {/* ── COL 3 — Tools Panel ───────────────────── */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-
-                        {/* Tab switcher */}
-                        <div style={{
-                            display: "flex",
-                            background: "var(--bg-secondary)",
-                            border: "1px solid var(--border-color)",
-                            borderRadius: "var(--card-radius)",
-                            padding: 4, gap: 4,
-                        }}>
-                            {[
-                                { key: "tools", label: "Data Tools" },
-                                { key: "selected", label: "LTP Monitor" },
-                            ].map(({ key, label }) => (
-                                <button
-                                    key={key}
-                                    onClick={() => setActivePanel(key)}
-                                    style={{
-                                        flex: 1,
-                                        padding: "7px 0",
-                                        borderRadius: 8,
-                                        border: "none",
-                                        cursor: "pointer",
-                                        fontFamily: "var(--font-body)",
-                                        fontWeight: 600,
-                                        fontSize: "0.78rem",
-                                        transition: "all 0.15s ease",
-                                        background: activePanel === key ? "var(--accent-blue)" : "transparent",
-                                        color: activePanel === key ? "#fff" : "var(--text-muted)",
-                                        boxShadow: activePanel === key ? "var(--shadow-glow-blue)" : "none",
-                                    }}
-                                >
-                                    {label}
-                                </button>
-                            ))}
-                        </div>
-
-                        {/* Tools Panel */}
-                        {activePanel === "tools" && (
-                            <ToolsPanel
-                                selectedSymbol={selectedSymbol}
-                                setSelectedSymbol={setSelectedSymbol}
-                                startDate={startDate}
-                                endDate={endDate}
-                                setStartDate={setStartDate}
-                                setEndDate={setEndDate}
-                                histStart={histStart}
-                                histEnd={histEnd}
-                                setHistStart={setHistStart}
-                                setHistEnd={setHistEnd}
-                                timeframe={timeframe}
-                                setTimeframe={setTimeframe}
-                                timeframes={timeframes}
-                                years={years}
-                                setYears={setYears}
-                                isApplyingIndicators={isApplyingIndicators}
-                                runBulkFetch={runBulkFetch}
-                                applyIndicators={applyIndicators}
-                                fetchHistoricalCandles={fetchHistoricalCandles}
-                                downloadExcel={downloadExcel}
-                                force={force}
-                                setForce={setForce}
+                {/* VIEW MODE 3: ANALYTICAL WORKBENCH (Hero Stock Header + Vertical Screener Ratios + Quick Data Tools) */}
+                {viewMode === "workbench" && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                        <Panel>
+                            <SectionHeader
+                                subtitle="Analytical Focus"
+                                title={selectedSymbol ? `${selectedSymbol} Analytical Focus` : "Select a Stock to Focus Analytics"}
+                                action={
+                                    selectedSymbol && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setIsToolsOpen(true)}
+                                            style={{
+                                                background: "linear-gradient(135deg, var(--accent-blue), #1D4ED8)",
+                                                color: "#fff",
+                                                border: "none", borderRadius: 8, padding: "8px 16px",
+                                                fontSize: "0.8rem", fontWeight: 700, cursor: "pointer",
+                                                boxShadow: "var(--shadow-glow-blue)",
+                                                display: "flex", alignItems: "center", gap: 6,
+                                            }}
+                                        >
+                                            <span>⚡ Data Tools Workbench</span>
+                                        </button>
+                                    )
+                                }
                             />
-                        )}
 
-                        {/* LTP Monitor */}
-                        {activePanel === "selected" && (
-                            <Panel style={{ padding: "16px" }}>
-                                <SectionHeader subtitle="Live Prices" title="LTP Monitor" />
-                                {selectedInstruments.length === 0 ? (
-                                    <div style={{
-                                        textAlign: "center",
-                                        padding: "24px 0",
-                                        color: "var(--text-muted)",
-                                        fontSize: "0.78rem",
-                                        fontFamily: "var(--font-body)",
-                                    }}>
-                                        Add instruments from search
-                                    </div>
-                                ) : (
-                                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                                        {selectedInstruments.map((item) => {
-                                            const sym = (item.symbol || "").toUpperCase();
-                                            const key = normalizeKey(item);
-                                            const live = prices?.[key] || {};
-                                            const ltp = live.ltp;
-                                            const pct = live.percent ?? 0;
-                                            const isUp = (live.change ?? 0) >= 0;
-                                            const hasP = typeof ltp === "number";
-                                            const isRunning = !!activeSubscriptions[key];
-                                            const canShowLive = isRunning && hasP;
+                            {selectedSymbol ? (
+                                <div style={{
+                                    display: "grid",
+                                    gridTemplateColumns: "1fr 340px",
+                                    gap: 20,
+                                    width: "100%",
+                                }}>
+                                    {/* Left Column: Hero Stock Header + Screener Vertical Fundamentals Stack */}
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
-                                            return (
-                                                <div key={key} style={{
-                                                    display: "flex",
-                                                    alignItems: "center",
-                                                    justifyContent: "space-between",
-                                                    padding: "10px 12px",
-                                                    borderRadius: 8,
-                                                    background: "var(--bg-tertiary)",
-                                                    border: `1px solid ${isRunning ? "rgba(0,230,118,0.3)" : "var(--border-subtle)"}`,
-                                                }}>
-                                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                                        <StockLogo symbol={sym} size={28} borderRadius={6} />
-                                                        <div>
-                                                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                                                {isRunning && (
-                                                                    <span style={{
-                                                                        width: 6, height: 6, borderRadius: "50%",
-                                                                        background: "var(--accent-up)",
-                                                                        boxShadow: "0 0 6px var(--accent-up)",
-                                                                        animation: "ltsPulse 2s infinite",
-                                                                        display: "inline-block",
-                                                                    }} />
-                                                                )}
-                                                                <span style={{ fontSize: "0.82rem", fontWeight: 700, fontFamily: "var(--font-display)", color: "var(--text-primary)" }}>
-                                                                    {sym}
-                                                                </span>
-                                                            </div>
-                                                            <div style={{ fontSize: "0.65rem", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 2 }}>
-                                                                {item.exchange || ""}
-                                                            </div>
-                                                        </div>
+                                        {/* Hero Stock Header */}
+                                        <div style={{
+                                            display: "flex", alignItems: "center", justifyContent: "space-between",
+                                            background: "linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary))",
+                                            padding: "20px 24px", borderRadius: 14,
+                                            border: "1px solid var(--border-color)",
+                                            boxShadow: "var(--shadow-card)",
+                                            gap: 16,
+                                        }}>
+                                            <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                                                <StockLogo symbol={selectedSymbol} size={48} borderRadius={12} />
+                                                <div>
+                                                    <div style={{ fontSize: "1.6rem", fontWeight: 700, fontFamily: "var(--font-display)", color: "var(--text-primary)", lineHeight: 1.1 }}>
+                                                        {selectedSymbol}
                                                     </div>
-                                                    <div style={{ textAlign: "right" }}>
-                                                        <div style={{
-                                                            fontSize: "0.9rem",
-                                                            fontWeight: 700,
-                                                            fontFamily: "var(--font-mono)",
-                                                            color: canShowLive ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
-                                                        }}>
-                                                            {canShowLive ? `₹${ltp.toLocaleString("en-IN")}` : "--"}
-                                                        </div>
-                                                        <div style={{
-                                                            fontSize: "0.65rem",
-                                                            fontFamily: "var(--font-mono)",
-                                                            color: canShowLive ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
-                                                        }}>
-                                                            {canShowLive ? `${isUp ? "+" : ""}${pct.toFixed(2)}%` : "--"}
-                                                        </div>
+                                                    <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", fontFamily: "var(--font-mono)", marginTop: 4 }}>
+                                                        {selectedInstrument?.instrument_key || selectedSymbol} • NSE EQ
                                                     </div>
                                                 </div>
-                                            );
-                                        })}
+                                            </div>
+
+                                            <div style={{ textAlign: "right" }}>
+                                                {(() => {
+                                                    const key = selectedInstrument ? normalizeKey(selectedInstrument) : selectedSymbol;
+                                                    const cleanSym = String(selectedSymbol || "").split("|").pop().replace(/^(NSE_EQ|NSE_INDEX|BSE_EQ|BSE_INDEX)/, "").replace(/[^A-Z0-9]/g, "");
+                                                    const p = prices[key] || prices[selectedSymbol] || prices[cleanSym] || prices[`NSE_EQ:${cleanSym}`] || {};
+                                                    const ltp = typeof p.ltp === "number" ? p.ltp : fetchedLtpMap[cleanSym];
+                                                    const pct = p.percent ?? 0;
+                                                    const isUp = (p.change ?? 0) >= 0;
+                                                    const hasP = typeof ltp === "number";
+                                                    return (
+                                                        <div>
+                                                            <div style={{
+                                                                fontSize: "1.8rem", fontWeight: 700, fontFamily: "var(--font-mono)",
+                                                                color: hasP ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
+                                                                fontVariantNumeric: "tabular-nums", lineHeight: 1.1,
+                                                            }}>
+                                                                {hasP ? `₹${ltp.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "Fetching LTP..."}
+                                                            </div>
+                                                            <div style={{
+                                                                fontSize: "0.88rem", fontWeight: 700, fontFamily: "var(--font-mono)",
+                                                                color: hasP ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
+                                                                fontVariantNumeric: "tabular-nums", marginTop: 4,
+                                                            }}>
+                                                                {hasP ? `${isUp ? "▲ +" : "▼ "}${pct.toFixed(2)}%` : "Live Price Synced"}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })()}
+                                            </div>
+                                        </div>
+
+                                        {/* Screener.in Vertical Market Cap & Fundamentals Card */}
+                                        <ScreenerMetricsCard
+                                            symbol={selectedSymbol}
+                                            instrument={selectedInstrument}
+                                            priceData={prices[selectedInstrument ? normalizeKey(selectedInstrument) : selectedSymbol] || prices[selectedSymbol]}
+                                            capCategory={activeWatchlistCap}
+                                            onDataLoaded={handleFundamentalsLoaded}
+                                        />
                                     </div>
-                                )}
-                            </Panel>
-                        )}
+
+                                    {/* Right Column: Analytics Controls & Quick Actions */}
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+                                        {/* WSS Live Stream Card */}
+                                        <div style={{
+                                            background: "var(--bg-tertiary)",
+                                            border: "1px solid var(--border-color)",
+                                            borderRadius: 12, padding: "18px",
+                                            display: "flex", flexDirection: "column", gap: 12,
+                                        }}>
+                                            <div style={{ fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)" }}>
+                                                ⚡ Live Tick Streaming
+                                            </div>
+
+                                            {(() => {
+                                                const key = selectedInstrument ? normalizeKey(selectedInstrument) : selectedSymbol;
+                                                const isRunning = !!activeSubscriptions[key];
+                                                return (
+                                                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                                                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                                                            <span style={{ fontSize: "0.82rem", fontWeight: 600 }}>Stream Status:</span>
+                                                            <span style={{
+                                                                fontSize: "0.74rem", fontWeight: 700, fontFamily: "var(--font-mono)",
+                                                                color: isRunning ? "var(--accent-up)" : "var(--text-muted)",
+                                                                background: isRunning ? "rgba(0,230,118,0.15)" : "var(--bg-secondary)",
+                                                                border: `1px solid ${isRunning ? "rgba(0,230,118,0.3)" : "var(--border-color)"}`,
+                                                                borderRadius: 4, padding: "2px 8px"
+                                                            }}>
+                                                                {isRunning ? "● STREAMING LIVE" : "○ PAUSED"}
+                                                            </span>
+                                                        </div>
+
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => subscribeToStock(selectedInstrument || { symbol: selectedSymbol, instrument_key: selectedSymbol })}
+                                                            style={{
+                                                                width: "100%", padding: "10px", borderRadius: 8,
+                                                                border: isRunning ? "1px solid rgba(255,82,82,0.4)" : "1px solid rgba(0,230,118,0.4)",
+                                                                background: isRunning ? "rgba(255,82,82,0.15)" : "rgba(0,230,118,0.15)",
+                                                                color: isRunning ? "var(--accent-down)" : "var(--accent-up)",
+                                                                fontWeight: 700, fontSize: "0.8rem", cursor: "pointer",
+                                                                transition: "all 0.15s ease",
+                                                            }}
+                                                        >
+                                                            {isRunning ? "■ Pause WSS Live Stream" : "▶ Start WSS Live Stream"}
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })()}
+                                        </div>
+
+                                        {/* Quick Data Tools Launcher Card */}
+                                        <div style={{
+                                            background: "var(--bg-tertiary)",
+                                            border: "1px solid var(--border-color)",
+                                            borderRadius: 12, padding: "18px",
+                                            display: "flex", flexDirection: "column", gap: 12,
+                                        }}>
+                                            <div style={{ fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)" }}>
+                                                📊 Indicator & History Actions
+                                            </div>
+
+                                            <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", lineHeight: 1.4, margin: 0 }}>
+                                                Generate technical indicators, calculate signals, or download historical candles directly into DB.
+                                            </p>
+
+                                            <button
+                                                type="button"
+                                                onClick={() => setIsToolsOpen(true)}
+                                                style={{
+                                                    width: "100%", padding: "11px", borderRadius: 8,
+                                                    border: "none", background: "var(--accent-blue)",
+                                                    color: "#fff", fontWeight: 700, fontSize: "0.82rem", cursor: "pointer",
+                                                    boxShadow: "var(--shadow-glow-blue)",
+                                                    transition: "all 0.15s ease",
+                                                }}
+                                            >
+                                                ⚡ Launch Data Tools Drawer
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div style={{
+                                    padding: 60, textAlign: "center", color: "var(--text-muted)",
+                                    border: "1px dashed var(--border-subtle)", borderRadius: 12,
+                                    display: "flex", flexDirection: "column", alignItems: "center", gap: 10
+                                }}>
+                                    <div style={{ fontSize: "2rem" }}>🎯</div>
+                                    <div style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)" }}>
+                                        No Stock Selected
+                                    </div>
+                                    <div style={{ fontSize: "0.8rem", maxWidth: 360 }}>
+                                        Click any stock card from your Watchlist or Working Stream List above to view live Screener.in fundamentals and ratios.
+                                    </div>
+                                </div>
+                            )}
+                        </Panel>
                     </div>
-                </div>
+                )}
             </div>
 
-            <style>{`
-                @keyframes slideIn {
-                    from { opacity: 0; transform: translateY(10px); }
-                    to   { opacity: 1; transform: translateY(0); }
-                }
-                @keyframes ltsPulse {
-                    0%, 100% { opacity: 1; transform: scale(1); }
-                    50%      { opacity: 0.5; transform: scale(1.4); }
-                }
-            `}</style>
-
-            {/* ── Profile drawer ───────────────────────────────── */}
+            {/* Profile Drawer */}
             <ProfileDrawer
                 open={profileOpen}
                 onClose={() => setProfileOpen(false)}

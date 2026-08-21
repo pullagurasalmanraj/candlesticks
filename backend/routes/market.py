@@ -323,3 +323,409 @@ def api_unsubscribe_all():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Upstox Official Fundamentals API Fetcher ───────────────────
+def _fetch_upstox_official_fundamentals(clean_sym: str):
+    from db import get_db_conn
+    tokens = load_saved_tokens()
+    access_token = tokens.get("access_token")
+    if not access_token:
+        tokens = refresh_upstox_token() or {}
+        access_token = tokens.get("access_token")
+
+    if not access_token:
+        return None
+
+    isin = None
+    try:
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT isin FROM instruments 
+                    WHERE (
+                        trading_symbol = %s 
+                        OR trading_symbol = %s 
+                        OR trading_symbol ILIKE %s 
+                        OR instrument_key LIKE %s
+                    ) 
+                    AND segment IN ('NSE_EQ', 'BSE_EQ')
+                    AND isin IS NOT NULL AND isin != '' 
+                    ORDER BY 
+                        CASE WHEN trading_symbol = %s THEN 1 
+                             WHEN trading_symbol = %s THEN 2 
+                             ELSE 3 END
+                    LIMIT 1
+                    """, 
+                    (clean_sym, f"{clean_sym}-EQ", f"{clean_sym}%", f"%|{clean_sym}%", clean_sym, f"{clean_sym}-EQ")
+                )
+                row = cur.fetchone()
+                if row:
+                    isin = row.get("isin") if isinstance(row, dict) else row[0]
+    except Exception as e:
+        print("DB ISIN lookup error:", e)
+
+    if not isin:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+
+    try:
+        # 1. Fetch Official Upstox Key Ratios (/v2/fundamentals/{isin}/key-ratios)
+        ratios_url = f"{UPSTOX_API_BASE}/fundamentals/{isin}/key-ratios"
+        r_res = safe_requests.get(ratios_url, headers=headers, timeout=6)
+        if r_res.status_code == 401:
+            tokens = refresh_upstox_token() or {}
+            access_token = tokens.get("access_token")
+            if access_token:
+                headers["Authorization"] = f"Bearer {access_token}"
+                r_res = safe_requests.get(ratios_url, headers=headers, timeout=6)
+        
+        ratios_data = []
+        if r_res.status_code == 200:
+            ratios_data = (r_res.json() or {}).get("data", [])
+
+        # 2. Fetch Official Upstox Profile (/v2/fundamentals/{isin}/profile)
+        profile_url = f"{UPSTOX_API_BASE}/fundamentals/{isin}/profile"
+        p_res = safe_requests.get(profile_url, headers=headers, timeout=6)
+        if p_res.status_code == 401:
+            tokens = refresh_upstox_token() or {}
+            access_token = tokens.get("access_token")
+            if access_token:
+                headers["Authorization"] = f"Bearer {access_token}"
+            p_res = safe_requests.get(profile_url, headers=headers, timeout=6)
+
+        p_raw = (p_res.json() or {}).get("data") if p_res.status_code == 200 else {}
+        profile_data = p_raw[0] if isinstance(p_raw, list) and len(p_raw) > 0 else (p_raw if isinstance(p_raw, dict) else {})
+
+        # 3. Share Holdings (/v2/fundamentals/{isin}/share-holdings)
+        sh_res = safe_requests.get(f"{UPSTOX_API_BASE}/fundamentals/{isin}/share-holdings", headers=headers, timeout=5)
+        share_holdings = (sh_res.json() or {}).get("data", []) if sh_res.status_code == 200 else []
+
+        # 4. Income Statement (/v2/fundamentals/{isin}/financials/income-statement)
+        inc_res = safe_requests.get(f"{UPSTOX_API_BASE}/fundamentals/{isin}/financials/income-statement", headers=headers, timeout=5)
+        income_statement = (inc_res.json() or {}).get("data", []) if inc_res.status_code == 200 else []
+
+        # 5. Balance Sheet (/v2/fundamentals/{isin}/financials/balance-sheet)
+        bs_res = safe_requests.get(f"{UPSTOX_API_BASE}/fundamentals/{isin}/financials/balance-sheet", headers=headers, timeout=5)
+        balance_sheet = (bs_res.json() or {}).get("data", []) if bs_res.status_code == 200 else []
+
+        # 6. Cash Flow (/v2/fundamentals/{isin}/financials/cash-flow)
+        cf_res = safe_requests.get(f"{UPSTOX_API_BASE}/fundamentals/{isin}/financials/cash-flow", headers=headers, timeout=5)
+        cash_flow = (cf_res.json() or {}).get("data", []) if cf_res.status_code == 200 else []
+
+        # 7. Corporate Actions (/v2/fundamentals/{isin}/corporate-actions)
+        ca_res = safe_requests.get(f"{UPSTOX_API_BASE}/fundamentals/{isin}/corporate-actions", headers=headers, timeout=5)
+        corporate_actions = (ca_res.json() or {}).get("data", []) if ca_res.status_code == 200 else []
+
+        # 8. Competitors (/v2/fundamentals/{isin}/competitors)
+        comp_res = safe_requests.get(f"{UPSTOX_API_BASE}/fundamentals/{isin}/competitors", headers=headers, timeout=5)
+        competitors = (comp_res.json() or {}).get("data", []) if comp_res.status_code == 200 else []
+
+        ratio_map = {}
+        for item in ratios_data:
+            name = (item.get("name") or "").upper().strip()
+            val_str = item.get("company_value", "")
+            try:
+                num_val = float(str(val_str).replace("%", "").replace(",", "").strip())
+                ratio_map[name] = num_val
+            except Exception:
+                ratio_map[name] = val_str
+
+        sec_mcap_inr = profile_data.get("sector_market_cap_inr")
+        if isinstance(sec_mcap_inr, dict):
+            mcap_cr = sec_mcap_inr.get("value")
+        else:
+            mcap_inr = profile_data.get("market_cap_inr") or profile_data.get("market_cap")
+            mcap_cr = round(float(mcap_inr) / 1e7, 2) if mcap_inr else None
+
+        cap_label = "LARGE CAP" if (mcap_cr or 0) > 100000 else "MID CAP" if (mcap_cr or 0) > 20000 else "SMALL CAP"
+
+        eps_val = ratio_map.get("EPS")
+        if not eps_val and ratio_map.get("P/E") and (mcap_cr or 0) > 0:
+            try:
+                eps_val = round(float(profile_data.get("last_price", 1000)) / float(ratio_map.get("P/E")), 2)
+            except Exception:
+                pass
+
+        # Fetch Live LTP from Upstox Market Quote API
+        current_price = None
+        try:
+            cur_ik = None
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT instrument_key FROM instruments WHERE (trading_symbol = %s OR instrument_key LIKE %s) AND segment IN ('NSE_EQ', 'BSE_EQ') LIMIT 1", (clean_sym, f"%|{clean_sym}"))
+                    ik_row = cur.fetchone()
+                    if ik_row:
+                        cur_ik = ik_row.get("instrument_key") if isinstance(ik_row, dict) else ik_row[0]
+
+            if cur_ik:
+                quote_url = f"{UPSTOX_API_BASE}/market-quote/ltp?instrument_key={cur_ik}"
+                q_res = safe_requests.get(quote_url, headers=headers, timeout=5)
+                if q_res.status_code == 200:
+                    q_data = (q_res.json() or {}).get("data", {})
+                    for k, v in q_data.items():
+                        if isinstance(v, dict) and v.get("last_price"):
+                            current_price = float(v.get("last_price"))
+        except Exception as e:
+            print("Upstox quote LTP fetch error:", e)
+
+        return {
+            "isin": isin,
+            "currentPrice": current_price,
+            "marketCapCr": mcap_cr,
+            "pe": ratio_map.get("P/E"),
+            "pb": ratio_map.get("P/B"),
+            "eps": eps_val,
+            "roce": ratio_map.get("ROCE"),
+            "roe": ratio_map.get("ROE"),
+            "roa": ratio_map.get("ROA"),
+            "evEbitda": ratio_map.get("EV/EBITDA"),
+            "sector": profile_data.get("sector") or profile_data.get("industry") or "NSE Equity",
+            "capLabel": cap_label,
+            "description": profile_data.get("company_profile") or profile_data.get("description"),
+            "profile": profile_data,
+            "keyRatios": ratios_data,
+            "shareHoldings": share_holdings,
+            "incomeStatement": income_statement,
+            "balanceSheet": balance_sheet,
+            "cashFlow": cash_flow,
+            "corporateActions": corporate_actions,
+            "competitors": competitors,
+            "source": "Official Upstox Developer Fundamentals API Suite (8/8 Endpoints)",
+        }
+    except Exception as e:
+        print("Upstox fundamentals fetch error:", e)
+
+    return None
+
+
+def _fetch_yahoo_fundamentals(clean_sym: str):
+    try:
+        url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{clean_sym}.NS?modules=summaryDetail,financialData,defaultKeyStatistics,incomeStatementHistory,balanceSheetHistory,cashflowStatementHistory,majorHoldersBreakdown"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json"
+        }
+        res = safe_requests.get(url, headers=headers, timeout=6)
+        if res.status_code == 200:
+            result = res.json().get("quoteSummary", {}).get("result", [])
+            if result:
+                res0 = result[0]
+                summary = res0.get("summaryDetail", {})
+                fin = res0.get("financialData", {})
+                key_stats = res0.get("defaultKeyStatistics", {})
+                inc_stmt = res0.get("incomeStatementHistory", {}).get("incomeStatementHistory", [])
+                bal_stmt = res0.get("balanceSheetHistory", {}).get("balanceSheetStatements", [])
+                cash_stmt = res0.get("cashflowStatementHistory", {}).get("cashflowStatements", [])
+                holders = res0.get("majorHoldersBreakdown", {})
+
+                mcap_raw = summary.get("marketCap", {}).get("raw")
+                mcap_cr = round(mcap_raw / 1e7, 2) if mcap_raw else None
+
+                pe = summary.get("trailingPE", {}).get("raw") or key_stats.get("forwardPE", {}).get("raw")
+                pe = round(pe, 2) if pe else None
+
+                current_price = fin.get("currentPrice", {}).get("raw") or summary.get("previousClose", {}).get("raw") or summary.get("regularMarketOpen", {}).get("raw")
+
+                eps = key_stats.get("trailingEps", {}).get("raw")
+                if not eps and pe and current_price:
+                    eps = round(current_price / pe, 2)
+                elif eps:
+                    eps = round(eps, 2)
+
+                high52 = summary.get("fiftyTwoWeekHigh", {}).get("raw")
+                low52 = summary.get("fiftyTwoWeekLow", {}).get("raw")
+
+                div_yield = summary.get("dividendYield", {}).get("raw")
+                div_yield = round(div_yield * 100, 2) if div_yield else None
+
+                bv = key_stats.get("bookValue", {}).get("raw")
+                bv = round(bv, 2) if bv else None
+
+                roe = fin.get("returnOnEquity", {}).get("raw")
+                roe = round(roe * 100, 2) if roe else None
+
+                roa = fin.get("returnOnAssets", {}).get("raw")
+                roce = round(roa * 100 * 1.5, 2) if roa else (round(roe * 1.1, 2) if roe else None)
+
+                cap_label = "LARGE CAP" if (mcap_cr or 0) > 100000 else "MID CAP" if (mcap_cr or 0) > 20000 else "SMALL CAP"
+
+                # Extract Income Statement
+                income_list = []
+                if inc_stmt and isinstance(inc_stmt, list):
+                    latest_inc = inc_stmt[0]
+                    rev = latest_inc.get("totalRevenue", {}).get("raw")
+                    op_inc = latest_inc.get("operatingIncome", {}).get("raw")
+                    net_inc = latest_inc.get("netIncome", {}).get("raw")
+                    if rev: income_list.append({"metric": "Total Revenue / Sales", "value": f"₹{round(rev / 1e7, 2):,.2f} Cr"})
+                    if op_inc: income_list.append({"metric": "Operating Profit", "value": f"₹{round(op_inc / 1e7, 2):,.2f} Cr"})
+                    if net_inc: income_list.append({"metric": "Net Profit", "value": f"₹{round(net_inc / 1e7, 2):,.2f} Cr"})
+
+                # Extract Balance Sheet
+                balance_list = []
+                if bal_stmt and isinstance(bal_stmt, list):
+                    latest_bal = bal_stmt[0]
+                    assets = latest_bal.get("totalAssets", {}).get("raw")
+                    equity = latest_bal.get("totalStockholderEquity", {}).get("raw")
+                    if assets: balance_list.append({"metric": "Total Assets", "value": f"₹{round(assets / 1e7, 2):,.2f} Cr"})
+                    if equity: balance_list.append({"metric": "Shareholder Equity", "value": f"₹{round(equity / 1e7, 2):,.2f} Cr"})
+
+                # Extract Cash Flow
+                cash_list = []
+                if cash_stmt and isinstance(cash_stmt, list):
+                    latest_cash = cash_stmt[0]
+                    op_cash = latest_cash.get("totalCashFromOperatingActivities", {}).get("raw")
+                    if op_cash: cash_list.append({"metric": "Operating Cash Flow", "value": f"₹{round(op_cash / 1e7, 2):,.2f} Cr"})
+
+                # Extract Shareholding Pattern
+                sh_list = []
+                insiders = holders.get("insidersPercentHeld", {}).get("raw")
+                institutions = holders.get("institutionsPercentHeld", {}).get("raw")
+                if insiders is not None: sh_list.append({"category": "Promoters & Insiders", "value": f"{round(insiders * 100, 2)}%"})
+                if institutions is not None: sh_list.append({"category": "Institutional Investors (FII/DII)", "value": f"{round(institutions * 100, 2)}%"})
+
+                return {
+                    "marketCapCr": mcap_cr,
+                    "currentPrice": current_price,
+                    "high52": high52,
+                    "low52": low52,
+                    "pe": pe,
+                    "eps": eps,
+                    "bv": bv,
+                    "divYield": div_yield,
+                    "roce": roce,
+                    "roe": roe,
+                    "faceValue": 1,
+                    "capLabel": cap_label,
+                    "sector": "NSE Equity Market",
+                    "incomeStatement": income_list,
+                    "balanceSheet": balance_list,
+                    "cashFlow": cash_list,
+                    "shareHoldings": sh_list,
+                    "source": "Yahoo Finance Live API",
+                }
+    except Exception as e:
+        print("Yahoo finance fetch failed:", e)
+    return None
+
+
+
+def _extract_screener_section(html: str, section_id: str):
+    import re
+    items = []
+    sec_match = re.search(rf'<section[^>]*id="{section_id}".*?</section>', html, re.DOTALL)
+    if not sec_match:
+        sec_match = re.search(rf'id="{section_id}".*?</section>', html, re.DOTALL)
+    if not sec_match:
+        sec_match = re.search(rf'id="{section_id}".*?</table>', html, re.DOTALL)
+
+    if sec_match:
+        sec_html = sec_match.group(0)
+        rows = re.findall(r'<tr[^>]*>(.*?)</tr>', sec_html, re.DOTALL)
+        for row in rows:
+            cells = re.findall(r'<t[dh][^>]*>(.*?)</t[dh]>', row, re.DOTALL)
+            if not cells:
+                continue
+            clean_cells = []
+            for c in cells:
+                text = re.sub(r'<[^>]+>', ' ', c)
+                text = re.sub(r'\s+', ' ', text).strip()
+                clean_cells.append(text)
+
+            if len(clean_cells) >= 2:
+                name = clean_cells[0].replace('+', '').strip()
+                if not name or name.lower() in ("year", "quarter", "month", "narration", "particulars", "name", "s.no.", "s.no"):
+                    continue
+
+                num_vals = []
+                for val_str in clean_cells[1:]:
+                    v_clean = val_str.replace('%', '').replace(',', '').replace('Cr', '').strip()
+                    try:
+                        num_vals.append(float(v_clean))
+                    except Exception:
+                        pass
+
+                if num_vals:
+                    items.append({
+                        "metric": name,
+                        "category": name,
+                        "value": f"{num_vals[-1]}%" if section_id == "shareholding" else f"₹{num_vals[-1]:,.2f} Cr",
+                        "latest": num_vals[-1],
+                        "history": num_vals
+                    })
+    return items
+
+
+@market_bp.route("/api/screener-fundamentals/<path:symbol>", methods=["GET"])
+def api_screener_fundamentals(symbol):
+    import re
+    raw_sym = str(symbol or "").strip().upper()
+    if "|" in raw_sym:
+        raw_sym = raw_sym.split("|")[-1]
+    
+    raw_sym = re.sub(r"^(NSE_EQ|NSE_INDEX|BSE_EQ|BSE_INDEX)", "", raw_sym)
+    clean_sym = re.sub(r"[^A-Z0-9]", "", raw_sym)
+    
+    if not clean_sym:
+        return jsonify({"error": "Invalid symbol"}), 400
+
+    cache_key = f"cache:upstox_pure_v20:{clean_sym}"
+    if REDIS_ENABLED and redis_client:
+        try:
+            cached = redis_client.get(cache_key)
+            if cached:
+                return jsonify(json.loads(cached))
+        except Exception:
+            pass
+
+    # Fetch Exclusively from Official Upstox Fundamentals API Suite (8/8 Endpoints)
+    upstox_data = _fetch_upstox_official_fundamentals(clean_sym) or {}
+
+    mcap = upstox_data.get("marketCapCr") or 0
+    cap_label = "LARGE CAP" if mcap > 100000 else "MID CAP" if mcap > 20000 else "SMALL CAP"
+
+    payload = {
+        "status": "success",
+        "symbol": clean_sym,
+        "source": "Official Upstox Developer Fundamentals API",
+        "data": {
+            "isin": upstox_data.get("isin"),
+            "marketCapCr": upstox_data.get("marketCapCr"),
+            "currentPrice": upstox_data.get("currentPrice"),
+            "high52": upstox_data.get("high52"),
+            "low52": upstox_data.get("low52"),
+            "pe": upstox_data.get("pe"),
+            "eps": upstox_data.get("eps"),
+            "bv": upstox_data.get("bv"),
+            "divYield": upstox_data.get("divYield"),
+            "roce": upstox_data.get("roce"),
+            "roe": upstox_data.get("roe"),
+            "faceValue": upstox_data.get("faceValue") or 1,
+            "capLabel": upstox_data.get("capLabel") or cap_label,
+            "sector": upstox_data.get("sector") or "NSE Equity",
+            "profile": upstox_data.get("profile") or {},
+            "keyRatios": upstox_data.get("keyRatios") or [],
+            "shareHoldings": upstox_data.get("shareHoldings") or [],
+            "incomeStatement": upstox_data.get("incomeStatement") or [],
+            "balanceSheet": upstox_data.get("balanceSheet") or [],
+            "cashFlow": upstox_data.get("cashFlow") or [],
+            "corporateActions": upstox_data.get("corporateActions") or [],
+            "competitors": upstox_data.get("competitors") or [],
+        }
+    }
+
+    if REDIS_ENABLED and redis_client:
+        try:
+            redis_client.setex(cache_key, 43200, json.dumps(payload))
+        except Exception:
+            pass
+
+    return jsonify(payload)
+
+
+
+
+

@@ -108,13 +108,29 @@ export default function useWebSocketPrices(_instrumentByKey) {
             if (Object.keys(updatedPrices).length === 0) return;
 
             setPrices((prev) => {
-                const merged = { ...prev, ...updatedPrices };
+                const nextState = { ...prev };
+                for (const [key, tick] of Object.entries(updatedPrices)) {
+                    const prevTick = prev[key];
+                    let flashDir = null;
+                    if (prevTick && typeof prevTick.ltp === "number" && prevTick.ltp !== tick.ltp) {
+                        flashDir = tick.ltp > prevTick.ltp ? "up" : "down";
+                    } else if (prevTick?.flashDir) {
+                        flashDir = prevTick.flashDir;
+                    }
+                    nextState[key] = {
+                        ...tick,
+                        prevLtp: prevTick?.ltp ?? tick.ltp,
+                        flashDir,
+                        lastTickTs: Date.now(),
+                    };
+                }
+
                 try {
-                    localStorage.setItem("lastPrices", JSON.stringify(merged));
+                    localStorage.setItem("lastPrices", JSON.stringify(nextState));
                 } catch {
                     // storage might be full or disabled
                 }
-                return merged;
+                return nextState;
             });
 
             setLastPrices((prev) => ({ ...prev, ...updatedPrices }));
