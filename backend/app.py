@@ -6,10 +6,13 @@
 #  Config lives in config.py
 # ================================================================
 import os
+import sys
 import warnings
 
-from dotenv import load_dotenv
+# Ensure backend directory is in sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from dotenv import load_dotenv
 
 # In containers, compose-provided env vars must win over local .env values.
 # Keeping override=False still loads missing vars for local development.
@@ -117,7 +120,7 @@ if __name__ == "__main__":
 
                 f.write(datetime.now(timezone.utc).isoformat())
         except Exception as e:
-            print("⚠️  Instrument sync failed:", e)
+            print("[WARN] Instrument sync failed:", e)
 
     # Update India VIX
     try:
@@ -125,7 +128,7 @@ if __name__ == "__main__":
 
         update_vix_if_needed()
     except Exception as e:
-        print("⚠️  VIX update failed:", e)
+        print("[WARN] VIX update failed:", e)
 
     # ── Seed Redis from token.json on startup ────────────────────
     # Problem: token.json is written during OAuth (locally or in a previous run)
@@ -140,18 +143,18 @@ if __name__ == "__main__":
         if REDIS_ENABLED and redis_client:
             existing = redis_client.get("upstox:tokens")
             if existing:
-                print("✅ Redis already has token — no seed needed")
+                print("[OK] Redis already has token - no seed needed")
             else:
                 tokens = load_saved_tokens()  # reads token.json as fallback
                 if tokens.get("access_token"):
                     save_tokens(tokens)       # writes to Redis + token.json
-                    print("✅ Token seeded into Redis from token.json")
+                    print("[OK] Token seeded into Redis from token.json")
                 else:
-                    print("⚠️  No saved token found — complete Upstox OAuth to generate one")
+                    print("[WARN] No saved token found - complete Upstox OAuth to generate one")
         else:
-            print("⚠️  Redis not available at startup — wsserver will not receive token")
+            print("[WARN] Redis not available at startup - wsserver will not receive token")
     except Exception as e:
-        print("⚠️  Token seed failed:", e)
+        print("[WARN] Token seed failed:", e)
     # ─────────────────────────────────────────────────────────────
 
     app.run(host="0.0.0.0", port=8000, debug=False)

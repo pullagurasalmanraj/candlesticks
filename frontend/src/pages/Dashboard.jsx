@@ -24,13 +24,14 @@ import {
 } from "../utils/watchlistUtils";
 
 import SearchBar from "../components/SearchBar";
-import WebSocketStatus from "../components/WebSocketStatus";
+import TradingMotivationBanner from "../components/TradingMotivationBanner";
 import MarketSummary from "../components/MarketSummary";
 import IndexStrip from "../components/IndexStrip";
 import LiveTickCard from "../components/LiveTickCard";
 import LiveHeatmap from "../components/LiveHeatmap";
 import DataToolsDrawer from "../components/DataToolsDrawer";
 import ScreenerMetricsCard from "../components/ScreenerMetricsCard";
+import MarketBreadthBarometer from "../components/MarketBreadthBarometer";
 import ProfileDrawer, { Avatar } from "../components/ProfileDrawer";
 import StockLogo from "../components/StockLogo";
 
@@ -148,6 +149,7 @@ export default function Dashboard() {
     // ── View & Layout State ──────────────────────────────────────
     const [viewMode, setViewMode] = useState("command_center"); // "command_center" | "heatmap" | "workbench"
     const [isToolsOpen, setIsToolsOpen] = useState(false);
+    const [watchlistTab, setWatchlistTab] = useState("auto"); // "auto" | "watchlist" | "barometer"
     const [sortBy, setSortBy] = useState("default"); // "default" | "gainers" | "losers" | "symbol" | "price" | "subscribed"
     const [filterCategory, setFilterCategory] = useState("all"); // "all" | "gainers" | "losers" | "subscribed"
     const [fetchedLtpMap, setFetchedLtpMap] = useState({});
@@ -379,6 +381,46 @@ export default function Dashboard() {
             return next;
         });
     }, [activeWatchlistCap]);
+
+    const handleAddPresetSymbols = useCallback((symbolsList) => {
+        if (!Array.isArray(symbolsList) || symbolsList.length === 0) return;
+
+        const newInstruments = [];
+        symbolsList.forEach((symName) => {
+            const clean = symName.trim().toUpperCase();
+            const inst = instruments.find(i => (i.symbol || i.trading_symbol || "").toUpperCase() === clean) || {
+                symbol: clean,
+                trading_symbol: clean,
+                instrument_key: `NSE_EQ|${clean}`,
+                name: clean,
+            };
+            newInstruments.push(inst);
+        });
+
+        setWatchlistsByCap((prevRaw) => {
+            const prev = ensureWatchlistsShape(prevRaw);
+            const next = { ...prev };
+            const currentCapList = [...(next[activeWatchlistCap] || [])];
+
+            newInstruments.forEach((inst) => {
+                const s = normalizeSymbol(inst.symbol);
+                if (!currentCapList.some(item => normalizeSymbol(item.symbol) === s)) {
+                    currentCapList.push({ ...inst, symbol: s, cap: activeWatchlistCap });
+                }
+            });
+
+            next[activeWatchlistCap] = currentCapList;
+            return next;
+        });
+
+        setSelectedInstruments((prev) => {
+            const existingKeys = new Set(prev.map(i => (i.symbol || i.trading_symbol || "").toUpperCase()));
+            const toAdd = newInstruments.filter(i => !existingKeys.has((i.symbol || i.trading_symbol || "").toUpperCase()));
+            return [...prev, ...toAdd];
+        });
+
+        setToast(`⚡ Added ${newInstruments.length} symbols to ${activeWatchlistLabel}`);
+    }, [instruments, activeWatchlistCap, activeWatchlistLabel, setToast]);
 
     // ── Batch Action Handlers ────────────────────────────────────
     const streamAllWorkingList = useCallback(async () => {
@@ -936,11 +978,7 @@ export default function Dashboard() {
                             )}
                         </button>
 
-                        <WebSocketStatus
-                            isConnected={isConnected}
-                            connectWebSocket={stableConnect}
-                            disconnectWebSocket={stableDisconnect}
-                        />
+                        <TradingMotivationBanner />
                         <MarketSummary marketSummary={marketSummary} asOf={asOf} />
                     </div>
                 </div>
@@ -1058,73 +1096,118 @@ export default function Dashboard() {
                         gap: 16,
                         width: "100%",
                     }}>
-                        {/* COLUMN 1: Dynamic Watchlist Stream */}
+                        {/* COLUMN 1: Dynamic Watchlist Stream & Market Barometer */}
                         <Panel>
                             <SectionHeader
-                                subtitle="Market Watchlist"
-                                title={activeWatchlistLabel}
+                                subtitle="Market Watchlist & Macro Cockpit"
+                                title={watchlistTab === "barometer" ? "Market Breadth & Sector Barometer" : activeWatchlistLabel}
                                 action={
                                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                        <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                                            {filteredWatchlist.length} shown / {watchlist.length} total
-                                        </span>
+                                        <div style={{
+                                            display: "flex",
+                                            background: "var(--bg-tertiary)",
+                                            border: "1px solid var(--border-color)",
+                                            borderRadius: 6,
+                                            padding: 2,
+                                            gap: 2,
+                                        }}>
+                                            <button
+                                                type="button"
+                                                onClick={() => setWatchlistTab("watchlist")}
+                                                style={{
+                                                    background: watchlistTab !== "barometer" ? "var(--accent-blue)" : "transparent",
+                                                    color: watchlistTab !== "barometer" ? "#fff" : "var(--text-muted)",
+                                                    border: "none",
+                                                    borderRadius: 4,
+                                                    padding: "3px 8px",
+                                                    fontSize: "0.68rem",
+                                                    fontWeight: 600,
+                                                    cursor: "pointer",
+                                                }}
+                                            >
+                                                📋 Watchlist ({watchlist.length})
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => setWatchlistTab("barometer")}
+                                                style={{
+                                                    background: watchlistTab === "barometer" ? "var(--accent-blue)" : "transparent",
+                                                    color: watchlistTab === "barometer" ? "#fff" : "var(--text-muted)",
+                                                    border: "none",
+                                                    borderRadius: 4,
+                                                    padding: "3px 8px",
+                                                    fontSize: "0.68rem",
+                                                    fontWeight: 600,
+                                                    cursor: "pointer",
+                                                }}
+                                            >
+                                                🧭 Market Barometer
+                                            </button>
+                                        </div>
                                     </div>
                                 }
                             />
 
-                            {/* Market Cap Filter Pills */}
-                            <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
-                                {WATCHLIST_CAP_OPTIONS.map((capItem) => {
-                                    const isActive = activeWatchlistCap === capItem.key;
-                                    return (
-                                        <button
-                                            key={capItem.key}
-                                            onClick={() => setActiveWatchlistCap(capItem.key)}
-                                            style={{
-                                                borderRadius: 999,
-                                                border: `1px solid ${isActive ? "var(--accent-blue)" : "var(--border-color)"}`,
-                                                background: isActive ? "rgba(59,130,246,0.18)" : "var(--bg-secondary)",
-                                                color: isActive ? "var(--accent-blue)" : "var(--text-muted)",
-                                                fontSize: "0.68rem", fontWeight: 600, padding: "4px 10px", cursor: "pointer",
-                                            }}
-                                        >
-                                            {capItem.label} ({watchlistCountByCap[capItem.key] || 0})
-                                        </button>
-                                    );
-                                })}
-                            </div>
-
-                            {/* Watchlist Cards List */}
-                            {filteredWatchlist.length === 0 ? (
-                                <div style={{
-                                    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-                                    minHeight: 160, border: "1px dashed var(--border-subtle)", borderRadius: 10,
-                                    color: "var(--text-muted)", fontSize: "0.8rem", gap: 6
-                                }}>
-                                    <span>☆</span> No symbols match filter in {activeWatchlistLabel}
-                                </div>
+                            {/* If Barometer View is Active OR Watchlist is Empty */}
+                            {(watchlistTab === "barometer" || (watchlistTab === "auto" && filteredWatchlist.length === 0)) ? (
+                                <MarketBreadthBarometer
+                                    onAddPreset={handleAddPresetSymbols}
+                                    onSelectSymbol={handleOpenToolsForSymbol}
+                                />
                             ) : (
-                                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                                    {filteredWatchlist.map((w) => {
-                                        const sym = (w.symbol || "").toUpperCase();
-                                        const key = normalizeKey(w);
-                                        return (
-                                            <LiveTickCard
-                                                key={key || sym}
-                                                item={w}
-                                                priceData={prices[key] || prices[sym]}
-                                                selectedSymbol={selectedSymbol}
-                                                activeSubscriptions={activeSubscriptions}
-                                                normalizeKey={normalizeKey}
-                                                setSelectedSymbol={setSelectedSymbol}
-                                                setSelectedInstrument={setSelectedInstrument}
-                                                subscribeToStock={subscribeToStock}
-                                                onOpenTools={handleOpenToolsForSymbol}
-                                                onRemove={(inst) => toggleWatchlist(inst)}
-                                            />
-                                        );
-                                    })}
-                                </div>
+                                <>
+                                    {/* Market Cap Filter Pills */}
+                                    <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+                                        {WATCHLIST_CAP_OPTIONS.map((capItem) => {
+                                            const isActive = activeWatchlistCap === capItem.key;
+                                            return (
+                                                <button
+                                                    key={capItem.key}
+                                                    onClick={() => setActiveWatchlistCap(capItem.key)}
+                                                    style={{
+                                                        borderRadius: 999,
+                                                        border: `1px solid ${isActive ? "var(--accent-blue)" : "var(--border-color)"}`,
+                                                        background: isActive ? "rgba(59,130,246,0.18)" : "var(--bg-secondary)",
+                                                        color: isActive ? "var(--accent-blue)" : "var(--text-muted)",
+                                                        fontSize: "0.68rem", fontWeight: 600, padding: "4px 10px", cursor: "pointer",
+                                                    }}
+                                                >
+                                                    {capItem.label} ({watchlistCountByCap[capItem.key] || 0})
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+
+                                    {/* Watchlist Cards List */}
+                                    {filteredWatchlist.length === 0 ? (
+                                        <MarketBreadthBarometer
+                                            onAddPreset={handleAddPresetSymbols}
+                                            onSelectSymbol={handleOpenToolsForSymbol}
+                                        />
+                                    ) : (
+                                        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                                            {filteredWatchlist.map((w) => {
+                                                const sym = (w.symbol || "").toUpperCase();
+                                                const key = normalizeKey(w);
+                                                return (
+                                                    <LiveTickCard
+                                                        key={key || sym}
+                                                        item={w}
+                                                        priceData={prices[key] || prices[sym]}
+                                                        selectedSymbol={selectedSymbol}
+                                                        activeSubscriptions={activeSubscriptions}
+                                                        normalizeKey={normalizeKey}
+                                                        setSelectedSymbol={setSelectedSymbol}
+                                                        setSelectedInstrument={setSelectedInstrument}
+                                                        subscribeToStock={subscribeToStock}
+                                                        onOpenTools={handleOpenToolsForSymbol}
+                                                        onRemove={(inst) => toggleWatchlist(inst)}
+                                                    />
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </>
                             )}
                         </Panel>
 

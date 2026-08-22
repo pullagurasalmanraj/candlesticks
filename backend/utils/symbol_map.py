@@ -11,14 +11,14 @@ def load_symbol_map():
 
     inst_path = os.path.join(BASE_DIR, "upstox_instruments.json.gz")
     if not os.path.exists(inst_path):
-        print("❌ Instruments file missing — SYMBOL_TO_KEY empty")
+        print("[WARN] Instruments file missing - SYMBOL_TO_KEY empty")
         return
 
     try:
         with gzip.open(inst_path, "rt", encoding="utf-8") as f:
             instruments = json.load(f)
 
-        print(f"📦 Total instruments in file: {len(instruments)}")
+        print(f"[INFO] Total instruments in file: {len(instruments)}")
 
         temp    = {}
         skipped = 0
@@ -55,7 +55,7 @@ def load_symbol_map():
                 temp[symbol][exchange] = raw_key
 
             elif raw_key:
-                # ✅ FIX: raw token exists but no pipe — construct the key
+                # FIX: raw token exists but no pipe — construct the key
                 temp[symbol][exchange] = f"{exchange}_EQ|{raw_key}"
 
             else:
@@ -64,8 +64,8 @@ def load_symbol_map():
                 continue
 
         SYMBOL_TO_KEY = temp
-        print(f"🎯 SYMBOL_TO_KEY: {len(SYMBOL_TO_KEY)} symbols loaded, {skipped} skipped (no key)")
+        print(f"[OK] SYMBOL_TO_KEY: {len(SYMBOL_TO_KEY)} symbols loaded, {skipped} skipped (no key)")
 
     except Exception as e:
-        print("❌ SYMBOL_TO_KEY build failed:", e)
+        print("[ERROR] SYMBOL_TO_KEY build failed:", e)
         SYMBOL_TO_KEY = {}
