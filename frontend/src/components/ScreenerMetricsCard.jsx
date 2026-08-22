@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react";
 import StockLogo from "./StockLogo";
+import CreativePageLoader from "./CreativePageLoader";
 
 // Smart Financial Currency & Value Formatter (Handles Crores, Percentages, and Numerical Scaling)
 export function formatFinancialValue(val) {
@@ -152,6 +153,26 @@ export default function ScreenerMetricsCard({ symbol, instrument, priceData, cap
             return matchesTab && matchesSearch;
         });
     }, [allMetrics, activeTab, searchQuery]);
+
+    if (loading && !fetchedData) {
+        return (
+            <div style={{
+                background: "var(--bg-secondary)",
+                border: "1px solid var(--border-color)",
+                borderRadius: "var(--card-radius)",
+                padding: "20px",
+                minHeight: "360px",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+            }}>
+                <CreativePageLoader
+                    text={`Synchronizing ${cleanSymbol} Financials`}
+                    subtitle="Fetching official Upstox Statements, Key Ratios, Shareholdings & Margins..."
+                />
+            </div>
+        );
+    }
 
     return (
         <div style={{

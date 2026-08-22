@@ -30,17 +30,17 @@ import {
 import { useTheme } from "./context/ThemeContext";
 import ProfileDrawer, { Avatar } from "./components/ProfileDrawer";
 
-// Pages
-import Dashboard           from "./pages/Dashboard";
-import Watchlist           from "./pages/Watchlist";
-import Portfolio           from "./pages/Portfolio";
-import SettingsPage        from "./pages/SettingsPage";
-import LstmPredictor       from "./pages/LstmPredictor";
-import TransformerPredictor from "./pages/TransformerPredictor";
-import Login               from "./pages/Login";
-import LoginSuccess        from "./pages/LoginSuccess";
-import OptionsTrading      from "./pages/OptionsTrading";
-import BrokersPage         from "./pages/BrokersPage";
+// Pages (Lazy loaded for dynamic candlestick loader)
+const Dashboard           = React.lazy(() => import("./pages/Dashboard"));
+const Watchlist           = React.lazy(() => import("./pages/Watchlist"));
+const Portfolio           = React.lazy(() => import("./pages/Portfolio"));
+const SettingsPage        = React.lazy(() => import("./pages/SettingsPage"));
+const LstmPredictor       = React.lazy(() => import("./pages/LstmPredictor"));
+const TransformerPredictor = React.lazy(() => import("./pages/TransformerPredictor"));
+const Login               = React.lazy(() => import("./pages/Login"));
+const LoginSuccess        = React.lazy(() => import("./pages/LoginSuccess"));
+const OptionsTrading      = React.lazy(() => import("./pages/OptionsTrading"));
+const BrokersPage         = React.lazy(() => import("./pages/BrokersPage"));
 
 import CreativePageLoader from "./components/CreativePageLoader";
 import NetworkStatusOverlay from "./components/NetworkStatusOverlay";
