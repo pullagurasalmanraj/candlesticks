@@ -93,6 +93,8 @@ function Panel({ children, style = {} }) {
             borderRadius: "var(--card-radius)",
             boxShadow: "var(--shadow-card)",
             padding: "20px",
+            boxSizing: "border-box",
+            minWidth: 0,
             ...style,
         }}>
             {children}
@@ -1335,12 +1337,14 @@ export default function Dashboard() {
                             {selectedSymbol ? (
                                 <div style={{
                                     display: "grid",
-                                    gridTemplateColumns: "1fr 340px",
+                                    gridTemplateColumns: "minmax(0, 1fr) 300px",
                                     gap: 20,
                                     width: "100%",
+                                    boxSizing: "border-box",
+                                    alignItems: "start",
                                 }}>
                                     {/* Left Column: Hero Stock Header + Screener Vertical Fundamentals Stack */}
-                                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0, overflow: "hidden" }}>
 
                                         {/* Hero Stock Header */}
                                         <div style={{
@@ -1350,6 +1354,8 @@ export default function Dashboard() {
                                             border: "1px solid var(--border-color)",
                                             boxShadow: "var(--shadow-card)",
                                             gap: 16,
+                                            flexWrap: "wrap",
+                                            boxSizing: "border-box",
                                         }}>
                                             <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
                                                 <StockLogo symbol={selectedSymbol} size={48} borderRadius={12} />
@@ -1405,7 +1411,7 @@ export default function Dashboard() {
                                     </div>
 
                                     {/* Right Column: Analytics Controls & Quick Actions */}
-                                    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0, width: "100%", boxSizing: "border-box" }}>
 
                                         {/* WSS Live Stream Card */}
                                         <div style={{

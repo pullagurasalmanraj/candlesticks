@@ -164,6 +164,10 @@ export default function ScreenerMetricsCard({ symbol, instrument, priceData, cap
             flexDirection: "column",
             gap: 18,
             width: "100%",
+            maxWidth: "100%",
+            boxSizing: "border-box",
+            overflow: "hidden",
+            minWidth: 0,
         }}>
             {/* Header with Stock Logo & API Source Indicator */}
             <div style={{
@@ -345,9 +349,9 @@ export default function ScreenerMetricsCard({ symbol, instrument, priceData, cap
             )}
 
             {/* DYNAMIC 8 UPSTOX API CATEGORY FILTER TABS & SEARCH INPUT */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", boxSizing: "border-box" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                         {[
                             { id: "profile", label: "🏢 Profile" },
                             { id: "all", label: "📊 Key Ratios" },
@@ -364,14 +368,16 @@ export default function ScreenerMetricsCard({ symbol, instrument, priceData, cap
                                 onClick={() => setActiveTab(t.id)}
                                 style={{
                                     background: activeTab === t.id ? "var(--accent-blue)" : "var(--bg-tertiary)",
-                                    color: activeTab === t.id ? "#fff" : "var(--text-muted)",
+                                    color: activeTab === t.id ? "#fff" : "var(--text-secondary)",
                                     border: `1px solid ${activeTab === t.id ? "var(--accent-blue)" : "var(--border-color)"}`,
-                                    borderRadius: 6,
-                                    padding: "5px 11px",
+                                    borderRadius: 8,
+                                    padding: "6px 12px",
                                     fontSize: "0.75rem",
-                                    fontWeight: 600,
+                                    fontWeight: 700,
                                     cursor: "pointer",
                                     transition: "all 0.15s ease",
+                                    whiteSpace: "nowrap",
+                                    boxShadow: activeTab === t.id ? "0 2px 8px rgba(59, 130, 246, 0.3)" : "none",
                                 }}
                             >
                                 {t.label}
