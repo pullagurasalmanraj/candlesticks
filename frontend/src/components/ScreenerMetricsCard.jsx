@@ -456,108 +456,100 @@ export default function ScreenerMetricsCard({ symbol, instrument, priceData, cap
                     );
                 })()}
 
-                {/* TAB 2: KEY RATIOS (/v2/fundamentals/{isin}/key-ratios + statements) */}
+                {/* TAB 2: KEY RATIOS (/v2/fundamentals/{isin}/key-ratios) */}
                 {activeTab === "all" && (() => {
                     const upstoxRatios = Array.isArray(fetchedData?.keyRatios) ? fetchedData.keyRatios : [];
-                    const filteredUpstoxRatios = upstoxRatios.filter(r => {
-                        if (!searchQuery) return true;
-                        const q = searchQuery.toLowerCase();
-                        return (r.name && r.name.toLowerCase().includes(q)) || (r.category && r.category.toLowerCase().includes(q));
-                    });
 
                     return (
                         <div style={{
                             display: "flex",
                             flexDirection: "column",
-                            gap: 4,
+                            gap: 2,
                             background: "var(--bg-tertiary)",
-                            padding: "10px",
+                            padding: "8px",
                             borderRadius: 12,
                             border: "1px solid var(--border-color)",
                         }}>
-                            {/* Header row */}
-                            <div style={{
-                                display: "grid",
-                                gridTemplateColumns: "minmax(140px, 1.8fr) 1.1fr 1fr 1fr",
-                                padding: "8px 14px",
-                                fontSize: "0.68rem",
-                                fontWeight: 700,
-                                color: "var(--text-muted)",
-                                fontFamily: "var(--font-mono)",
-                                borderBottom: "1px solid var(--border-subtle)",
-                                background: "rgba(255,255,255,0.02)",
-                                borderRadius: 6,
-                                textTransform: "uppercase",
-                                letterSpacing: "0.04em",
-                                marginBottom: 2,
-                            }}>
-                                <div>Financial Ratio</div>
-                                <div>Category</div>
-                                <div style={{ textAlign: "right", color: "var(--accent-up)" }}>Company Value</div>
-                                <div style={{ textAlign: "right", color: "var(--text-muted)" }}>Sector Benchmark</div>
-                            </div>
-
-                            {/* Ratio Rows */}
-                            {filteredUpstoxRatios.length > 0 ? (
-                                filteredUpstoxRatios.map((item, idx) => {
-                                    const cat = item.category || (item.name.includes("P/E") || item.name.includes("P/B") || item.name.includes("EV") ? "Valuation" : (item.name.includes("RO") || item.name.includes("Margin") ? "Profitability" : "Efficiency"));
-                                    const catColors = {
-                                        Valuation: "var(--accent-blue)",
-                                        Profitability: "var(--accent-up)",
-                                        Liquidity: "#06B6D4",
-                                        Solvency: "#8B5CF6",
-                                        Efficiency: "#F59E0B",
-                                        Growth: "#10B981",
-                                        "Cash Flow": "#3B82F6",
-                                    };
-                                    const badgeColor = catColors[cat] || "var(--text-muted)";
-
-                                    return (
-                                        <div
-                                            key={idx}
-                                            style={{
-                                                display: "grid",
-                                                gridTemplateColumns: "minmax(140px, 1.8fr) 1.1fr 1fr 1fr",
-                                                alignItems: "center",
-                                                padding: "9px 14px",
-                                                background: idx % 2 === 0 ? "var(--bg-secondary)" : "transparent",
-                                                borderRadius: 6,
-                                                transition: "background 0.15s ease",
-                                            }}
-                                        >
-                                            <span style={{ fontSize: "0.82rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                                {item.name}
-                                            </span>
-
-                                            <div>
-                                                <span style={{
-                                                    fontSize: "0.65rem",
-                                                    fontWeight: 700,
-                                                    fontFamily: "var(--font-mono)",
-                                                    color: badgeColor,
-                                                    background: `${badgeColor}15`,
-                                                    border: `1px solid ${badgeColor}33`,
-                                                    borderRadius: 4,
-                                                    padding: "2px 6px",
-                                                }}>
-                                                    {cat}
-                                                </span>
-                                            </div>
-
-                                            <span style={{ textAlign: "right", fontSize: "0.92rem", fontWeight: 800, fontFamily: "var(--font-mono)", color: "var(--accent-up)" }}>
-                                                {item.company_value || "--"}
-                                            </span>
-
-                                            <span style={{ textAlign: "right", fontSize: "0.8rem", fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>
-                                                {item.sector_value || "--"}
-                                            </span>
-                                        </div>
-                                    );
-                                })
-                            ) : (
-                                <div style={{ padding: "20px", textAlign: "center", color: "var(--text-muted)", fontSize: "0.82rem" }}>
-                                    No ratios matching "{searchQuery}"
+                            {/* Official Upstox Key Ratios comparison if available */}
+                            {upstoxRatios.length > 0 && (
+                                <div style={{
+                                    display: "grid",
+                                    gridTemplateColumns: "2fr 1fr 1fr",
+                                    padding: "8px 14px",
+                                    fontSize: "0.68rem",
+                                    fontWeight: 700,
+                                    color: "var(--text-muted)",
+                                    fontFamily: "var(--font-mono)",
+                                    borderBottom: "1px solid var(--border-subtle)",
+                                    background: "rgba(255,255,255,0.02)",
+                                    borderRadius: 6,
+                                    marginBottom: 4,
+                                }}>
+                                    <div>Upstox Key Ratio</div>
+                                    <div style={{ textAlign: "right", color: "var(--accent-up)" }}>Company Value</div>
+                                    <div style={{ textAlign: "right", color: "var(--text-muted)" }}>Sector Average</div>
                                 </div>
+                            )}
+
+                            {upstoxRatios.length > 0 ? (
+                                upstoxRatios.map((item, idx) => (
+                                    <div
+                                        key={idx}
+                                        style={{
+                                            display: "grid",
+                                            gridTemplateColumns: "2fr 1fr 1fr",
+                                            alignItems: "center",
+                                            padding: "10px 14px",
+                                            background: idx % 2 === 0 ? "var(--bg-secondary)" : "transparent",
+                                            borderRadius: 6,
+                                        }}
+                                    >
+                                        <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--text-primary)" }}>
+                                            {item.name}
+                                        </span>
+                                        <span style={{ textAlign: "right", fontSize: "0.92rem", fontWeight: 700, fontFamily: "var(--font-mono)", color: "var(--accent-up)" }}>
+                                            {item.company_value || "--"}
+                                        </span>
+                                        <span style={{ textAlign: "right", fontSize: "0.8rem", fontFamily: "var(--font-mono)", color: "var(--text-muted)" }}>
+                                            {item.sector_value || "--"}
+                                        </span>
+                                    </div>
+                                ))
+                            ) : (
+                                filteredMetrics.map((item, idx, arr) => (
+                                    <div
+                                        key={item.id}
+                                        style={{
+                                            display: "flex",
+                                            alignItems: "center",
+                                            justifyContent: "space-between",
+                                            padding: "10px 14px",
+                                            background: idx % 2 === 0 ? "var(--bg-secondary)" : "transparent",
+                                            borderRadius: 6,
+                                            borderBottom: idx < arr.length - 1 ? "1px solid var(--border-subtle)" : "none",
+                                        }}
+                                    >
+                                        <div style={{
+                                            fontSize: "0.82rem",
+                                            fontWeight: 600,
+                                            color: "var(--text-muted)",
+                                            fontFamily: "var(--font-body)",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 8,
+                                        }}>
+                                            <span>{item.label}</span>
+                                        </div>
+                                        <span style={{
+                                            fontSize: "0.94rem",
+                                            fontWeight: item.highlight ? 700 : 600,
+                                            fontFamily: "var(--font-mono)",
+                                            color: item.color || "var(--text-primary)",
+                                        }}>
+                                            {item.value}
+                                        </span>
+                                    </div>
+                                ))
                             )}
                         </div>
                     );

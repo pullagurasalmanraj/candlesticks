@@ -803,126 +803,12 @@ def _fetch_upstox_official_fundamentals(clean_sym: str):
             except Exception as e:
                 print("Competitor parsing error:", e)
 
-        # Enrich key ratios from official financial statements
-        ratios_list = list(ratios_data) if isinstance(ratios_data, list) else []
-        existing_names = set((r.get("name") or "").upper().strip() for r in ratios_list)
-
-        inc_items = income_statement.get("full_statement") or income_statement.get("income_statement") or income_statement.get("data") or []
-        bal_items = balance_sheet.get("full_statement") or balance_sheet.get("balance_sheet") or balance_sheet.get("data") or []
-        cf_items = cash_flow.get("full_statement") or cash_flow.get("cash_flow") or cash_flow.get("data") or []
-
-        def get_hist(items, match_terms):
-            for it in items:
-                p = (it.get("particular") or it.get("name") or it.get("title") or "").lower().strip()
-                for term in match_terms:
-                    if term.lower() in p:
-                        hist = it.get("history") or []
-                        v0 = hist[0].get("value") if len(hist) > 0 else None
-                        v1 = hist[1].get("value") if len(hist) > 1 else None
-                        return v0, v1
-            return None, None
-
-        rev_v0, rev_v1 = get_hist(inc_items, ["Total Revenue", "Revenue from Operations", "Revenue"])
-        pat_v0, pat_v1 = get_hist(inc_items, ["Profit After Tax", "PAT", "Net Profit"])
-        pbt_v0, _ = get_hist(inc_items, ["Profit Before Tax", "PBT", "Operating Profit"])
-        exp_v0, _ = get_hist(inc_items, ["Total Expenses", "Expenses"])
-        eps_basic, _ = get_hist(inc_items, ["EPS - Basic", "Basic EPS", "EPS"])
-
-        cur_ast, _ = get_hist(bal_items, ["Current Assets"])
-        cur_lia, _ = get_hist(bal_items, ["Current Liabilities"])
-        tot_ast, _ = get_hist(bal_items, ["Total Assets"])
-        non_cur_lia, _ = get_hist(bal_items, ["Non-Current Liabilities", "Total Borrowings", "Borrowings"])
-        eq_cap, _ = get_hist(bal_items, ["Equity Capital", "Share Capital"])
-        tot_eq, _ = get_hist(bal_items, ["Total Equity & Liabilities", "Total Equity"])
-
-        cfo_v0, _ = get_hist(cf_items, ["Cash flow from Operations", "Operating Cash Flow"])
-
-        # 1. Net Profit Margin (%)
-        if "NET PROFIT MARGIN" not in existing_names and pat_v0 and rev_v0 and rev_v0 > 0:
-            npm = (pat_v0 / rev_v0) * 100.0
-            ratios_list.append({
-                "name": "Net Profit Margin",
-                "company_value": f"{npm:.2f}%",
-                "sector_value": "8.50%",
-                "category": "Profitability",
-            })
-
-        # 2. Operating Profit Margin (%)
-        if "OPERATING PROFIT MARGIN" not in existing_names and rev_v0 and exp_v0 and rev_v0 > 0:
-            opm = ((rev_v0 - exp_v0) / rev_v0) * 100.0
-            ratios_list.append({
-                "name": "Operating Profit Margin",
-                "company_value": f"{opm:.2f}%",
-                "sector_value": "14.20%",
-                "category": "Profitability",
-            })
-
-        # 3. Current Ratio
-        if "CURRENT RATIO" not in existing_names and cur_ast and cur_lia and cur_lia > 0:
-            cr = cur_ast / cur_lia
-            ratios_list.append({
-                "name": "Current Ratio",
-                "company_value": f"{cr:.2f}",
-                "sector_value": "1.25",
-                "category": "Liquidity",
-            })
-
-        # 4. Debt to Equity
-        if "DEBT TO EQUITY" not in existing_names and non_cur_lia is not None and eq_cap and eq_cap > 0:
-            de = non_cur_lia / eq_cap
-            ratios_list.append({
-                "name": "Debt to Equity",
-                "company_value": f"{de:.2f}",
-                "sector_value": "0.85",
-                "category": "Solvency",
-            })
-
-        # 5. Asset Turnover Ratio
-        if "ASSET TURNOVER RATIO" not in existing_names and rev_v0 and tot_ast and tot_ast > 0:
-            at = rev_v0 / tot_ast
-            ratios_list.append({
-                "name": "Asset Turnover Ratio",
-                "company_value": f"{at:.2f}x",
-                "sector_value": "0.75x",
-                "category": "Efficiency",
-            })
-
-        # 6. Revenue Growth YoY (%)
-        if "REVENUE GROWTH (YOY)" not in existing_names and rev_v0 and rev_v1 and rev_v1 > 0:
-            rg = ((rev_v0 - rev_v1) / rev_v1) * 100.0
-            ratios_list.append({
-                "name": "Revenue Growth (YoY)",
-                "company_value": f"{'+' if rg >= 0 else ''}{rg:.2f}%",
-                "sector_value": "+11.50%",
-                "category": "Growth",
-            })
-
-        # 7. Net Profit Growth YoY (%)
-        if "NET PROFIT GROWTH (YOY)" not in existing_names and pat_v0 and pat_v1 and pat_v1 > 0:
-            pg = ((pat_v0 - pat_v1) / pat_v1) * 100.0
-            ratios_list.append({
-                "name": "Net Profit Growth (YoY)",
-                "company_value": f"{'+' if pg >= 0 else ''}{pg:.2f}%",
-                "sector_value": "+14.00%",
-                "category": "Growth",
-            })
-
-        # 8. Operating Cash to Sales (%)
-        if "OPERATING CASH / SALES" not in existing_names and cfo_v0 and rev_v0 and rev_v0 > 0:
-            cfo_pct = (cfo_v0 / rev_v0) * 100.0
-            ratios_list.append({
-                "name": "Operating Cash / Sales",
-                "company_value": f"{cfo_pct:.2f}%",
-                "sector_value": "10.00%",
-                "category": "Cash Flow",
-            })
-
         ratio_map = {}
-        for item in ratios_list:
+        for item in ratios_data:
             name = (item.get("name") or "").upper().strip()
             val_str = item.get("company_value", "")
             try:
-                num_val = float(str(val_str).replace("%", "").replace(",", "").replace("x", "").strip())
+                num_val = float(str(val_str).replace("%", "").replace(",", "").strip())
                 ratio_map[name] = num_val
             except Exception:
                 ratio_map[name] = val_str
@@ -936,15 +822,11 @@ def _fetch_upstox_official_fundamentals(clean_sym: str):
 
         cap_label = "LARGE CAP" if (mcap_cr or 0) > 100000 else "MID CAP" if (mcap_cr or 0) > 20000 else "SMALL CAP"
 
-        eps_val = ratio_map.get("EPS") or (round(float(eps_basic), 2) if eps_basic else None)
-        if not eps_val and ratio_map.get("P/E") and (mcap_cr or 0) > 0:
-            try:
-                eps_val = round(float(profile_data.get("last_price", 1000)) / float(ratio_map.get("P/E")), 2)
-            except Exception:
-                pass
-
-        # Fetch Live LTP from Upstox Market Quote API
+        # Fetch Live LTP & 52-Week Range
         current_price = None
+        high52 = None
+        low52 = None
+
         try:
             cur_ik = None
             with get_db_conn() as conn:
@@ -965,6 +847,47 @@ def _fetch_upstox_official_fundamentals(clean_sym: str):
         except Exception as e:
             print("Upstox quote LTP fetch error:", e)
 
+        # Fallback / 52-week High/Low from Yahoo Chart Meta
+        try:
+            y_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{clean_sym}.NS?interval=1d&range=1d"
+            y_res = safe_requests.get(y_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
+            if y_res.status_code == 200:
+                y_meta = (y_res.json() or {}).get("chart", {}).get("result", [{}])[0].get("meta", {})
+                if not current_price and y_meta.get("regularMarketPrice"):
+                    current_price = float(y_meta.get("regularMarketPrice"))
+                high52 = y_meta.get("fiftyTwoWeekHigh")
+                low52 = y_meta.get("fiftyTwoWeekLow")
+        except Exception as e:
+            print("Yahoo 52W range fetch error:", e)
+
+        # Extract Exact Official EPS from Income Statement
+        eps_val = None
+        inc_rows = income_statement.get("full_statement") or income_statement.get("income_statement") or income_statement.get("data") or []
+        for row in inc_rows:
+            p_name = str(row.get("particular") or row.get("name") or "").lower()
+            if "eps" in p_name:
+                h_list = row.get("history") or []
+                if h_list and h_list[0].get("value") is not None:
+                    try:
+                        eps_val = round(float(h_list[0].get("value")), 2)
+                        break
+                    except Exception:
+                        pass
+
+        if not eps_val:
+            eps_val = ratio_map.get("EPS")
+
+        if not eps_val and current_price and ratio_map.get("P/E"):
+            try:
+                eps_val = round(float(current_price) / float(ratio_map.get("P/E")), 2)
+            except Exception:
+                pass
+
+        # Compute accurate P/E
+        pe_val = ratio_map.get("P/E")
+        if current_price and eps_val and eps_val > 0:
+            pe_val = round(float(current_price) / float(eps_val), 2)
+
         # Intraday Margin & Leverage Info from NSE_MIS dataset
         mis_dict = get_mis_margin_data()
         mis_info = mis_dict.get(clean_sym) or {
@@ -981,18 +904,20 @@ def _fetch_upstox_official_fundamentals(clean_sym: str):
             "isin": isin,
             "currentPrice": current_price,
             "marketCapCr": mcap_cr,
-            "pe": ratio_map.get("P/E"),
+            "pe": pe_val,
             "pb": ratio_map.get("P/B"),
             "eps": eps_val,
             "roce": ratio_map.get("ROCE"),
             "roe": ratio_map.get("ROE"),
             "roa": ratio_map.get("ROA"),
             "evEbitda": ratio_map.get("EV/EBITDA"),
+            "high52": high52,
+            "low52": low52,
             "sector": profile_data.get("sector") or profile_data.get("industry") or "NSE Equity",
             "capLabel": cap_label,
             "description": profile_data.get("company_profile") or profile_data.get("description"),
             "profile": profile_data,
-            "keyRatios": ratios_list,
+            "keyRatios": ratios_data,
             "shareHoldings": share_holdings,
             "incomeStatement": income_statement,
             "balanceSheet": balance_sheet,
