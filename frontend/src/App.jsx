@@ -42,28 +42,12 @@ import LoginSuccess        from "./pages/LoginSuccess";
 import OptionsTrading      from "./pages/OptionsTrading";
 import BrokersPage         from "./pages/BrokersPage";
 
-// ── Skeleton loader ──────────────────────────────────────────────
+import CreativePageLoader from "./components/CreativePageLoader";
+import NetworkStatusOverlay from "./components/NetworkStatusOverlay";
+
+// ── Creative Candlestick page loader ─────────────────────────────
 function SkeletonLoader() {
-    return (
-        <div style={{ padding: "2rem" }}>
-            <div style={{
-                height: 20, width: "25%", borderRadius: 6,
-                background: "var(--bg-tertiary)", marginBottom: 12,
-                animation: "pulse 1.5s ease-in-out infinite",
-            }} />
-            <div style={{
-                height: 14, width: "50%", borderRadius: 6,
-                background: "var(--bg-tertiary)",
-                animation: "pulse 1.5s ease-in-out infinite",
-            }} />
-            <style>{`
-                @keyframes pulse {
-                    0%,100% { opacity: 1; }
-                    50%     { opacity: 0.4; }
-                }
-            `}</style>
-        </div>
-    );
+    return <CreativePageLoader text="Loading Market Workspace" />;
 }
 
 // ── Route guards ─────────────────────────────────────────────────
@@ -381,6 +365,7 @@ function AppShell() {
     if (isStandalone) {
         return (
             <div style={{ minHeight: "100vh", background: "var(--bg-primary)" }}>
+                <NetworkStatusOverlay />
                 <Suspense fallback={<SkeletonLoader />}>
                     <Routes>
                         {/* If already logged in, /login goes straight to /brokers */}
@@ -406,6 +391,9 @@ function AppShell() {
             display: "flex", height: "100vh", overflow: "hidden",
             background: "var(--bg-primary)",
         }}>
+            {/* Global Network Health & Disconnect Overlay */}
+            <NetworkStatusOverlay />
+
             {/* Sidebar */}
             <Sidebar collapsed={collapsed} setCollapsed={setCollapsed} />
 
