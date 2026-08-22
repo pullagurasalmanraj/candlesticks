@@ -7,7 +7,7 @@ export default function IntradayMarginCalculator({ symbol, ltp, instrument, init
 
     const [marginInfo, setMarginInfo] = useState(initialMarginData || null);
     const [loading, setLoading] = useState(!initialMarginData);
-    const [tradeCapital, setTradeCapital] = useState(50000); // Default ₹50,000
+    const [tradeCapital, setTradeCapital] = useState(5000); // Default ₹5,000
     const [customQty, setCustomQty] = useState("");
 
     const cleanSymbol = useMemo(() => {
@@ -54,7 +54,7 @@ export default function IntradayMarginCalculator({ symbol, ltp, instrument, init
     const requiredMisCapital = activeQty * misPricePerShare;
     const totalExposure = activeQty * currentPrice;
 
-    const capitalPresets = [25000, 50000, 100000, 200000, 500000];
+    const capitalPresets = [5000, 10000, 25000, 50000, 100000, 250000];
 
     return (
         <div style={{
@@ -170,9 +170,32 @@ export default function IntradayMarginCalculator({ symbol, ltp, instrument, init
                     <label style={{ fontSize: "0.74rem", fontWeight: 700, color: "var(--text-primary)" }}>
                         💰 Your Intraday Trade Capital:
                     </label>
-                    <span style={{ fontSize: "0.85rem", fontWeight: 800, fontFamily: "var(--font-mono)", color: "var(--accent-blue)" }}>
-                        ₹{tradeCapital.toLocaleString("en-IN")}
-                    </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>₹</span>
+                        <input
+                            type="number"
+                            min="500"
+                            step="500"
+                            value={tradeCapital}
+                            onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setTradeCapital(val >= 0 ? val : 0);
+                                setCustomQty("");
+                            }}
+                            style={{
+                                width: 100,
+                                padding: "4px 8px",
+                                fontSize: "0.82rem",
+                                fontWeight: 800,
+                                fontFamily: "var(--font-mono)",
+                                color: "var(--accent-blue)",
+                                background: "var(--bg-tertiary)",
+                                border: "1px solid var(--border-color)",
+                                borderRadius: 6,
+                                textAlign: "right",
+                            }}
+                        />
+                    </div>
                 </div>
 
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
