@@ -32,6 +32,7 @@ import LiveHeatmap from "../components/LiveHeatmap";
 import DataToolsDrawer from "../components/DataToolsDrawer";
 import ScreenerMetricsCard from "../components/ScreenerMetricsCard";
 import MarketBreadthBarometer from "../components/MarketBreadthBarometer";
+import IntradayMarginCalculator from "../components/IntradayMarginCalculator";
 import ProfileDrawer, { Avatar } from "../components/ProfileDrawer";
 import StockLogo from "../components/StockLogo";
 
@@ -1378,8 +1379,9 @@ export default function Dashboard() {
                                                     const pct = p.percent ?? 0;
                                                     const isUp = (p.change ?? 0) >= 0;
                                                     const hasP = typeof ltp === "number";
+                                                    const misPrice = hasP ? (ltp * 0.20) : null;
                                                     return (
-                                                        <div>
+                                                        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
                                                             <div style={{
                                                                 fontSize: "1.8rem", fontWeight: 700, fontFamily: "var(--font-mono)",
                                                                 color: hasP ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
@@ -1387,12 +1389,23 @@ export default function Dashboard() {
                                                             }}>
                                                                 {hasP ? `₹${ltp.toLocaleString("en-IN", { minimumFractionDigits: 2 })}` : "Fetching LTP..."}
                                                             </div>
-                                                            <div style={{
-                                                                fontSize: "0.88rem", fontWeight: 700, fontFamily: "var(--font-mono)",
-                                                                color: hasP ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
-                                                                fontVariantNumeric: "tabular-nums", marginTop: 4,
-                                                            }}>
-                                                                {hasP ? `${isUp ? "▲ +" : "▼ "}${pct.toFixed(2)}%` : "Live Price Synced"}
+                                                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                                                <span style={{
+                                                                    fontSize: "0.85rem", fontWeight: 700, fontFamily: "var(--font-mono)",
+                                                                    color: hasP ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
+                                                                    fontVariantNumeric: "tabular-nums",
+                                                                }}>
+                                                                    {hasP ? `${isUp ? "▲ +" : "▼ "}${pct.toFixed(2)}%` : "Live Price"}
+                                                                </span>
+                                                                {misPrice && (
+                                                                    <span style={{
+                                                                        fontSize: "0.7rem", fontWeight: 800, fontFamily: "var(--font-mono)",
+                                                                        color: "var(--accent-blue)", background: "rgba(59, 130, 246, 0.12)",
+                                                                        border: "1px solid rgba(59, 130, 246, 0.3)", borderRadius: 4, padding: "1px 6px"
+                                                                    }}>
+                                                                        MIS: ₹{misPrice.toLocaleString("en-IN", { minimumFractionDigits: 2 })} (5x)
+                                                                    </span>
+                                                                )}
                                                             </div>
                                                         </div>
                                                     );
@@ -1461,35 +1474,19 @@ export default function Dashboard() {
                                             })()}
                                         </div>
 
-                                        {/* Quick Data Tools Launcher Card */}
-                                        <div style={{
-                                            background: "var(--bg-tertiary)",
-                                            border: "1px solid var(--border-color)",
-                                            borderRadius: 12, padding: "18px",
-                                            display: "flex", flexDirection: "column", gap: 12,
-                                        }}>
-                                            <div style={{ fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", color: "var(--text-muted)" }}>
-                                                📊 Indicator & History Actions
-                                            </div>
-
-                                            <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", lineHeight: 1.4, margin: 0 }}>
-                                                Generate technical indicators, calculate signals, or download historical candles directly into DB.
-                                            </p>
-
-                                            <button
-                                                type="button"
-                                                onClick={() => setIsToolsOpen(true)}
-                                                style={{
-                                                    width: "100%", padding: "11px", borderRadius: 8,
-                                                    border: "none", background: "var(--accent-blue)",
-                                                    color: "#fff", fontWeight: 700, fontSize: "0.82rem", cursor: "pointer",
-                                                    boxShadow: "var(--shadow-glow-blue)",
-                                                    transition: "all 0.15s ease",
-                                                }}
-                                            >
-                                                ⚡ Launch Data Tools Drawer
-                                            </button>
-                                        </div>
+                                        {/* Intraday Margin (MIS) & Position Sizing Calculator Card */}
+                                        {(() => {
+                                            const cleanSym = String(selectedSymbol || "").split("|").pop().replace(/^(NSE_EQ|NSE_INDEX|BSE_EQ|BSE_INDEX)/, "").replace(/[^A-Z0-9]/g, "");
+                                            const p = prices[selectedInstrument ? normalizeKey(selectedInstrument) : selectedSymbol] || prices[selectedSymbol] || prices[cleanSym] || {};
+                                            const currentLtp = typeof p.ltp === "number" ? p.ltp : fetchedLtpMap[cleanSym];
+                                            return (
+                                                <IntradayMarginCalculator
+                                                    symbol={selectedSymbol}
+                                                    ltp={currentLtp}
+                                                    instrument={selectedInstrument}
+                                                />
+                                            );
+                                        })()}
                                     </div>
                                 </div>
                             ) : (

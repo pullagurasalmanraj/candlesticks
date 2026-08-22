@@ -550,6 +550,75 @@ def api_unsubscribe_all():
         return jsonify({"error": str(e)}), 500
 
 
+# ── NSE Intraday Margin (MIS) & Leverage Service ─────────────────
+import gzip, os
+
+_MIS_CACHE = None
+
+def get_mis_margin_data():
+    global _MIS_CACHE
+    if _MIS_CACHE is not None:
+        return _MIS_CACHE
+
+    _MIS_CACHE = {}
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    gz_candidates = [
+        os.path.join(backend_dir, "backend", "NSE_MIS.json.gz"),
+        os.path.join(backend_dir, "NSE_MIS.json.gz"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "NSE_MIS.json.gz"),
+        r"D:\candlesticks\backend\NSE_MIS.json.gz",
+    ]
+
+    gz_path = None
+    for cand in gz_candidates:
+        if os.path.exists(cand):
+            gz_path = cand
+            break
+
+    if gz_path and os.path.exists(gz_path):
+        try:
+            with gzip.open(gz_path, "rb") as f:
+                records = json.loads(f.read().decode("utf-8"))
+                for r in records:
+                    sym = (r.get("trading_symbol") or "").upper().strip()
+                    if sym:
+                        _MIS_CACHE[sym] = {
+                            "intraday_margin": float(r.get("intraday_margin", 20.0)),
+                            "intraday_leverage": float(r.get("intraday_leverage", 5.0)),
+                            "cas_eligible": bool(r.get("cas_eligible", True)),
+                            "freeze_quantity": float(r.get("freeze_quantity", 100000.0)),
+                            "tick_size": float(r.get("tick_size", 1.0)),
+                            "lot_size": int(r.get("lot_size", 1)),
+                            "short_name": r.get("short_name") or r.get("name") or sym,
+                            "segment": r.get("segment", "NSE_EQ"),
+                        }
+        except Exception as e:
+            print("Failed to load NSE_MIS.json.gz:", e)
+
+    return _MIS_CACHE
+
+
+@market_bp.route("/api/margin-info/<path:symbol>", methods=["GET"])
+def api_margin_info(symbol: str):
+    clean_sym = symbol.split("|")[-1].replace("NSE_EQ:", "").replace("NSE_EQ|", "").strip().upper()
+    mis_dict = get_mis_margin_data()
+    info = mis_dict.get(clean_sym) or {
+        "intraday_margin": 20.0,
+        "intraday_leverage": 5.0,
+        "cas_eligible": True,
+        "freeze_quantity": 100000.0,
+        "tick_size": 5.0,
+        "lot_size": 1,
+        "short_name": clean_sym,
+        "segment": "NSE_EQ",
+    }
+    return jsonify({
+        "status": "success",
+        "symbol": clean_sym,
+        "data": info
+    })
+
+
 # ── Upstox Official Fundamentals API Fetcher ───────────────────
 def _fetch_upstox_official_fundamentals(clean_sym: str):
     from db import get_db_conn
@@ -782,6 +851,18 @@ def _fetch_upstox_official_fundamentals(clean_sym: str):
         except Exception as e:
             print("Upstox quote LTP fetch error:", e)
 
+        # Intraday Margin & Leverage Info from NSE_MIS dataset
+        mis_dict = get_mis_margin_data()
+        mis_info = mis_dict.get(clean_sym) or {
+            "intraday_margin": 20.0,
+            "intraday_leverage": 5.0,
+            "cas_eligible": True,
+            "freeze_quantity": 100000.0,
+            "tick_size": 5.0,
+            "lot_size": 1,
+            "short_name": clean_sym,
+        }
+
         return {
             "isin": isin,
             "currentPrice": current_price,
@@ -804,6 +885,7 @@ def _fetch_upstox_official_fundamentals(clean_sym: str):
             "cashFlow": cash_flow,
             "corporateActions": corporate_actions,
             "competitors": competitors,
+            "misMargin": mis_info,
             "source": "Official Upstox Developer Fundamentals API Suite (8/8 Endpoints)",
         }
     except Exception as e:
