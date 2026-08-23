@@ -20,14 +20,17 @@ import {
     Bell,
     Globe,
     Lock,
+    Unlock,
     Sparkles,
     CheckCircle2,
     AlertCircle,
     Monitor,
-    Radio
+    Key,
+    Radio,
+    ShieldAlert
 } from "lucide-react";
 
-import { useTheme } from "../context/ThemeContext";
+import { useTheme, ACCENT_PRESETS } from "../context/ThemeContext";
 import { loadProfile, saveProfile } from "../utils/profileStorage";
 import {
     WATCHLIST_CAP_OPTIONS,
@@ -105,7 +108,7 @@ function getStorageUsageInfo() {
         totalBytes = 0;
     }
     const kb = (totalBytes / 1024).toFixed(1);
-    const maxKb = 5120; // 5MB standard localStorage
+    const maxKb = 5120;
     const pct = Math.min(100, Math.round((totalBytes / (maxKb * 1024)) * 100));
 
     const watchlistsByCap = readStoredWatchlistsByCap();
@@ -126,7 +129,7 @@ function getStorageUsageInfo() {
 }
 
 export default function SettingsPage() {
-    const { theme, toggleTheme } = useTheme();
+    const { theme, toggleTheme, accentColor, setAccentColor } = useTheme();
     const fileRef = useRef(null);
     const importRef = useRef(null);
 
@@ -141,9 +144,20 @@ export default function SettingsPage() {
     const [capitalPreset, setCapitalPreset] = useState(() => localStorage.getItem("default_capital_preset") || "50000");
     const [chartStyle, setChartStyle] = useState(() => localStorage.getItem("default_chart_style") || "candlestick");
     const [densityMode, setDensityMode] = useState(() => localStorage.getItem("layout_density") || "comfortable");
-    const [selectedAccent, setSelectedAccent] = useState(() => localStorage.getItem("app_accent_color") || "cyan");
     const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem("sound_notifications") !== "false");
     const [autoRefreshSec, setAutoRefreshSec] = useState(() => localStorage.getItem("tick_refresh_sec") || "1");
+
+    // Live Backend Broker Status
+    const [brokerConnected, setBrokerConnected] = useState(false);
+    const [brokerName, setBrokerName] = useState("Upstox");
+
+    // Console Security PIN State
+    const [savedPin, setSavedPin] = useState(() => localStorage.getItem("console_security_pin") || "");
+    const [pinInput, setPinInput] = useState("");
+    const [pinConfirmInput, setPinConfirmInput] = useState("");
+    const [isConsoleLocked, setIsConsoleLocked] = useState(false);
+    const [unlockPinInput, setUnlockPinInput] = useState("");
+    const [pinError, setPinError] = useState("");
 
     // Telemetry & Feedback
     const [storageInfo, setStorageInfo] = useState(() => getStorageUsageInfo());
@@ -153,19 +167,22 @@ export default function SettingsPage() {
     const [pingMs, setPingMs] = useState(null);
     const [pinging, setPinging] = useState(false);
 
-    // Broker session info
-    const tokenExpiry = Number(localStorage.getItem("upstox_token_expiry") || 0);
-    const hasBrokerToken = Boolean(localStorage.getItem("upstox_access_token"));
-    const isBrokerConnected = hasBrokerToken && tokenExpiry > Date.now();
     const initials = getInitials(form.displayName || username);
 
-    const tokenExpiryLabel = useMemo(() => {
-        if (!tokenExpiry) return "Not connected";
-        return new Intl.DateTimeFormat("en-IN", {
-            dateStyle: "medium",
-            timeStyle: "short",
-        }).format(new Date(tokenExpiry));
-    }, [tokenExpiry]);
+    // Fetch backend broker authentication status on mount
+    useEffect(() => {
+        fetch("/api/auth/status")
+            .then((r) => r.json())
+            .then((d) => {
+                if (d && d.connected) {
+                    setBrokerConnected(true);
+                    if (d.broker) setBrokerName(d.broker);
+                } else {
+                    setBrokerConnected(false);
+                }
+            })
+            .catch(() => setBrokerConnected(false));
+    }, []);
 
     const refreshStats = (msg) => {
         setStorageInfo(getStorageUsageInfo());
@@ -188,13 +205,50 @@ export default function SettingsPage() {
                 refreshStats(`⚡ Server responded in ${duration}ms`);
             } else {
                 setPingMs(-1);
-                refreshStats("⚠️ Server returned non-200 status");
+                refreshStats("⚠️ Server status non-200");
             }
         } catch {
             setPingMs(-1);
-            refreshStats("❌ Could not ping server");
+            refreshStats("❌ Ping failed");
         } finally {
             setPinging(false);
+        }
+    };
+
+    // Security PIN Controls
+    const handleSetPin = () => {
+        if (pinInput.length !== 4 || !/^\d{4}$/.test(pinInput)) {
+            setPinError("Security PIN must be exactly 4 digits.");
+            return;
+        }
+        if (pinInput !== pinConfirmInput) {
+            setPinError("PINs do not match. Please re-enter.");
+            return;
+        }
+        setPinError("");
+        localStorage.setItem("console_security_pin", pinInput);
+        setSavedPin(pinInput);
+        setPinInput("");
+        setPinConfirmInput("");
+        refreshStats("🔒 Console Security PIN configured!");
+    };
+
+    const handleRemovePin = () => {
+        if (!window.confirm("Remove Security PIN lock?")) return;
+        localStorage.removeItem("console_security_pin");
+        setSavedPin("");
+        setPinInput("");
+        setPinConfirmInput("");
+        refreshStats("Security PIN removed.");
+    };
+
+    const handleUnlockConsole = () => {
+        if (unlockPinInput === savedPin) {
+            setIsConsoleLocked(false);
+            setUnlockPinInput("");
+            setPinError("");
+        } else {
+            setPinError("Incorrect Security PIN.");
         }
     };
 
@@ -221,7 +275,6 @@ export default function SettingsPage() {
         localStorage.setItem("default_capital_preset", capitalPreset);
         localStorage.setItem("default_chart_style", chartStyle);
         localStorage.setItem("layout_density", densityMode);
-        localStorage.setItem("app_accent_color", selectedAccent);
         localStorage.setItem("sound_notifications", String(soundEnabled));
         localStorage.setItem("tick_refresh_sec", autoRefreshSec);
 
@@ -239,7 +292,7 @@ export default function SettingsPage() {
                 capitalPreset,
                 chartStyle,
                 densityMode,
-                selectedAccent,
+                accentColor,
                 soundEnabled,
                 autoRefreshSec,
             },
@@ -275,7 +328,7 @@ export default function SettingsPage() {
                     if (p.capitalPreset) setCapitalPreset(p.capitalPreset);
                     if (p.chartStyle) setChartStyle(p.chartStyle);
                     if (p.densityMode) setDensityMode(p.densityMode);
-                    if (p.selectedAccent) setSelectedAccent(p.selectedAccent);
+                    if (p.accentColor) setAccentColor(p.accentColor);
                 }
                 refreshStats("Settings imported successfully!");
             } catch {
@@ -309,9 +362,12 @@ export default function SettingsPage() {
     };
 
     const handleDisconnectBroker = () => {
-        localStorage.removeItem("upstox_access_token");
-        localStorage.removeItem("upstox_token_expiry");
-        window.location.href = "/brokers";
+        fetch("/api/auth/disconnect", { method: "POST" })
+            .finally(() => {
+                localStorage.removeItem("upstox_access_token");
+                setBrokerConnected(false);
+                refreshStats("Disconnected Upstox Session.");
+            });
     };
 
     const handleSignOut = () => {
@@ -328,6 +384,86 @@ export default function SettingsPage() {
         { id: "storage", label: "Data & Storage", icon: Database },
         { id: "security", label: "Security & Telemetry", icon: Shield },
     ];
+
+    // If Console Security PIN Screen is Locked
+    if (isConsoleLocked) {
+        return (
+            <div style={{
+                maxWidth: 480,
+                margin: "80px auto",
+                padding: 36,
+                borderRadius: 24,
+                background: "var(--bg-secondary)",
+                border: "1px solid var(--border-color)",
+                boxShadow: "0 20px 40px rgba(0,0,0,0.4)",
+                textAlign: "center",
+            }}>
+                <div style={{
+                    width: 64,
+                    height: 64,
+                    borderRadius: "50%",
+                    background: "rgba(0, 229, 255, 0.12)",
+                    color: "var(--accent-blue)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    margin: "0 auto 18px",
+                }}>
+                    <Lock size={32} />
+                </div>
+                <h2 style={{ margin: 0, fontSize: "1.4rem", fontWeight: 800, color: "var(--text-primary)" }}>
+                    Console Security Locked
+                </h2>
+                <p style={{ margin: "6px 0 20px", fontSize: "0.86rem", color: "var(--text-secondary)" }}>
+                    Enter your 4-digit Security PIN to unlock terminal settings.
+                </p>
+
+                <input
+                    type="password"
+                    maxLength={4}
+                    value={unlockPinInput}
+                    onChange={(e) => setUnlockPinInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleUnlockConsole()}
+                    placeholder="••••"
+                    style={{
+                        width: 160,
+                        height: 52,
+                        borderRadius: 14,
+                        border: "2px solid var(--accent-blue)",
+                        background: "var(--bg-tertiary)",
+                        color: "var(--text-primary)",
+                        fontSize: "1.8rem",
+                        fontWeight: 800,
+                        letterSpacing: "0.3em",
+                        textAlign: "center",
+                        outline: "none",
+                        marginBottom: 16,
+                    }}
+                />
+
+                {pinError && <div style={{ color: "#EF4444", fontSize: "0.8rem", marginBottom: 14 }}>{pinError}</div>}
+
+                <button
+                    type="button"
+                    onClick={handleUnlockConsole}
+                    style={{
+                        width: "100%",
+                        height: 44,
+                        borderRadius: 12,
+                        border: "none",
+                        background: "var(--accent-blue)",
+                        color: "#fff",
+                        fontSize: "0.9rem",
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        boxShadow: "var(--shadow-glow-blue)",
+                    }}
+                >
+                    Unlock Console
+                </button>
+            </div>
+        );
+    }
 
     return (
         <div style={{ maxWidth: 1280, margin: "0 auto", padding: "28px 24px 60px" }}>
@@ -378,7 +514,7 @@ export default function SettingsPage() {
                         borderRadius: "50%",
                         background: form.photo
                             ? "transparent"
-                            : "linear-gradient(135deg, #00E5FF, #3B82F6)",
+                            : "linear-gradient(135deg, var(--accent-blue), #3B82F6)",
                         border: "2px solid var(--border-color)",
                         display: "flex",
                         alignItems: "center",
@@ -387,7 +523,7 @@ export default function SettingsPage() {
                         fontSize: "1.3rem",
                         fontWeight: 800,
                         color: "#fff",
-                        boxShadow: "0 4px 14px rgba(0, 229, 255, 0.25)",
+                        boxShadow: "var(--shadow-glow-blue)",
                         flexShrink: 0,
                     }}>
                         {form.photo ? (
@@ -410,9 +546,9 @@ export default function SettingsPage() {
                             <span style={{
                                 padding: "2px 10px",
                                 borderRadius: 20,
-                                background: isBrokerConnected ? "rgba(16,185,129,0.12)" : "rgba(245,158,11,0.12)",
-                                color: isBrokerConnected ? "#10B981" : "#F59E0B",
-                                border: isBrokerConnected ? "1px solid rgba(16,185,129,0.3)" : "1px solid rgba(245,158,11,0.3)",
+                                background: brokerConnected ? "rgba(16,185,129,0.12)" : "rgba(245,158,11,0.12)",
+                                color: brokerConnected ? "#10B981" : "#F59E0B",
+                                border: brokerConnected ? "1px solid rgba(16,185,129,0.3)" : "1px solid rgba(245,158,11,0.3)",
                                 fontSize: "0.72rem",
                                 fontWeight: 700,
                                 letterSpacing: "0.04em",
@@ -424,9 +560,9 @@ export default function SettingsPage() {
                                     width: 6,
                                     height: 6,
                                     borderRadius: "50%",
-                                    background: isBrokerConnected ? "#10B981" : "#F59E0B"
+                                    background: brokerConnected ? "#10B981" : "#F59E0B"
                                 }} />
-                                {isBrokerConnected ? "Upstox Live" : "Offline / Demo"}
+                                {brokerConnected ? `${brokerName} Live Connected` : "Broker Disconnected"}
                             </span>
                         </div>
 
@@ -435,12 +571,36 @@ export default function SettingsPage() {
                             fontSize: "0.84rem",
                             color: "var(--text-secondary)",
                         }}>
-                            {form.bio} • {form.broker} Broker Account
+                            {form.bio} • {brokerName} Account
                         </p>
                     </div>
                 </div>
 
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    {savedPin && (
+                        <button
+                            type="button"
+                            onClick={() => setIsConsoleLocked(true)}
+                            style={{
+                                height: 42,
+                                padding: "0 16px",
+                                borderRadius: 12,
+                                border: "1px solid var(--border-color)",
+                                background: "var(--bg-primary)",
+                                color: "var(--text-primary)",
+                                fontSize: "0.82rem",
+                                fontWeight: 600,
+                                cursor: "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                            }}
+                        >
+                            <Lock size={15} style={{ color: "var(--accent-blue)" }} />
+                            Lock Console
+                        </button>
+                    )}
+
                     <button
                         type="button"
                         onClick={handlePingServer}
@@ -458,7 +618,6 @@ export default function SettingsPage() {
                             display: "flex",
                             alignItems: "center",
                             gap: 8,
-                            transition: "all 0.2s ease",
                         }}
                     >
                         <Zap size={15} style={{ color: pingMs !== null && pingMs > 0 ? "#10B981" : "inherit" }} />
@@ -614,7 +773,7 @@ export default function SettingsPage() {
                                             width: 76,
                                             height: 76,
                                             borderRadius: "50%",
-                                            background: form.photo ? "transparent" : "linear-gradient(135deg, #00E5FF, #3B82F6)",
+                                            background: form.photo ? "transparent" : "linear-gradient(135deg, var(--accent-blue), #3B82F6)",
                                             border: "2px dashed var(--accent-blue)",
                                             display: "flex",
                                             alignItems: "center",
@@ -694,7 +853,7 @@ export default function SettingsPage() {
                                     Appearance & Theme Studio
                                 </h2>
                                 <p style={{ margin: "4px 0 0", fontSize: "0.84rem", color: "var(--text-secondary)" }}>
-                                    Customize visual themes, color accents, and chart container styling.
+                                    Customize visual themes, color accents, and layout density in real time.
                                 </p>
                             </div>
 
@@ -724,11 +883,11 @@ export default function SettingsPage() {
                                         <button
                                             key={c.id}
                                             type="button"
-                                            onClick={() => setSelectedAccent(c.id)}
+                                            onClick={() => setAccentColor(c.id)}
                                             style={{
                                                 padding: "10px 16px",
                                                 borderRadius: 12,
-                                                border: selectedAccent === c.id ? `2px solid ${c.hex}` : "1px solid var(--border-color)",
+                                                border: accentColor === c.id ? `2px solid ${c.hex}` : "1px solid var(--border-color)",
                                                 background: "var(--bg-tertiary)",
                                                 color: "var(--text-primary)",
                                                 fontSize: "0.82rem",
@@ -737,11 +896,12 @@ export default function SettingsPage() {
                                                 display: "flex",
                                                 alignItems: "center",
                                                 gap: 8,
+                                                boxShadow: accentColor === c.id ? `0 0 14px ${c.hex}40` : "none",
                                             }}
                                         >
                                             <span style={{ width: 14, height: 14, borderRadius: "50%", background: c.hex }} />
                                             {c.label}
-                                            {selectedAccent === c.id && <Check size={14} style={{ color: c.hex }} />}
+                                            {accentColor === c.id && <Check size={14} style={{ color: c.hex }} />}
                                         </button>
                                     ))}
                                 </div>
@@ -869,7 +1029,7 @@ export default function SettingsPage() {
                         <div style={{ display: "grid", gap: 24 }}>
                             <div>
                                 <h2 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                    Broker API Session
+                                    Broker API Connection
                                 </h2>
                                 <p style={{ margin: "4px 0 0", fontSize: "0.84rem", color: "var(--text-secondary)" }}>
                                     Live authentication status powered by Upstox OAuth 2.0.
@@ -879,14 +1039,16 @@ export default function SettingsPage() {
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
                                 <div style={{ padding: 18, borderRadius: 14, background: "var(--bg-tertiary)", border: "1px solid var(--border-subtle)" }}>
                                     <div style={{ fontSize: "0.74rem", color: "var(--text-muted)", marginBottom: 6 }}>Connection Status</div>
-                                    <div style={{ fontSize: "1.2rem", fontWeight: 800, color: isBrokerConnected ? "#10B981" : "#F59E0B", display: "flex", alignItems: "center", gap: 8 }}>
-                                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: isBrokerConnected ? "#10B981" : "#F59E0B" }} />
-                                        {isBrokerConnected ? "Connected" : "Disconnected"}
+                                    <div style={{ fontSize: "1.2rem", fontWeight: 800, color: brokerConnected ? "#10B981" : "#F59E0B", display: "flex", alignItems: "center", gap: 8 }}>
+                                        <span style={{ width: 10, height: 10, borderRadius: "50%", background: brokerConnected ? "#10B981" : "#F59E0B" }} />
+                                        {brokerConnected ? `${brokerName} Live Connected` : "Broker Disconnected"}
                                     </div>
                                 </div>
                                 <div style={{ padding: 18, borderRadius: 14, background: "var(--bg-tertiary)", border: "1px solid var(--border-subtle)" }}>
-                                    <div style={{ fontSize: "0.74rem", color: "var(--text-muted)", marginBottom: 6 }}>Token Expiry</div>
-                                    <div style={{ fontSize: "1rem", fontWeight: 700, color: "var(--text-primary)" }}>{tokenExpiryLabel}</div>
+                                    <div style={{ fontSize: "0.74rem", color: "var(--text-muted)", marginBottom: 6 }}>Session Authentication</div>
+                                    <div style={{ fontSize: "1rem", fontWeight: 700, color: "var(--text-primary)" }}>
+                                        {brokerConnected ? "Active & Valid (Backend Token)" : "Requires Re-auth"}
+                                    </div>
                                 </div>
                             </div>
 
@@ -973,21 +1135,74 @@ export default function SettingsPage() {
                         <div style={{ display: "grid", gap: 24 }}>
                             <div>
                                 <h2 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                    Security & System Telemetry
+                                    Security & Terminal Lock Layer
                                 </h2>
                                 <p style={{ margin: "4px 0 0", fontSize: "0.84rem", color: "var(--text-secondary)" }}>
-                                    Session encryption, API rate limit telemetry, and logout controls.
+                                    Set up a 4-digit Security PIN to lock the terminal console.
                                 </p>
                             </div>
 
+                            {/* Console PIN Config */}
+                            <div style={{ padding: 20, borderRadius: 16, background: "var(--bg-tertiary)", border: "1px solid var(--border-subtle)" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+                                    <Key size={22} style={{ color: "var(--accent-blue)" }} />
+                                    <div>
+                                        <div style={{ fontSize: "0.95rem", fontWeight: 700, color: "var(--text-primary)" }}>
+                                            4-Digit Console Security PIN
+                                        </div>
+                                        <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                                            {savedPin ? "PIN is active. Your terminal can be locked anytime." : "No Security PIN set. Enter a 4-digit PIN to lock your session."}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                                    <input
+                                        type="password"
+                                        maxLength={4}
+                                        value={pinInput}
+                                        onChange={(e) => setPinInput(e.target.value)}
+                                        placeholder="New PIN (4 digits)"
+                                        style={{ width: 150, height: 40, borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-primary)", color: "var(--text-primary)", padding: "0 12px", outline: "none", fontSize: "1rem", letterSpacing: "0.2em", textAlign: "center" }}
+                                    />
+                                    <input
+                                        type="password"
+                                        maxLength={4}
+                                        value={pinConfirmInput}
+                                        onChange={(e) => setPinConfirmInput(e.target.value)}
+                                        placeholder="Confirm PIN"
+                                        style={{ width: 150, height: 40, borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-primary)", color: "var(--text-primary)", padding: "0 12px", outline: "none", fontSize: "1rem", letterSpacing: "0.2em", textAlign: "center" }}
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={handleSetPin}
+                                        style={{ height: 40, padding: "0 18px", borderRadius: 10, border: "none", background: "var(--accent-blue)", color: "#fff", fontWeight: 700, cursor: "pointer" }}
+                                    >
+                                        Save PIN
+                                    </button>
+
+                                    {savedPin && (
+                                        <button
+                                            type="button"
+                                            onClick={handleRemovePin}
+                                            style={{ height: 40, padding: "0 14px", borderRadius: 10, border: "1px solid rgba(239,68,68,0.4)", background: "transparent", color: "#EF4444", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer" }}
+                                        >
+                                            Remove PIN
+                                        </button>
+                                    )}
+                                </div>
+                                {pinError && <div style={{ fontSize: "0.78rem", color: "#EF4444", marginTop: 8 }}>{pinError}</div>}
+                            </div>
+
+                            {/* Session Security Details */}
                             <div style={{ padding: 18, borderRadius: 14, background: "var(--bg-tertiary)", border: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 14 }}>
                                 <Lock size={24} style={{ color: "var(--accent-blue)" }} />
                                 <div>
                                     <div style={{ fontSize: "0.92rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                        Fernet 256-bit Token Encryption
+                                        Fernet 256-bit Encryption
                                     </div>
                                     <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginTop: 2 }}>
-                                        Broker access tokens are encrypted on disk using Fernet symmetric encryption.
+                                        Upstox OAuth Bearer tokens are stored with symmetric Fernet 256-bit encryption on disk.
                                     </div>
                                 </div>
                             </div>

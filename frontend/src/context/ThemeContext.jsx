@@ -395,21 +395,31 @@ function injectCSSVariables(mode) {
     root.style.setProperty("--shadow-glow-red",  SHADOWS.glowRed);
 }
 
-// ================================================================
-//  PROVIDER
-// ================================================================
+export const ACCENT_PRESETS = {
+    cyan:    { hex: "#00E5FF", muted: "rgba(0, 229, 255, 0.15)", hover: "#33EBFF" },
+    emerald: { hex: "#10B981", muted: "rgba(16, 185, 129, 0.15)", hover: "#34D399" },
+    purple:  { hex: "#A855F7", muted: "rgba(168, 85, 247, 0.15)", hover: "#C084FC" },
+    amber:   { hex: "#F59E0B", muted: "rgba(245, 158, 11, 0.15)", hover: "#FBBF24" },
+    rose:    { hex: "#F43F5E", muted: "rgba(244, 63, 94, 0.15)",  hover: "#FB7185" },
+};
+
+function injectAccentVariables(accentKey) {
+    const root = document.documentElement;
+    const preset = ACCENT_PRESETS[accentKey] || ACCENT_PRESETS.cyan;
+    root.style.setProperty("--accent-blue",       preset.hex);
+    root.style.setProperty("--accent-blue-hover", preset.hover);
+    root.style.setProperty("--accent-blue-muted", preset.muted);
+    root.style.setProperty("--shadow-glow-blue",  `0 0 18px ${preset.muted}`);
+}
+
 export const ThemeProvider = ({ children }) => {
     const [theme, setTheme] = useState(() => {
-        // Priority: 1. explicit user choice  2. default light theme
         const saved   = localStorage.getItem("theme");
         const userSet = localStorage.getItem("theme_user_set");
         const active  = (userSet === "true" && (saved === "light" || saved === "dark"))
             ? saved
             : "light";
 
-        // ── CRITICAL: inject BEFORE first render ──────────────────
-        // useEffect fires AFTER render — one frame with no vars = flash.
-        // Injecting here means vars exist before any component paints.
         injectCSSVariables(active);
         document.documentElement.classList.toggle("dark",  active === "dark");
         document.documentElement.classList.toggle("light", active === "light");
@@ -419,24 +429,34 @@ export const ThemeProvider = ({ children }) => {
         return active;
     });
 
-    // Runs on every subsequent toggle after mount
+    const [accentColor, setAccentColorState] = useState(() => {
+        return localStorage.getItem("app_accent_color") || "cyan";
+    });
+
     useEffect(() => {
         injectCSSVariables(theme);
+        injectAccentVariables(accentColor);
         document.documentElement.classList.toggle("dark",  theme === "dark");
         document.documentElement.classList.toggle("light", theme === "light");
         document.documentElement.style.fontSize = TYPOGRAPHY.baseSize;
         localStorage.setItem("theme", theme);
-    }, [theme]);
+    }, [theme, accentColor]);
 
     const toggleTheme = () => {
         localStorage.setItem("theme_user_set", "true");
         setTheme((prev) => (prev === "dark" ? "light" : "dark"));
     };
 
+    const setAccentColor = (newAccent) => {
+        localStorage.setItem("app_accent_color", newAccent);
+        setAccentColorState(newAccent);
+        injectAccentVariables(newAccent);
+    };
+
     const muiTheme = useMemo(() => buildMuiTheme(theme), [theme]);
 
     return (
-        <ThemeContext.Provider value={{ theme, toggleTheme }}>
+        <ThemeContext.Provider value={{ theme, toggleTheme, accentColor, setAccentColor, ACCENT_PRESETS }}>
             <MuiThemeProvider theme={muiTheme}>
                 <CssBaseline />
                 {children}
