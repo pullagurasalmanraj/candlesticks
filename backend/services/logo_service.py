@@ -32,6 +32,9 @@ DOMAIN_OVERRIDES = {
     "MM": "mahindra.com",
     "VBL": "varunpepsi.com",
     "HAL": "hal-india.co.in",
+    "NH": "narayanahealth.org",
+    "NARAYANA": "narayanahealth.org",
+    "CIPLA": "cipla.com",
 }
 
 
@@ -87,6 +90,17 @@ def _clean_company_name_for_search(company_name: str | None, symbol: str) -> str
     if not company_name:
         return symbol
     n = company_name.upper()
+
+    # Brand synonym normalization for Indian stocks
+    BRAND_SYNONYMS = {
+        "NARAYANA HRUDAYALAYA": "NARAYANA HEALTH",
+        "NARAYANA HRUDAYALAYA LTD": "NARAYANA HEALTH",
+        "TATA CONSULTANCY": "TCS",
+    }
+    for orig, syn in BRAND_SYNONYMS.items():
+        if orig in n:
+            return syn
+
     # Remove entity designations
     n = re.sub(
         r"\b(LIMITED|LTD|LABORATORIES|LABS|CORPORATION|CORP|INDIA|INFRASTRUCTURE|ENTERPRISES|HOLDINGS|SERVICES|FINANCIAL|PLC|INC)\b",
