@@ -24,6 +24,30 @@ REDIS_TTL_SEC     = 7 * 24 * 3600   # 7 days for resolved domains
 REDIS_NULL_TTL    = 1 * 24 * 3600   # 1 day  for confirmed-null (prevents repeat API calls)
 REDIS_NULL_MARKER = "__NULL__"       # sentinel stored when domain is confirmed missing
 
+# ── Explicit Domain Overrides for Indian Equities ────────────────
+DOMAIN_OVERRIDES = {
+    "ITC": "itcportal.com",
+    "ITCHOTELS": "itchotels.com",
+    "RELIANCE": "relianceindustries.com",
+    "TCS": "tcs.com",
+    "INFY": "infosys.com",
+    "HDFCBANK": "hdfcbank.com",
+    "ICICIBANK": "icicibank.com",
+    "SBIN": "sbi.co.in",
+    "BHARTIARTL": "airtel.in",
+    "LT": "larsentoubro.com",
+    "HINDUNILVR": "hul.co.in",
+    "TATAMOTORS": "tatamotors.com",
+    "TATASTEEL": "tatasteel.com",
+    "WIPRO": "wipro.com",
+    "NMDC": "nmdc.co.in",
+    "MARUTI": "marutisuzuki.com",
+    "NTPC": "ntpc.co.in",
+    "POWERGRID": "powergrid.in",
+    "ONGC": "ongcindia.com",
+    "COALINDIA": "coalindia.in",
+}
+
 
 # ── Equity-only guard ─────────────────────────────────────────────
 # Options look like:  "TCS 2120 CE 28 APR 26"
@@ -186,6 +210,13 @@ def resolve_logo_domain(symbol: str) -> str | None:
     if not _is_equity_symbol(sym):
         return None
 
+    # Check explicit domain overrides first
+    if sym in DOMAIN_OVERRIDES:
+        domain = DOMAIN_OVERRIDES[sym]
+        _db_upsert(sym, domain)
+        _redis_set(sym, domain)
+        return domain
+
     # 1. Redis cache — check for both domain and confirmed-null
     cached = _redis_get(sym)
     if cached is not None:
@@ -234,6 +265,14 @@ def resolve_logos_batch(symbols: list[str]) -> dict[str, str | None]:
         # Instant reject for non-equity
         if not _is_equity_symbol(sym):
             result[sym] = None
+            continue
+
+        # Check explicit domain overrides first
+        if sym in DOMAIN_OVERRIDES:
+            domain = DOMAIN_OVERRIDES[sym]
+            _db_upsert(sym, domain)
+            _redis_set(sym, domain)
+            result[sym] = domain
             continue
 
         # Redis hit
