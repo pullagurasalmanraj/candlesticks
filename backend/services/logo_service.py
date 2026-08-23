@@ -1,14 +1,15 @@
 # services/logo_service.py
 # ================================================================
-#  Resolves company logo domains for NSE/BSE symbols.
+#  Resolves company logo domains for NSE/BSE symbols dynamically.
 #
 #  Flow:
-#  1. Early reject    → options/futures/non-equity symbols → None instantly
-#  2. Redis cache     → instant
-#  3. DB cache        → fast
-#  4. logo.dev search → resolves by company name
-#  5. Cache result    → Redis + DB for 7 days
-#                       None result cached for 1 day (prevents repeat calls)
+#  1. Early reject      → options/futures/non-equity symbols → None instantly
+#  2. Short Acronyms    → minimal 5-item override dict for 2-letter acronyms
+#  3. Redis cache       → instant
+#  4. DB cache (stock_logos) → persistent self-learning store
+#  5. Clearbit Autocomplete → dynamic corporate domain API
+#  6. logo.dev Search   → fallback dynamic company search
+#  7. Cache result      → DB + Redis for future instant lookup
 # ================================================================
 import os, json, re, gzip
 import requests
@@ -21,132 +22,35 @@ from extensions import redis_client, REDIS_ENABLED
 LOGO_DEV_KEY      = os.getenv("LOGO_DEV_KEY",    "pk_Ix0rU8q7QveZL0z2Ud9JqA")
 LOGO_DEV_SECRET   = os.getenv("LOGO_DEV_SECRET", "sk_Ta_5zMQ1RGGWlNMsKvXuWA")
 REDIS_TTL_SEC     = 7 * 24 * 3600   # 7 days for resolved domains
-REDIS_NULL_TTL    = 1 * 24 * 3600   # 1 day  for confirmed-null (prevents repeat API calls)
+REDIS_NULL_TTL    = 1 * 24 * 3600   # 1 day  for confirmed-null
 REDIS_NULL_MARKER = "__NULL__"       # sentinel stored when domain is confirmed missing
 
-# ── Explicit Domain Overrides for Indian Equities ────────────────
+# ── Minimal essential overrides for short 2-3 letter acronym collisions ─────
 DOMAIN_OVERRIDES = {
-    "DRREDDY": "drreddys.com",
-    "DRREDDYS": "drreddys.com",
-    "SUNPHARMA": "sunpharma.com",
-    "CIPLA": "cipla.com",
-    "DIVISLAB": "divislabs.com",
-    "APOLLOHOSP": "apollohospitals.com",
-    "BIOCON": "biocon.com",
-    "LUPIN": "lupin.com",
-    "AUROPHARMA": "aurobindo.com",
-    "ZYDUSLIFE": "zyduslife.com",
     "ITC": "itcportal.com",
-    "ITCHOTELS": "itchotels.com",
-    "RELIANCE": "relianceindustries.com",
-    "TCS": "tcs.com",
-    "INFY": "infosys.com",
-    "HDFCBANK": "hdfcbank.com",
-    "ICICIBANK": "icicibank.com",
-    "SBIN": "sbi.co.in",
-    "AXISBANK": "axisbank.com",
-    "KOTAKBANK": "kotak.com",
-    "INDUSINDBK": "indusind.com",
-    "BANKBARODA": "bankofbaroda.in",
-    "PNB": "pnbindia.in",
-    "FEDERALBNK": "federalbank.co.in",
-    "IDFCFIRSTB": "idfcfirstbank.com",
-    "BHARTIARTL": "airtel.in",
     "LT": "larsentoubro.com",
-    "HINDUNILVR": "hul.co.in",
-    "TATAMOTORS": "tatamotors.com",
-    "TATASTEEL": "tatasteel.com",
-    "WIPRO": "wipro.com",
-    "NMDC": "nmdc.co.in",
-    "MARUTI": "marutisuzuki.com",
-    "NTPC": "ntpc.co.in",
-    "POWERGRID": "powergrid.in",
-    "ONGC": "ongcindia.com",
-    "COALINDIA": "coalindia.in",
-    "EICHERMOT": "eichermotors.com",
-    "HEROMOTOCO": "heromotocorp.com",
-    "BAJAJAUTO": "bajajauto.com",
-    "BAJAJ-AUTO": "bajajauto.com",
     "MM": "mahindra.com",
-    "MAHMNDRA": "mahindra.com",
-    "JSWSTEEL": "jsw.in",
-    "HINDALCO": "hindalco.com",
-    "ADANIENT": "adani.com",
-    "ADANIPORTS": "adaniports.com",
-    "ADANIGREEN": "adanigreenenergy.com",
-    "ADANIPOWER": "adanipower.com",
-    "AMBUJACEM": "ambujacement.com",
-    "ACC": "acclimited.com",
-    "ULTRACEMCO": "ultratechcement.com",
-    "GRASIM": "grasim.com",
-    "ASIANPAINT": "asianpaints.com",
-    "BERGEPAINT": "bergerpaints.com",
-    "PIDILITIND": "pidilite.com",
-    "TITAN": "titancompany.in",
-    "TRENT": "mywestside.com",
-    "DMART": "dmartindia.com",
-    "NESTLEIND": "nestle.in",
-    "BRITANNIA": "britannia.co.in",
-    "DABUR": "dabur.com",
-    "MARICO": "marico.com",
-    "GODREJCP": "godrejcp.com",
     "VBL": "varunpepsi.com",
-    "DLF": "dlf.in",
-    "SIEMENS": "siemens.com",
-    "ABB": "abb.com",
     "HAL": "hal-india.co.in",
-    "BEL": "bel-india.in",
-    "BHEL": "bhel.com",
-    "LTIM": "ltimindtree.com",
-    "TECHM": "techmahindra.com",
-    "HCLTECH": "hcltech.com",
-    "PERSISTENT": "persistent.com",
-    "COFORGE": "coforge.com",
-    "MPHASIS": "mphasis.com",
-    "PFC": "pfcindia.com",
-    "REC": "recindia.nic.in",
-    "IRFC": "irfc.co.in",
-    "IRCTC": "irctc.co.in",
 }
 
 
 # ── Equity-only guard ─────────────────────────────────────────────
-# Options look like:  "TCS 2120 CE 28 APR 26"
-# Futures look like:  "RELIANCE26MARFUT"
-# AMC/bond symbols:   often contain digits mid-string or are very long
-# Pure equity:        "TCS", "RELIANCE", "HDFCBANK" — uppercase letters only, ≤20 chars
-
 _OPTION_RE  = re.compile(r"\d+\s*(CE|PE)\b", re.IGNORECASE)
 _FUTURE_RE  = re.compile(r"\d{2}[A-Z]{3}FUT$", re.IGNORECASE)
-_DIGIT_MID  = re.compile(r"[A-Z]\d")   # letter followed by digit mid-symbol (e.g. NIFTY50)
 
 def _is_equity_symbol(symbol: str) -> bool:
-    """
-    Returns True only for plain equity symbols like TCS, RELIANCE, HDFCBANK.
-    Rejects options, futures, indices, ETFs with digits, and long derivative names.
-    """
     s = symbol.strip().upper()
-
-    # Reject if contains space — options/futures always have spaces
     if " " in s:
         return False
-
-    # Reject known option/future patterns
     if _OPTION_RE.search(s):
         return False
     if _FUTURE_RE.search(s):
         return False
-
-    # Reject if too long (derivatives tend to be long)
     if len(s) > 20:
         return False
-
-    # Reject index symbols
-    if s in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX",
-             "NIFTY50", "NIFTYNXT50"):
+    if s in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "NIFTY50", "NIFTYNXT50"):
         return False
-
-    # Allow — plain equity
     return True
 
 
@@ -159,7 +63,6 @@ def _build_name_cache():
         return
     inst_path = os.path.join(BASE_DIR, "upstox_instruments.json.gz")
     if not os.path.exists(inst_path):
-        print("[WARN] Instruments file missing - logo name cache empty")
         return
     try:
         with gzip.open(inst_path, "rt", encoding="utf-8") as f:
@@ -170,7 +73,6 @@ def _build_name_cache():
             seg  = (i.get("segment") or "").upper()
             if sym and name and seg in ("NSE_EQ", "BSE_EQ") and sym not in _NAME_CACHE:
                 _NAME_CACHE[sym] = name
-        print(f"[INFO] Logo name cache built: {len(_NAME_CACHE)} symbols")
     except Exception as e:
         print("[WARN] Failed to build logo name cache:", e)
 
@@ -180,7 +82,39 @@ def _get_company_name(symbol: str) -> str | None:
     return _NAME_CACHE.get(symbol.upper().strip())
 
 
-# ── logo.dev search API ───────────────────────────────────────────
+# ── Smart Company Name Sanitizer for Search APIs ─────────────────
+def _clean_company_name_for_search(company_name: str | None, symbol: str) -> str:
+    if not company_name:
+        return symbol
+    n = company_name.upper()
+    # Remove entity designations
+    n = re.sub(
+        r"\b(LIMITED|LTD|LABORATORIES|LABS|CORPORATION|CORP|INDIA|INFRASTRUCTURE|ENTERPRISES|HOLDINGS|SERVICES|FINANCIAL|PLC|INC)\b",
+        "",
+        n,
+        flags=re.IGNORECASE,
+    )
+    n = re.sub(r"[^A-Z0-9\s]", " ", n)
+    n = " ".join(n.split()).strip()
+    return n if len(n) >= 2 else symbol
+
+
+# ── Search API Adapters ──────────────────────────────────────────
+def _search_clearbit_domain(query: str) -> str | None:
+    try:
+        url = f"https://autocomplete.clearbit.com/v1/companies/suggest?query={requests.utils.quote(query)}"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=4)
+        if r.status_code == 200:
+            res = r.json()
+            if res and res[0].get("domain"):
+                domain = res[0].get("domain")
+                if not domain.endswith(".io"):
+                    return domain
+    except Exception:
+        pass
+    return None
+
+
 def _search_logo_dev(query: str) -> str | None:
     try:
         r = requests.get(
@@ -189,20 +123,39 @@ def _search_logo_dev(query: str) -> str | None:
             headers={"Authorization": f"Bearer {LOGO_DEV_SECRET}"},
             timeout=5,
         )
-        if r.status_code != 200:
-            return None
-        results = r.json()
-        if not results:
-            return None
-        domain = results[0].get("domain")
-        return domain or None
+        if r.status_code == 200:
+            results = r.json()
+            if results and results[0].get("domain"):
+                return results[0].get("domain")
     except Exception:
-        return None
+        pass
+    return None
+
+
+def _resolve_domain_dynamically(sym: str, company_name: str | None) -> str | None:
+    clean_q = _clean_company_name_for_search(company_name, sym)
+
+    # 1. Clearbit Autocomplete Engine
+    domain = _search_clearbit_domain(clean_q)
+    if domain:
+        return domain
+
+    # 2. logo.dev search with cleaned company name
+    domain = _search_logo_dev(clean_q)
+    if domain:
+        return domain
+
+    # 3. Fallback: logo.dev with "India"
+    domain = _search_logo_dev(f"{clean_q} India")
+    if domain:
+        return domain
+
+    # 4. Fallback: logo.dev search with raw symbol
+    return _search_logo_dev(sym)
 
 
 # ── Redis helpers ─────────────────────────────────────────────────
 def _redis_get(symbol: str) -> str | None:
-    """Returns cached domain, REDIS_NULL_MARKER if confirmed null, or None if uncached."""
     if not REDIS_ENABLED or not redis_client:
         return None
     try:
@@ -212,14 +165,12 @@ def _redis_get(symbol: str) -> str | None:
 
 
 def _redis_set(symbol: str, domain: str | None):
-    """Cache domain or null marker."""
     if not REDIS_ENABLED or not redis_client:
         return
     try:
         if domain:
             redis_client.setex(f"logo:{symbol}", REDIS_TTL_SEC, domain)
         else:
-            # Cache the null result so we don't hit logo.dev again for 1 day
             redis_client.setex(f"logo:{symbol}", REDIS_NULL_TTL, REDIS_NULL_MARKER)
     except Exception:
         pass
@@ -227,18 +178,14 @@ def _redis_set(symbol: str, domain: str | None):
 
 # ── DB helpers ────────────────────────────────────────────────────
 def _db_get(symbol: str) -> str | None:
-    """Returns domain string, empty string if confirmed null, or None if not in DB."""
     try:
         with get_db_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT domain FROM stock_logos WHERE symbol=%s",
-                    (symbol,)
-                )
+                cur.execute("SELECT domain FROM stock_logos WHERE symbol=%s", (symbol,))
                 row = cur.fetchone()
                 if row is None:
-                    return None          # not in DB at all
-                return row["domain"] or ""     # empty string = confirmed null
+                    return None
+                return row["domain"] or ""
     except Exception:
         return None
 
@@ -255,30 +202,24 @@ def _db_upsert(symbol: str, domain: str | None, name: str | None = None):
                         resolved_at = EXCLUDED.resolved_at
                 """, (symbol, domain, name, datetime.now(timezone.utc)))
     except Exception as e:
-        print(f"⚠️  logo DB upsert failed for {symbol}:", e)
+        print(f"[WARN] logo DB upsert failed for {symbol}:", e)
 
 
 # ── Main resolver ─────────────────────────────────────────────────
 def resolve_logo_domain(symbol: str) -> str | None:
-    """
-    Returns the logo.dev domain for an equity symbol, or None.
-    Non-equity symbols (options, futures, indices) return None immediately.
-    Null results are cached for 1 day to prevent repeat API calls.
-    """
     sym = symbol.upper().strip()
 
-    # Fast reject — options/futures/non-equity never have logos
     if not _is_equity_symbol(sym):
         return None
 
-    # Check explicit domain overrides first
+    # Check minimal overrides first
     if sym in DOMAIN_OVERRIDES:
         domain = DOMAIN_OVERRIDES[sym]
         _db_upsert(sym, domain)
         _redis_set(sym, domain)
         return domain
 
-    # 1. Redis cache — check for both domain and confirmed-null
+    # 1. Redis cache
     cached = _redis_get(sym)
     if cached is not None:
         return None if cached == REDIS_NULL_MARKER else cached
@@ -286,23 +227,15 @@ def resolve_logo_domain(symbol: str) -> str | None:
     # 2. DB cache
     db_val = _db_get(sym)
     if db_val is not None:
-        # db_val is "" for confirmed null, or a domain string
         domain = db_val if db_val else None
         _redis_set(sym, domain)
         return domain
 
-    # 3. logo.dev search API using company name
+    # 3. Dynamic Multi-Source Search (Clearbit + logo.dev)
     company_name = _get_company_name(sym)
-    domain       = None
+    domain       = _resolve_domain_dynamically(sym, company_name)
 
-    if company_name:
-        domain = _search_logo_dev(company_name)
-
-    # Fallback: search by symbol itself
-    if not domain:
-        domain = _search_logo_dev(sym)
-
-    # 4. Persist result (None stored as empty string in DB)
+    # 4. Save result permanently in DB + Redis
     _db_upsert(sym, domain, company_name)
     _redis_set(sym, domain)
 
@@ -311,24 +244,16 @@ def resolve_logo_domain(symbol: str) -> str | None:
 
 # ── Batch resolver (used by /api/logo/batch) ──────────────────────
 def resolve_logos_batch(symbols: list[str]) -> dict[str, str | None]:
-    """
-    Resolve multiple symbols in one call.
-    Returns {symbol: domain_or_None}.
-    Skips non-equity symbols without any API call.
-    Checks Redis/DB for all before making any logo.dev calls.
-    """
     result   = {}
-    to_fetch = []   # symbols that need a logo.dev API call
+    to_fetch = []
 
     for raw in symbols:
         sym = raw.upper().strip()
 
-        # Instant reject for non-equity
         if not _is_equity_symbol(sym):
             result[sym] = None
             continue
 
-        # Check explicit domain overrides first
         if sym in DOMAIN_OVERRIDES:
             domain = DOMAIN_OVERRIDES[sym]
             _db_upsert(sym, domain)
@@ -336,13 +261,11 @@ def resolve_logos_batch(symbols: list[str]) -> dict[str, str | None]:
             result[sym] = domain
             continue
 
-        # Redis hit
         cached = _redis_get(sym)
         if cached is not None:
             result[sym] = None if cached == REDIS_NULL_MARKER else cached
             continue
 
-        # DB hit
         db_val = _db_get(sym)
         if db_val is not None:
             domain = db_val if db_val else None
@@ -352,16 +275,9 @@ def resolve_logos_batch(symbols: list[str]) -> dict[str, str | None]:
 
         to_fetch.append(sym)
 
-    # Only hit logo.dev for genuinely uncached equity symbols
     for sym in to_fetch:
         company_name = _get_company_name(sym)
-        domain       = None
-
-        if company_name:
-            domain = _search_logo_dev(company_name)
-        if not domain:
-            domain = _search_logo_dev(sym)
-
+        domain       = _resolve_domain_dynamically(sym, company_name)
         _db_upsert(sym, domain, company_name)
         _redis_set(sym, domain)
         result[sym] = domain
