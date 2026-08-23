@@ -598,9 +598,24 @@ def get_mis_margin_data():
     return _MIS_CACHE
 
 
+def normalize_ticker_symbol(symbol: str) -> str:
+    import re
+    if not symbol:
+        return ""
+    raw_sym = str(symbol or "").strip().upper()
+    if "|" in raw_sym:
+        raw_sym = raw_sym.split("|")[-1]
+    
+    raw_sym = re.sub(r"^(NSE_EQ|NSE_INDEX|BSE_EQ|BSE_INDEX)[:|]?", "", raw_sym).strip()
+    s = re.sub(r"-EQ$", "", raw_sym)
+    s = re.sub(r"\s+(LTD|LIMITED|LTD\.)$", "", s).strip()
+    s = re.sub(r"[^A-Z0-9&]", "", s)
+    return s.strip()
+
+
 @market_bp.route("/api/margin-info/<path:symbol>", methods=["GET"])
 def api_margin_info(symbol: str):
-    clean_sym = symbol.split("|")[-1].replace("NSE_EQ:", "").replace("NSE_EQ|", "").strip().upper()
+    clean_sym = normalize_ticker_symbol(symbol)
     mis_dict = get_mis_margin_data()
     info = mis_dict.get(clean_sym) or {
         "intraday_margin": 20.0,
@@ -620,8 +635,10 @@ def api_margin_info(symbol: str):
 
 
 # ── Upstox Official Fundamentals API Fetcher ───────────────────
-def _fetch_upstox_official_fundamentals(clean_sym: str):
+def _fetch_upstox_official_fundamentals(raw_symbol: str):
     from db import get_db_conn
+    clean_sym = normalize_ticker_symbol(raw_symbol)
+
     tokens = load_saved_tokens()
     access_token = tokens.get("access_token")
     if not access_token:
@@ -641,7 +658,9 @@ def _fetch_upstox_official_fundamentals(clean_sym: str):
                     WHERE (
                         trading_symbol = %s 
                         OR trading_symbol = %s 
+                        OR isin = %s
                         OR trading_symbol ILIKE %s 
+                        OR name ILIKE %s
                         OR instrument_key LIKE %s
                     ) 
                     AND segment IN ('NSE_EQ', 'BSE_EQ')
@@ -652,7 +671,7 @@ def _fetch_upstox_official_fundamentals(clean_sym: str):
                              ELSE 3 END
                     LIMIT 1
                     """, 
-                    (clean_sym, f"{clean_sym}-EQ", f"{clean_sym}%", f"%|{clean_sym}%", clean_sym, f"{clean_sym}-EQ")
+                    (clean_sym, f"{clean_sym}-EQ", clean_sym, f"{clean_sym}%", f"%{clean_sym}%", f"%|{clean_sym}%", clean_sym, f"{clean_sym}-EQ")
                 )
                 row = cur.fetchone()
                 if row:
@@ -1229,13 +1248,7 @@ def _fetch_screener_in_fundamentals(clean_sym: str):
 @market_bp.route("/api/upstox-fundamentals/<path:symbol>", methods=["GET"])
 @market_bp.route("/api/screener-fundamentals/<path:symbol>", methods=["GET"])
 def api_upstox_fundamentals(symbol):
-    import re
-    raw_sym = str(symbol or "").strip().upper()
-    if "|" in raw_sym:
-        raw_sym = raw_sym.split("|")[-1]
-    
-    raw_sym = re.sub(r"^(NSE_EQ|NSE_INDEX|BSE_EQ|BSE_INDEX)", "", raw_sym)
-    clean_sym = re.sub(r"[^A-Z0-9]", "", raw_sym)
+    clean_sym = normalize_ticker_symbol(symbol)
     
     if not clean_sym:
         return jsonify({"error": "Invalid symbol"}), 400
