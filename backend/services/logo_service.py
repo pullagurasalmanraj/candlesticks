@@ -26,6 +26,16 @@ REDIS_NULL_MARKER = "__NULL__"       # sentinel stored when domain is confirmed 
 
 # ── Explicit Domain Overrides for Indian Equities ────────────────
 DOMAIN_OVERRIDES = {
+    "DRREDDY": "drreddys.com",
+    "DRREDDYS": "drreddys.com",
+    "SUNPHARMA": "sunpharma.com",
+    "CIPLA": "cipla.com",
+    "DIVISLAB": "divislabs.com",
+    "APOLLOHOSP": "apollohospitals.com",
+    "BIOCON": "biocon.com",
+    "LUPIN": "lupin.com",
+    "AUROPHARMA": "aurobindo.com",
+    "ZYDUSLIFE": "zyduslife.com",
     "ITC": "itcportal.com",
     "ITCHOTELS": "itchotels.com",
     "RELIANCE": "relianceindustries.com",
@@ -34,6 +44,13 @@ DOMAIN_OVERRIDES = {
     "HDFCBANK": "hdfcbank.com",
     "ICICIBANK": "icicibank.com",
     "SBIN": "sbi.co.in",
+    "AXISBANK": "axisbank.com",
+    "KOTAKBANK": "kotak.com",
+    "INDUSINDBK": "indusind.com",
+    "BANKBARODA": "bankofbaroda.in",
+    "PNB": "pnbindia.in",
+    "FEDERALBNK": "federalbank.co.in",
+    "IDFCFIRSTB": "idfcfirstbank.com",
     "BHARTIARTL": "airtel.in",
     "LT": "larsentoubro.com",
     "HINDUNILVR": "hul.co.in",
@@ -46,6 +63,50 @@ DOMAIN_OVERRIDES = {
     "POWERGRID": "powergrid.in",
     "ONGC": "ongcindia.com",
     "COALINDIA": "coalindia.in",
+    "EICHERMOT": "eichermotors.com",
+    "HEROMOTOCO": "heromotocorp.com",
+    "BAJAJAUTO": "bajajauto.com",
+    "BAJAJ-AUTO": "bajajauto.com",
+    "MM": "mahindra.com",
+    "MAHMNDRA": "mahindra.com",
+    "JSWSTEEL": "jsw.in",
+    "HINDALCO": "hindalco.com",
+    "ADANIENT": "adani.com",
+    "ADANIPORTS": "adaniports.com",
+    "ADANIGREEN": "adanigreenenergy.com",
+    "ADANIPOWER": "adanipower.com",
+    "AMBUJACEM": "ambujacement.com",
+    "ACC": "acclimited.com",
+    "ULTRACEMCO": "ultratechcement.com",
+    "GRASIM": "grasim.com",
+    "ASIANPAINT": "asianpaints.com",
+    "BERGEPAINT": "bergerpaints.com",
+    "PIDILITIND": "pidilite.com",
+    "TITAN": "titancompany.in",
+    "TRENT": "mywestside.com",
+    "DMART": "dmartindia.com",
+    "NESTLEIND": "nestle.in",
+    "BRITANNIA": "britannia.co.in",
+    "DABUR": "dabur.com",
+    "MARICO": "marico.com",
+    "GODREJCP": "godrejcp.com",
+    "VBL": "varunpepsi.com",
+    "DLF": "dlf.in",
+    "SIEMENS": "siemens.com",
+    "ABB": "abb.com",
+    "HAL": "hal-india.co.in",
+    "BEL": "bel-india.in",
+    "BHEL": "bhel.com",
+    "LTIM": "ltimindtree.com",
+    "TECHM": "techmahindra.com",
+    "HCLTECH": "hcltech.com",
+    "PERSISTENT": "persistent.com",
+    "COFORGE": "coforge.com",
+    "MPHASIS": "mphasis.com",
+    "PFC": "pfcindia.com",
+    "REC": "recindia.nic.in",
+    "IRFC": "irfc.co.in",
+    "IRCTC": "irctc.co.in",
 }
 
 
@@ -98,7 +159,7 @@ def _build_name_cache():
         return
     inst_path = os.path.join(BASE_DIR, "upstox_instruments.json.gz")
     if not os.path.exists(inst_path):
-        print("⚠️  Instruments file missing — logo name cache empty")
+        print("[WARN] Instruments file missing - logo name cache empty")
         return
     try:
         with gzip.open(inst_path, "rt", encoding="utf-8") as f:
@@ -109,9 +170,9 @@ def _build_name_cache():
             seg  = (i.get("segment") or "").upper()
             if sym and name and seg in ("NSE_EQ", "BSE_EQ") and sym not in _NAME_CACHE:
                 _NAME_CACHE[sym] = name
-        print(f"📋 Logo name cache built: {len(_NAME_CACHE)} symbols")
+        print(f"[INFO] Logo name cache built: {len(_NAME_CACHE)} symbols")
     except Exception as e:
-        print("⚠️  Failed to build logo name cache:", e)
+        print("[WARN] Failed to build logo name cache:", e)
 
 
 def _get_company_name(symbol: str) -> str | None:
