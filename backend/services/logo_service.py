@@ -61,7 +61,6 @@ def _is_equity_symbol(symbol: str) -> bool:
 _NAME_CACHE: dict = {}
 
 def _build_name_cache():
-    global _NAME_CACHE
     if _NAME_CACHE:
         return
     inst_path = os.path.join(BASE_DIR, "upstox_instruments.json.gz")

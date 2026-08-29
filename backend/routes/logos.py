@@ -157,6 +157,6 @@ def seed_logos():
             "skipped":  len(symbols) - len(equity_symbols),
         })
 
-    except Exception:
+    except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
