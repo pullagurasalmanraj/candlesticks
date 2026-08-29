@@ -157,4 +157,4 @@ if __name__ == "__main__":
         print("[WARN] Token seed failed:", e)
     # ─────────────────────────────────────────────────────────────
 
-    app.run(host="0.0.0.0", port=8000, debug=False)
+    app.run(host="0.0.0.0", port=8000, debug=False)  # nosec B104

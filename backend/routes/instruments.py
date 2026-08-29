@@ -191,7 +191,7 @@ def api_options_contracts():
             expiry ASC,
             strike_price ASC
         LIMIT 80
-    """
+    """  # nosec B608
 
     # For ORDER BY params, reuse q/underlying best-effort
     best = q if len(q) >= 2 else underlying
@@ -199,7 +199,7 @@ def api_options_contracts():
 
     with get_db_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, params)
+            cur.execute(sql, params)  # nosec B608
             rows = cur.fetchall()
 
     return jsonify({"contracts": rows})

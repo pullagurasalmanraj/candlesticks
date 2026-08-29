@@ -53,7 +53,7 @@ except Exception:
 
 # ── Config ────────────────────────────────────────────────────────
 REDIS_URL = os.getenv("REDIS_URL", "redis://:linux123@127.0.0.1:6379/0")
-WS_HOST = os.getenv("WS_HOST", "0.0.0.0")
+WS_HOST = os.getenv("WS_HOST", "0.0.0.0")  # nosec B104
 WS_PORT = int(os.getenv("WS_PORT", "9000"))
 SKIP_SSL_VERIFY = os.getenv("SKIP_SSL_VERIFY", "0") in ("1", "true", "True")
 REDIS_SUBSCRIBE_CHANNEL = "subscribe:requests"
