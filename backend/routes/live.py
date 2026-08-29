@@ -100,6 +100,11 @@ def compute_and_store_last_n_indicators(symbol: str, timeframe: str = "1m", n: i
     df.sort_values("ts", inplace=True)
     df["date"] = df["ts"].dt.date
 
+    close = df["close"]
+    high = df["high"]
+    low = df["low"]
+    vol = df["volume"] if "volume" in df.columns else (df["vol"] if "vol" in df.columns else pd.Series(0, index=df.index))
+
     c = close.to_numpy(dtype=float)
     h = high.to_numpy(dtype=float)
     l = low.to_numpy(dtype=float)
@@ -121,7 +126,8 @@ def compute_and_store_last_n_indicators(symbol: str, timeframe: str = "1m", n: i
     df["bollinger_upper"] = bb_upper
     df["bollinger_lower"] = bb_lower
     typical = (high + low + close) / 3
-    df["vwap"] = (typical * vol).groupby(df["date"]).cumsum() / vol.groupby(df["date"]).cumsum()
+    vol_cumsum = vol.groupby(df["date"]).cumsum()
+    df["vwap"] = ((typical * vol).groupby(df["date"]).cumsum() / vol_cumsum.replace(0, np.nan)).fillna(typical)
 
     df["orb_high"] = np.nan
     df["orb_low"]  = np.nan

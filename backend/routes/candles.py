@@ -442,6 +442,10 @@ def download_daily_upstox():
         df[["Open","High","Low","Close","Volume","OI"]] = df[["Open","High","Low","Close","Volume","OI"]].apply(pd.to_numeric, errors="coerce")
         df["Volume"] = df["Volume"].fillna(0).astype(int)
 
+        close = df["Close"]
+        high = df["High"]
+        low = df["Low"]
+
         c = close.to_numpy(dtype=float)
         df["RSI_14"]      = calculate_rsi(c, 14)
         df["EMA_20"]      = calculate_ema(c, 20)
