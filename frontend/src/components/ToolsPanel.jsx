@@ -88,7 +88,7 @@ export default function ToolsPanel({
     histStart, histEnd, setHistStart, setHistEnd,
     timeframe, setTimeframe, timeframes,
     years, setYears,
-    isApplyingIndicators,
+    isApplyingIndicators, isFetchingHistory, isDownloadingExcel,
     runBulkFetch, applyIndicators,
     fetchHistoricalCandles, downloadExcel,
     force, setForce,
@@ -141,8 +141,8 @@ export default function ToolsPanel({
 
                     <div style={{ display: "flex", justifyContent: "flex-end" }}>
                         <PrimaryButton color="green" onClick={downloadExcel}
-                            disabled={!selectedSymbol || !startDate || !endDate}>
-                            Download Excel
+                            disabled={!selectedSymbol || !startDate || !endDate || isDownloadingExcel}>
+                            {isDownloadingExcel ? "Downloading Excel…" : "Download Excel"}
                         </PrimaryButton>
                     </div>
                 </div>
@@ -221,6 +221,7 @@ export default function ToolsPanel({
                             id="forceRefresh"
                             checked={force}
                             onChange={e => setForce(e.target.checked)}
+                            disabled={isFetchingHistory}
                             style={{ cursor: "pointer", width: 14, height: 14, accentColor: "var(--accent-blue)" }}
                         />
                         <label 
@@ -241,8 +242,8 @@ export default function ToolsPanel({
                     {/* Action buttons */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
                         <PrimaryButton color="blue" onClick={runBulkFetch}
-                            disabled={!selectedSymbol || !timeframe || !years}>
-                            Fetch full history {years ? `(${years}Y)` : ""}
+                            disabled={!selectedSymbol || !timeframe || !years || isFetchingHistory}>
+                            {isFetchingHistory ? "Downloading candles…" : `Fetch full history ${years ? `(${years}Y)` : ""}`}
                         </PrimaryButton>
 
                         <PrimaryButton color="green" onClick={applyIndicators}
@@ -251,8 +252,8 @@ export default function ToolsPanel({
                         </PrimaryButton>
 
                         <PrimaryButton color="purple" onClick={fetchHistoricalCandles}
-                            disabled={!selectedSymbol || !timeframe || !histStart || !histEnd}>
-                            Fetch historical (store to DB)
+                            disabled={!selectedSymbol || !timeframe || !histStart || !histEnd || isFetchingHistory}>
+                            {isFetchingHistory ? "Downloading candles…" : "Fetch historical (store to DB)"}
                         </PrimaryButton>
                     </div>
                 </div>

@@ -24,6 +24,18 @@ from routes.strategy_logic import (
 
 strategy_bp = Blueprint("strategy", __name__)
 
+
+def _session_vix_level(df):
+    """Return a numeric VIX series forward-filled within each trading date."""
+    if "vix" not in df.columns:
+        return pd.Series(0.0, index=df.index, dtype="float64")
+
+    # Database NULLs can leave an all-None object series. Pandas cannot diff
+    # object values such as None - None, so coerce before any arithmetic.
+    numeric_vix = pd.to_numeric(df["vix"], errors="coerce")
+    return numeric_vix.groupby(df["date"]).transform("ffill")
+
+
 # ------ Market context labelling ---------------------------------------------------------------------------------------------------------------
 @strategy_bp.route("/api/offline/label-market-context", methods=["POST"])
 def offline_label_market_context():
@@ -171,6 +183,20 @@ def offline_label_market_context():
             VOL_BASELINE,
         ) = TF_CONFIG[timeframe]
 
+        WARMUP = max(VOL_BASELINE, ROLL_20, OBV_WINDOW, 2 * SWING_N + 1)
+        if len(df) <= WARMUP:
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            f"Not enough indicator data after warmup: got {len(df)} rows, "
+                            f"need more than {WARMUP} for {timeframe}"
+                        )
+                    }
+                ),
+                400,
+            )
+
         # ------ Phase model lookahead also scales with timeframe ------------------------------
         # 15m trend phase should look 12 bars ahead (= 3h of data)
         # 1m trend phase should look 12 bars ahead (= 12 min of data)
@@ -295,7 +321,10 @@ def offline_label_market_context():
         # For DOWN gap: open < prev_day_close. Same formula works because
         #   (open - prev_day_close) is negative, numerator also flips sign.
         df["gap_fill_target"] = df["prev_day_close"]
-        gap_open_size = (df["open"] - df["prev_day_close"]).replace(0, np.nan)
+        # The opening gap is anchored to the session's first candle. Using each
+        # later candle's open makes the denominator drift throughout the day.
+        session_open = df.groupby("date")["open"].transform("first")
+        gap_open_size = (session_open - df["prev_day_close"]).replace(0, np.nan)
         df["gap_fill_pct"] = np.where(
             df["gap_atr"].abs() > 0,
             (1 - (df["close"] - df["prev_day_close"]) / gap_open_size),
@@ -476,18 +505,22 @@ def offline_label_market_context():
             df["ts_ist"].dt.day >= (df["ts_ist"].dt.days_in_month - 2)
         ).astype(int)
 
-        if "vix" in df.columns:
-            # ffill within each IST date so VIX from today fills all bars
-            df["vix_level"] = df.groupby("date")["vix"].ffill().bfill()
-        else:
-            df["vix_level"] = 0.0
-        df["vix"] = df["vix_level"]
+        # Forward fill only within the same session. Backfilling here leaks a
+        # later day's VIX into an earlier missing session.
+        df["vix_level"] = _session_vix_level(df)
+        vix_missing = df["vix_level"].isna()
         df["vix_change"] = df["vix_level"].diff().fillna(0)
         df["vix_regime"] = np.select(
-            [df["vix_level"] < 12, df["vix_level"] < 18],
-            ["LOW_VOL", "NORMAL_VOL"],
-            default="HIGH_VOL",
+            [
+                ~vix_missing & (df["vix_level"] < 12),
+                ~vix_missing & (df["vix_level"] < 18),
+                ~vix_missing,
+            ],
+            ["LOW_VOL", "NORMAL_VOL", "HIGH_VOL"],
+            default="UNKNOWN_VOL",
         )
+        df["vix_level"] = df["vix_level"].fillna(0.0)
+        df["vix"] = df["vix_level"]
         df["news_flag"] = 0
         if "adx_14" not in df.columns:
             df["adx_14"] = 0
@@ -847,6 +880,7 @@ def offline_label_market_context():
             absorption_max_streak=6,
             distribution_max_streak=5,
             pullback_min_bars=2,
+            post_impulse_max_bars=max(3, math.ceil(30 / tf_min)),
             trend_context_decay=20,
             debug=True,
             warmup_highs=warmup_highs,
@@ -870,11 +904,15 @@ def offline_label_market_context():
             & (df["orb_location"] == 1)
         ).astype(int)
 
-        # ------ Align market context start directly to indicators start (09:15 AM IST) ------------
+        # Drop the causal feature warmup, then align the first persisted label
+        # to a 09:15 session boundary. This prevents synthetic zero-filled
+        # rolling features from becoming training data.
         is_915 = (df["ts_ist"].dt.hour == 9) & (df["ts_ist"].dt.minute == 15)
-        open_idx = np.flatnonzero(is_915.to_numpy())
+        open_idx = np.flatnonzero(is_915.to_numpy() & (np.arange(len(df)) >= WARMUP))
         if len(open_idx) > 0:
             df = df.iloc[int(open_idx[0]):].reset_index(drop=True)
+        else:
+            return jsonify({"error": "No complete session remains after feature warmup"}), 400
 
         # Now fillna is safe --- only genuine missing values remain
         for c in FEATURE_COLS:
@@ -913,6 +951,20 @@ def offline_label_market_context():
                 tf_role=EXCLUDED.tf_role,
                 ema_21_slope=EXCLUDED.ema_21_slope,
                 vwap_dist_pct=EXCLUDED.vwap_dist_pct,
+                day_high_dist=EXCLUDED.day_high_dist,
+                day_low_dist=EXCLUDED.day_low_dist,
+                orb_dist_pct=EXCLUDED.orb_dist_pct,
+                gap_pct=EXCLUDED.gap_pct,
+                minute_of_day=EXCLUDED.minute_of_day,
+                volume_expansion=EXCLUDED.volume_expansion,
+                atr_expanding=EXCLUDED.atr_expanding,
+                range_efficiency=EXCLUDED.range_efficiency,
+                vwap_acceptance=EXCLUDED.vwap_acceptance,
+                momentum_decay=EXCLUDED.momentum_decay,
+                candle_overlap=EXCLUDED.candle_overlap,
+                vix=EXCLUDED.vix,
+                vix_change=EXCLUDED.vix_change,
+                vix_regime=EXCLUDED.vix_regime,
                 gap_atr=EXCLUDED.gap_atr,
                 gap_dir=EXCLUDED.gap_dir,
                 gap_regime=EXCLUDED.gap_regime,
@@ -1016,27 +1068,23 @@ def calibrate_phase_params():
     ---------------------------------------
     For each market_phase with >= MIN_SAMPLES rows:
 
-      optimal_tp = p60(mfe_r)
-        The 60th percentile of maximum favourable excursion in R-units.
-        60% of historical trades reached this level --- using it as TP gives
-        a ~60% TP hit rate which is consistent with profitable trading.
-        p50 is too conservative (50% hit rate, low R:R).
-        p75 is too greedy (25% hit rate, wins too small to offset losses).
+      optimal_tp = p40(full-horizon MFE / ATR)
+        Roughly 60% of historical samples reached this favourable excursion.
 
-      optimal_sl = abs(p25(mae_r))
-        The 25th percentile of maximum adverse excursion (negated, in R-units).
-        75% of historical trades never exceeded this drawdown --- so placing the
-        stop here avoids stopping out 75% of eventually-profitable trades.
-        p10 MAE is too tight --- stops out good trades.
-        p40 MAE is too wide --- accepts too much heat.
+      optimal_sl = p75(abs(full-horizon MAE) / ATR)
+        Roughly 75% of historical samples stayed within this adverse excursion.
+
+      Candidate win rate is recomputed for the proposed barriers. A sample is a
+      win only when it reaches TP without also reaching SL; same-bar ambiguity is
+      treated conservatively as a loss.
 
       optimal_lookahead_min = p75(exit_after_candles) -- tf_min
         75th percentile of actual exit bar counts, converted to minutes.
         75% of trades resolve within this time window.
 
     CONSTRAINTS applied after derivation (keeps values execution-realistic):
-      tp >= max(1.0, sl -- 1.3)     --- R:R at least 1.3 before costs
-      sl between [0.5, 2.0]        --- not too tight, not irrationally wide
+      tp / sl >= 1.3                --- R:R at least 1.3 before costs
+      sl between data-derived and absolute safety bounds
       lookahead_min between [15, 375] --- minimum 15 min, max 1 session
 
     BOOTSTRAP:
@@ -1055,6 +1103,10 @@ def calibrate_phase_params():
         if not symbol or not timeframe:
             return jsonify({"error": "symbol and timeframe required"}), 400
 
+        TF_MIN_MAP = {"1m": 1, "3m": 3, "5m": 5, "15m": 15}
+        if timeframe not in TF_MIN_MAP:
+            return jsonify({"error": f"Unsupported timeframe {timeframe}"}), 400
+
         # Issue 1: Date filtering for walk-forward calibration
         raw_from = data.get("from_date")
         raw_to = data.get("to_date")
@@ -1067,14 +1119,27 @@ def calibrate_phase_params():
 
         from_dt = pd.to_datetime(raw_from or "2000-01-01", utc=True)
         to_dt = pd.to_datetime(raw_to or datetime.now(timezone.utc), utc=True)
+        if from_dt > to_dt:
+            return jsonify({"error": "from_date must be before to_date"}), 400
 
         MIN_SAMPLES = int(data.get("min_samples", 30))
-        TP_PERCENTILE = float(data.get("tp_percentile", 60))  # p60 of mfe_r
-        SL_PERCENTILE = float(data.get("sl_percentile", 25))  # p25 of |mae_r|
+        # p40 MFE is reached by roughly 60% of samples. p75 MAE means roughly
+        # 75% of samples stayed within the proposed adverse excursion.
+        TP_PERCENTILE = float(data.get("tp_percentile", 40))
+        SL_PERCENTILE = float(data.get("sl_percentile", 75))
         LA_PERCENTILE = float(data.get("la_percentile", 75))  # p75 of exit_after
 
-        TF_MIN_MAP = {"1m": 1, "3m": 3, "5m": 5, "15m": 15}
-        tf_min = TF_MIN_MAP.get(timeframe, 1)
+        if MIN_SAMPLES < 5:
+            return jsonify({"error": "min_samples must be at least 5"}), 400
+        for name, value in (
+            ("tp_percentile", TP_PERCENTILE),
+            ("sl_percentile", SL_PERCENTILE),
+            ("la_percentile", LA_PERCENTILE),
+        ):
+            if not 0 < value < 100:
+                return jsonify({"error": f"{name} must be between 0 and 100"}), 400
+
+        tf_min = TF_MIN_MAP[timeframe]
 
         with get_db_conn() as conn:
             # Ensure DB table schema has calibrated_from and calibrated_to columns
@@ -1089,8 +1154,8 @@ def calibrate_phase_params():
             total_df = read_sql_safe(
                 """
                 SELECT COUNT(*) AS total_rows,
-                       COUNT(mfe_r) AS has_mfe_r,
-                       COUNT(mae_r) AS has_mae_r,
+                       COUNT(mfe) AS has_mfe,
+                       COUNT(mae) AS has_mae,
                        COUNT(exit_after_candles) AS has_exit_after
                 FROM strategy_outcomes
                 WHERE symbol=%s AND exchange=%s AND timeframe=%s
@@ -1103,22 +1168,26 @@ def calibrate_phase_params():
             total_rows = (
                 int(total_df.iloc[0]["total_rows"]) if not total_df.empty else 0
             )
-            has_mfe = int(total_df.iloc[0]["has_mfe_r"]) if not total_df.empty else 0
+            has_mfe = int(total_df.iloc[0]["has_mfe"]) if not total_df.empty else 0
 
             df = read_sql_safe(
                 """
-                SELECT market_phase,
-                       mfe_r, mae_r,
-                       exit_after_candles,
-                       realized_r,
-                       COALESCE(atr_14, 0)    AS atr_14,
-                       COALESCE(cost_r,  0)   AS cost_r
-                FROM strategy_outcomes
-                WHERE symbol=%s AND exchange=%s AND timeframe=%s
-                  AND ts BETWEEN %s AND %s
-                  AND mfe_r IS NOT NULL
-                  AND mae_r IS NOT NULL
-                  AND exit_after_candles IS NOT NULL
+                SELECT so.market_phase,
+                       so.mfe, so.mae,
+                       so.mfe_r, so.mae_r,
+                       so.exit_after_candles,
+                       so.realized_r,
+                       COALESCE(so.atr_14, 0) AS atr_14,
+                       COALESCE(i.close, 0)   AS reference_price
+                FROM strategy_outcomes so
+                JOIN indicators i
+                  ON i.symbol=so.symbol AND i.exchange=so.exchange
+                 AND i.timeframe=so.timeframe AND i.ts=so.ts
+                WHERE so.symbol=%s AND so.exchange=%s AND so.timeframe=%s
+                  AND so.ts BETWEEN %s AND %s
+                  AND so.mfe IS NOT NULL
+                  AND so.mae IS NOT NULL
+                  AND so.exit_after_candles IS NOT NULL
             """,
                 conn,
                 params=[symbol, exchange, timeframe, from_dt, to_dt],
@@ -1134,12 +1203,12 @@ def calibrate_phase_params():
                 )
             elif has_mfe == 0:
                 msg = (
-                    f"{total_rows} rows exist but mfe_r is NULL in all of them. "
+                    f"{total_rows} rows exist but raw MFE is NULL in all of them. "
                     "Re-run calc-strategy-outcomes to populate outcome columns."
                 )
             else:
                 msg = (
-                    f"{total_rows} total rows, {has_mfe} have mfe_r populated, "
+                    f"{total_rows} total rows, {has_mfe} have raw MFE populated, "
                     "but none passed the NOT NULL filter. Re-run calc-strategy-outcomes."
                 )
             return jsonify(
@@ -1166,32 +1235,41 @@ def calibrate_phase_params():
                 }
                 continue
 
-            # ------ Raw derivation ------------------------------------------------------------------------------------------------------
-            mfe_r_vals = grp["mfe_r"].dropna()
-            mae_r_vals = (
-                grp["mae_r"].dropna().abs()
-            )  # MAE is negative, work with magnitude
+            # Excursions are converted to ATR multiples. PHASE_MODEL stores
+            # TP and SL in ATR multiples; the old code calibrated them from
+            # R-multiples tied to the previous stop, mixing incompatible units.
+            valid = grp["atr_14"].notna() & (grp["atr_14"] > 0)
+            grp = grp.loc[valid].copy()
+            n = len(grp)
+            if n < MIN_SAMPLES:
+                results[phase] = {
+                    "status": "INSUFFICIENT_VALID_ATR_DATA",
+                    "samples": n,
+                    "min_required": MIN_SAMPLES,
+                    "fallback": "using PHASE_MODEL defaults",
+                }
+                continue
+
+            mfe_atr_vals = (grp["mfe"].clip(lower=0) / grp["atr_14"]).dropna()
+            mae_atr_vals = (grp["mae"].abs() / grp["atr_14"]).dropna()
             exit_vals = grp["exit_after_candles"].dropna()
 
-            p25_mfe = float(np.percentile(mfe_r_vals, 25))
-            p50_mfe = float(np.percentile(mfe_r_vals, 50))
-            p75_mfe = float(np.percentile(mfe_r_vals, 75))
-            raw_tp = float(np.percentile(mfe_r_vals, TP_PERCENTILE))
+            p25_mfe = float(np.percentile(mfe_atr_vals, 25))
+            p50_mfe = float(np.percentile(mfe_atr_vals, 50))
+            p75_mfe = float(np.percentile(mfe_atr_vals, 75))
+            raw_tp = float(np.percentile(mfe_atr_vals, TP_PERCENTILE))
 
-            p25_mae = float(np.percentile(mae_r_vals, SL_PERCENTILE))
-            raw_sl = p25_mae  # p25 of absolute MAE values
+            selected_mae = float(np.percentile(mae_atr_vals, SL_PERCENTILE))
+            raw_sl = selected_mae
 
             p75_exit = float(np.percentile(exit_vals, LA_PERCENTILE))
             raw_la_min = max(15, int(round(p75_exit * tf_min)))
 
-            win_rate = float((grp["realized_r"] > 0).mean())
-
             # ------ Apply constraints ---------------------------------------------------------------------------------------------------------------------------------
             # Distribution-derived bounds (data tells us the realistic range).
-            #   SL floor = p5 of |mae_r| (never tighter than 5th-percentile adverse move)
-            #   SL ceiling = p75 of |mae_r| (never wider than the typical adverse move)
-            #   TP floor  = p5 of mfe_r (never less than minimum observed MFE)
-            #   TP ceiling = p95 of mfe_r (cap at realistic upside, avoids overfitting)
+            #   SL floor = p5 of |MAE|/ATR (never tighter than a typical small adverse move)
+            #   SL ceiling = p75 of |MAE|/ATR (never wider than the typical adverse move)
+            #   TP floor = p5 of MFE/ATR; TP ceiling = p95 of MFE/ATR
             # TF-aware hard minimums layered on top (cost viability by timeframe):
             #   1m: tp_min_hard = 1.2  (1m ATR so small that costs dominate below this)
             #   3m: tp_min_hard = 0.9
@@ -1199,10 +1277,10 @@ def calibrate_phase_params():
             #  15m: tp_min_hard = 0.6
             # RR_MIN = 1.3  (tp must be at least 1.3-- sl --- hard constraint 1)
             # Absolute safety rails: SL --- [0.3, 3.0], TP --- [0.5, 5.0]
-            mae_p5 = float(np.percentile(mae_r_vals, 5))
-            mae_p75 = float(np.percentile(mae_r_vals, 75))
-            mfe_p5 = float(np.percentile(mfe_r_vals, 5))
-            mfe_p95 = float(np.percentile(mfe_r_vals, 95))
+            mae_p5 = float(np.percentile(mae_atr_vals, 5))
+            mae_p75 = float(np.percentile(mae_atr_vals, 75))
+            mfe_p5 = float(np.percentile(mfe_atr_vals, 5))
+            mfe_p95 = float(np.percentile(mfe_atr_vals, 95))
 
             sl_floor = float(np.clip(mae_p5, 0.3, 1.0))
             sl_ceiling = float(np.clip(mae_p75, 0.8, 3.0))
@@ -1218,56 +1296,47 @@ def calibrate_phase_params():
             tp_floor = float(
                 np.clip(max(mfe_p5, sl_floor * 1.3, _tp_min_hard), 0.5, 2.0)
             )
-            tp_ceiling = float(np.clip(mfe_p95, 1.5, 5.0))
+            tp_ceiling = max(tp_floor, float(np.clip(mfe_p95, 1.5, 5.0)))
 
             sl = float(np.clip(raw_sl, sl_floor, sl_ceiling))
-            # Constraint 1: tp >= max(tp_floor, sl -- 1.3)
+            # Constraint 1: tp >= max(tp_floor, sl * 1.3)
             # This enforces minimum TP and minimum R:R simultaneously.
             tp = float(np.clip(max(raw_tp, sl * 1.3, tp_floor), tp_floor, tp_ceiling))
 
             # Lookahead: clip to [15, 375] minutes
             la_min = int(np.clip(raw_la_min, 15, 375))
 
-            # ------ Constraint 2: Cost-aware viability ---------------------------------------------------------------------------
-            # Use actual avg cost_r from outcomes data (available now that SELECT
-            # includes cost_r). This is the real round-trip friction per R for
-            # trades in this phase on this symbol/TF, not a proxy.
-            # If the avg cost_r column is zero (old data, not yet populated),
-            # fall back to estimating from avg ATR and entry price.
-            avg_cost_r_data = (
-                float(grp["cost_r"].mean())
-                if "cost_r" in grp.columns and grp["cost_r"].notna().any()
-                else 0.0
-            )
+            # Recompute friction using the proposed stop. Reusing cost_r from
+            # the old stop made the viability test internally inconsistent.
             avg_atr_data = (
                 float(grp["atr_14"].mean())
                 if "atr_14" in grp.columns and grp["atr_14"].notna().any()
                 else 0.0
             )
-
-            if avg_cost_r_data > 0:
-                # Real cost data from outcomes: use directly
-                avg_cost_r = avg_cost_r_data
-            elif avg_atr_data > 0:
-                # Estimate: assume ---130 avg entry (rough mid-cap proxy)
-                # cost_r = (entry -- TOTAL_COST_PCT) / (sl -- ATR)
-                _est_entry = 130.0
-                _est_R = sl * avg_atr_data
-                avg_cost_r = (
-                    (_est_entry * TOTAL_COST_PCT) / _est_R if _est_R > 0 else 9.99
-                )
-            else:
-                # No data at all --- flag as unverifiable
-                avg_cost_r = 0.0  # do not penalise if we cannot compute
+            avg_reference_price = float(grp["reference_price"].mean())
+            proposed_r_points = sl * avg_atr_data
+            avg_cost_r = (
+                (avg_reference_price * TOTAL_COST_PCT) / proposed_r_points
+                if proposed_r_points > 0
+                else 9.99
+            )
 
             # Gross TP move after slippage (SLIPPAGE_PTS each side in ---, convert to R)
             # In R-units, each slippage tick = SLIPPAGE_PTS / (sl -- avg_ATR)
             slip_r = (
                 (2 * SLIPPAGE_PTS / (sl * avg_atr_data)) if avg_atr_data > 0 else 0.0
             )
-            net_tp = (
-                tp - avg_cost_r - slip_r
-            )  # what actually lands in your account at TP
+            gross_reward_r = tp / sl
+            net_tp = gross_reward_r - avg_cost_r - slip_r
+
+            # Estimate candidate hit rate from full-horizon, uncensored
+            # excursions. Bars touching both barriers are counted as losses,
+            # matching the conservative same-bar convention used by simulation.
+            tp_reached = mfe_atr_vals >= tp
+            sl_reached = mae_atr_vals >= sl
+            candidate_wins = tp_reached & ~sl_reached
+            ambiguous_rate = float((tp_reached & sl_reached).mean())
+            win_rate = float(candidate_wins.mean())
 
             # ------ Four-part viability assessment ---------------------------------------------------------------------------------------
             # All four must pass for the phase to be considered VIABLE.
@@ -1276,19 +1345,16 @@ def calibrate_phase_params():
             # PHASE_MODEL defaults so unviable calibrated params are not used.
 
             # 1. Minimum R:R (gross) --- tp must be at least RR_MIN -- sl
-            rr_ok = (tp / sl) >= 1.3
+            rr_ok = gross_reward_r >= 1.3
             # 2. Net TP after costs must be positive --- i.e., TP covers friction
             net_tp_ok = net_tp > 0.0
             # 3. Minimum win rate --- below this, even a perfect R:R cannot save it
             #    Minimum win rate for breakeven: sl / (tp + sl)
-            breakeven_wr = sl / (tp + sl)
-            wr_ok = (
-                win_rate >= breakeven_wr * 0.80
-            )  # allow 20% below theoretical breakeven
-            # 4. Minimum expectancy --- expected R should not be deeply negative
-            #    (allow slightly negative; ML will filter within the phase)
-            exp_r = win_rate * tp - (1.0 - win_rate) * sl
-            exp_ok = exp_r > -0.5  # deep negative --- useless for training
+            net_loss_r = 1.0 + avg_cost_r
+            breakeven_wr = net_loss_r / (net_tp + net_loss_r) if net_tp > 0 else 1.0
+            wr_ok = win_rate >= breakeven_wr
+            exp_r = win_rate * net_tp - (1.0 - win_rate) * net_loss_r
+            exp_ok = exp_r > 0.0
 
             viable = rr_ok and net_tp_ok and wr_ok and exp_ok
 
@@ -1305,7 +1371,7 @@ def calibrate_phase_params():
                     f"win_rate={win_rate:.1%} < breakeven {breakeven_wr:.1%}"
                 )
             if not exp_ok:
-                failure_reasons.append(f"exp_r={exp_r:.3f}R < -0.5")
+                failure_reasons.append(f"exp_r={exp_r:.3f}R <= 0")
             note = "; ".join(failure_reasons) if failure_reasons else ""
 
             results[phase] = {
@@ -1320,10 +1386,11 @@ def calibrate_phase_params():
                 "exp_r": round(exp_r, 3),
                 "breakeven_wr": round(breakeven_wr, 3),
                 "win_rate": round(win_rate, 3),
-                "p25_mfe_r": round(p25_mfe, 3),
-                "p50_mfe_r": round(p50_mfe, 3),
-                "p75_mfe_r": round(p75_mfe, 3),
-                "p25_mae_r": round(p25_mae, 3),
+                "ambiguous_both_barriers_rate": round(ambiguous_rate, 3),
+                "p25_mfe_atr": round(p25_mfe, 3),
+                "p50_mfe_atr": round(p50_mfe, 3),
+                "p75_mfe_atr": round(p75_mfe, 3),
+                "selected_mae_atr": round(selected_mae, 3),
                 "p75_exit_candles": int(p75_exit),
                 "viable": viable,
                 "note": note,
@@ -1340,12 +1407,12 @@ def calibrate_phase_params():
                     int(la_min),
                     int(n),
                     float(win_rate),
-                    float(mfe_r_vals.mean()),
-                    float(-mae_r_vals.mean()),
-                    float(p25_mfe),
-                    float(p50_mfe),
-                    float(p75_mfe),
-                    float(-p25_mae),
+                    float(mfe_atr_vals.mean() / sl),
+                    float(-mae_atr_vals.mean() / sl),
+                    float(p25_mfe / sl),
+                    float(p50_mfe / sl),
+                    float(p75_mfe / sl),
+                    float(-selected_mae / sl),
                     int(p75_exit),
                     bool(
                         viable
@@ -1357,9 +1424,19 @@ def calibrate_phase_params():
             )
 
         # ------ Upsert into phase_params ------------------------------------------------------------------------------------
-        if upsert_rows:
-            with get_db_conn() as conn:
-                with conn.cursor() as cur:
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                # Replace this symbol/timeframe's calibration atomically so
+                # phases absent from the new window cannot retain stale
+                # parameters from an older calibration.
+                cur.execute(
+                    """
+                    DELETE FROM phase_params
+                    WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                    """,
+                    (symbol, exchange, timeframe),
+                )
+                if upsert_rows:
                     _chunk_execute(
                         cur,
                         """
@@ -1452,6 +1529,10 @@ def calc_strategy_outcomes():
 
         if not symbol or not timeframe:
             return jsonify({"error": "symbol and timeframe required"}), 400
+        if timeframe not in {"1m", "3m", "5m", "15m"}:
+            return jsonify({"error": f"Unsupported timeframe {timeframe}"}), 400
+        if from_dt > to_dt:
+            return jsonify({"error": "from_date must be before to_date"}), 400
 
         with get_db_conn() as conn:
             df = read_sql_safe(
@@ -1522,19 +1603,21 @@ def calc_strategy_outcomes():
             )
 
         # ------ IMPROVEMENT 6: timezone-safe rule_truth lookup ---------------------
-        rules_df["ts"] = pd.to_datetime(rules_df["ts"], errors="coerce")
-        # Normalise both sides to UTC-naive for reliable dict key matching
-        if rules_df["ts"].dt.tz is not None:
-            rules_df["ts"] = rules_df["ts"].dt.tz_localize(None)
+        if rules_df.empty:
+            rule_truth = {}
+        else:
+            rules_df["ts"] = pd.to_datetime(rules_df["ts"], errors="coerce")
+            # Normalise both sides to UTC-naive for reliable dict key matching
+            if rules_df["ts"].dt.tz is not None:
+                rules_df["ts"] = rules_df["ts"].dt.tz_localize(None)
+            rules_df["strategy_id"] = rules_df["strategy_id"].str.upper().str.strip()
+            rule_truth = (
+                rules_df.drop_duplicates(["ts", "strategy_id"], keep="last")
+                .set_index(["ts", "strategy_id"])["rule_eligibility"]
+                .to_dict()
+            )
         if df["ts"].dt.tz is not None:
             df["ts"] = df["ts"].dt.tz_localize(None)
-
-        rules_df["strategy_id"] = rules_df["strategy_id"].str.upper().str.strip()
-        rule_truth = (
-            rules_df.drop_duplicates(["ts", "strategy_id"], keep="last")
-            .set_index(["ts", "strategy_id"])["rule_eligibility"]
-            .to_dict()
-        )
 
         # Build snapshots dict from the lightweight ORB-only query.
         # Keys are tz-naive datetimes to match rule_truth lookup convention.
@@ -1653,6 +1736,10 @@ def calc_strategy_outcomes():
         params_overlap_warning = False
         if max_calibrated_to is not None and from_dt <= max_calibrated_to:
             params_overlap_warning = True
+            # Never apply parameters calibrated on the evaluation period.
+            # Defaults are used until the request starts strictly after the
+            # calibration window.
+            data_params = {}
 
         # Issue 2: Precompute session_end_idx to cap trade lookahead at session boundaries (zero overnight leakage)
         # Convert timestamps to IST timezone so session dates correspond strictly to Indian trading days (09:15 to 15:30 IST)
@@ -1724,6 +1811,8 @@ def calc_strategy_outcomes():
             la = _la_cache.get(phases[i], 2)
             entry_idx = i + 1
             if entry_idx >= N:
+                continue
+            if session_dates[entry_idx] != session_dates[i]:
                 continue
 
             # Issue 2: Session boundary capping relative to entry bar (entry_idx = i + 1)
@@ -1799,11 +1888,11 @@ def calc_strategy_outcomes():
             # ------ FIX 18: Macro regime gate ---------------------------------------------------------------------------------------
             # Do not take LONG trades in a structural BEAR_MACRO market,
             # and do not take SHORT trades in a structural BULL_MACRO market.
-            # Directionless (NEUTRAL, MEAN, FOLLOW, BREAKOUT, FADE) bypass this gate.
+            # Dynamic direction tokens have already resolved to a concrete side.
             macro = macro_arr[i]
             if is_short and macro == "BULL_MACRO":
                 continue
-            if not is_short and cfg["dir"] == "LONG" and macro == "BEAR_MACRO":
+            if not is_short and macro == "BEAR_MACRO":
                 continue
 
             # ------ FIX 19: Price structure alignment gate ------------------------------------------------
@@ -1885,7 +1974,7 @@ def calc_strategy_outcomes():
             if (
                 _EOD_LA_MIN_GATE > 0
                 and bar_of_day_arr[i] >= _EOD_BOD_THRESHOLD
-                and effective_cfg.get("lookahead_min", 0) >= _EOD_LA_MIN_GATE
+                and cfg.get("lookahead_min", 0) >= _EOD_LA_MIN_GATE
             ):
                 n_eod_skipped += 1
                 continue
@@ -1930,11 +2019,12 @@ def calc_strategy_outcomes():
                 entry,
                 tp,
                 sl,
-                highs[i + 1 : i + 1 + la_capped],
-                lows[i + 1 : i + 1 + la_capped],
-                closes[i + 1 : i + 1 + la_capped],
+                highs[i + 1 : i + 1 + max_bars_in_session],
+                lows[i + 1 : i + 1 + max_bars_in_session],
+                closes[i + 1 : i + 1 + max_bars_in_session],
                 la_capped,
                 is_short=is_short,
+                excursion_n=max_bars_in_session,
             )
 
             ts = ts_arr[i]
@@ -1971,7 +2061,7 @@ def calc_strategy_outcomes():
             # ------ Net R (what lands in your account after all costs) ---
             realized_r_net = realized_r_gross - cost_r
 
-            exit_speed = exit_after / la
+            exit_speed = exit_after / la_capped
             timing = (
                 "FAST"
                 if exit_speed <= 0.33
@@ -2025,7 +2115,7 @@ def calc_strategy_outcomes():
                     ).to_pydatetime(),  # exit_ts
                     float(mfe),
                     float(mae),
-                    int(la),  # Python int
+                    int(la_capped),  # actual in-session simulation horizon
                     now,
                     float(mfe_r),
                     float(mae_r),
@@ -2039,6 +2129,16 @@ def calc_strategy_outcomes():
             )
 
         if not rows:
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        DELETE FROM strategy_outcomes
+                        WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                          AND ts BETWEEN %s AND %s
+                        """,
+                        (symbol, exchange, timeframe, from_dt, to_dt),
+                    )
             return (
                 jsonify(
                     {"error": "No outcomes generated --- check PHASE_MODEL coverage"}
@@ -2096,6 +2196,17 @@ def calc_strategy_outcomes():
 
         with get_db_conn() as conn:
             with conn.cursor() as cur:
+                # A rerun is a replacement for the requested window. Without
+                # this cleanup, trades rejected by newer gates remain as stale
+                # training labels indefinitely.
+                cur.execute(
+                    """
+                    DELETE FROM strategy_outcomes
+                    WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                      AND ts BETWEEN %s AND %s
+                    """,
+                    (symbol, exchange, timeframe, from_dt, to_dt),
+                )
                 _chunk_execute(cur, OUTCOME_SQL, rows)
 
         elapsed = round(time.time() - t0, 1)
@@ -2108,6 +2219,7 @@ def calc_strategy_outcomes():
             "phases_unviable_fallback": n_unviable_fallback,
             "param_source": "calibrated" if n_calibrated > 0 else "default",
             "params_overlap_warning": params_overlap_warning,
+            "calibrated_params_ignored": params_overlap_warning,
             "max_calibrated_to": max_calibrated_to.isoformat() if max_calibrated_to else None,
             "cost_r_gate": cost_r_gate,
             "skipped_by_cost": n_cost_skipped,
@@ -2120,7 +2232,8 @@ def calc_strategy_outcomes():
             res_payload["overlap_warning_details"] = (
                 "Evaluation request start date overlaps or precedes the calibration window end date "
                 f"({max_calibrated_to.isoformat() if max_calibrated_to else 'N/A'}). "
-                "Recommend using a rolling out-of-sample walk-forward split to eliminate in-sample target leakage."
+                "Calibrated parameters were ignored and PHASE_MODEL defaults were used. "
+                "Use a request window starting after calibration for out-of-sample evaluation."
             )
         return jsonify(res_payload)
 

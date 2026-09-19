@@ -22,6 +22,8 @@ export default function DataToolsDrawer({
     years,
     setYears,
     isApplyingIndicators,
+    isFetchingHistory,
+    isDownloadingExcel,
     runBulkFetch,
     applyIndicators,
     fetchHistoricalCandles,
@@ -187,6 +189,8 @@ export default function DataToolsDrawer({
                         years={years}
                         setYears={setYears}
                         isApplyingIndicators={isApplyingIndicators}
+                        isFetchingHistory={isFetchingHistory}
+                        isDownloadingExcel={isDownloadingExcel}
                         runBulkFetch={runBulkFetch}
                         applyIndicators={applyIndicators}
                         fetchHistoricalCandles={fetchHistoricalCandles}

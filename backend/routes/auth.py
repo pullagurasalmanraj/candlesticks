@@ -23,7 +23,7 @@ from config                  import (UPSTOX_API_BASE, UPSTOX_CLIENT_ID,
                                      FRONTEND_DIR, safe_requests)
 from db                      import get_db_conn
 from services.token_service  import save_tokens, token_is_fresh, clear_saved_tokens
-from extensions              import google   # registered in app.py via init_oauth()
+from extensions              import oauth, google   # registered in app.py via init_oauth()
 
 auth_bp = Blueprint("auth", __name__)
 
@@ -76,7 +76,8 @@ def signup():
 # ── Google OAuth ─────────────────────────────────────────────────
 @auth_bp.route("/auth/google")
 def google_login():
-    if not current_app.config.get("GOOGLE_CLIENT_ID") or not current_app.config.get("GOOGLE_CLIENT_SECRET"):
+    client = oauth.create_client("google") or google
+    if not client or not current_app.config.get("GOOGLE_CLIENT_ID") or not current_app.config.get("GOOGLE_CLIENT_SECRET"):
         return (
             "Google OAuth is not configured. Set GOOGLE_CLIENT_ID and "
             "GOOGLE_CLIENT_SECRET, then recreate the backend container.",
@@ -84,14 +85,33 @@ def google_login():
         )
 
     redirect_uri = url_for("auth.google_callback", _external=True)
-    return google.authorize_redirect(redirect_uri)
+    return client.authorize_redirect(redirect_uri)
 
 
 @auth_bp.route("/auth/google/callback")
 def google_callback():
     try:
-        token     = google.authorize_access_token()
-        email     = token["userinfo"]["email"]
+        client = oauth.create_client("google") or google
+        if not client:
+            raise RuntimeError("Google OAuth client is not registered")
+
+        token = client.authorize_access_token()
+        userinfo = token.get("userinfo")
+        if not userinfo and "id_token" in token:
+            try:
+                userinfo = client.parse_id_token(token)
+            except Exception:
+                pass
+        if not userinfo:
+            try:
+                resp = client.get("https://openidconnect.googleapis.com/v1/userinfo")
+                userinfo = resp.json()
+            except Exception:
+                pass
+
+        email = userinfo.get("email") if isinstance(userinfo, dict) else None
+        if not email:
+            raise ValueError(f"Could not extract user email from Google OAuth response: {token}")
 
         with get_db_conn() as db:
             with db.cursor() as cur:
@@ -128,8 +148,14 @@ def root_or_callback():
     code = request.args.get("code")
     if code:
         try:
+            headers = {
+                "accept": "application/json",
+                "Api-Version": "2.0",
+                "Content-Type": "application/x-www-form-urlencoded",
+            }
             r = safe_requests.post(
                 f"{UPSTOX_API_BASE}/login/authorization/token",
+                headers=headers,
                 data={
                     "code": code,
                     "client_id": UPSTOX_CLIENT_ID,

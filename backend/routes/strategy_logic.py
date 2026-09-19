@@ -28,8 +28,8 @@
 #
 #  28d. PULLBACK_FAIL and REJECTION demoted to NEUTRAL.
 #       PULLBACK_FAIL: 3.2% TP rate --- the FADE direction almost never works.
-#       REJECTION:     9.3% TP rate --- same issue. Both still generate outcome
-#       rows so ML trains to skip them.
+#       REJECTION:     9.3% TP rate --- same issue. Both are context-only and
+#       are skipped by outcome simulation and ML execution.
 #
 #  28e. ABSORPTION and DISTRIBUTION demoted to NEUTRAL direction.
 #       ABSORPTION: FOLLOW direction yields only 22.9% TP --- absorbed volume
@@ -39,7 +39,7 @@
 #
 #  28f. GAP_TIMEOUT demoted to NEUTRAL direction.
 #       Only 10.9% TP rate with FOLLOW. Gap timeout on 15m resolves into
-#       chop not continuation. Outcome rows retained for ML training.
+#       chop not continuation. It is retained as context only.
 #
 #  28g. price_structure swing detector window widened (4--n --- 8--n bars).
 #       SWING_N=2 for 15m produced only 15 bars of lookback (9 for detection).
@@ -54,11 +54,9 @@
 #       last 45 min have avg_r = -0.81 (worst intraday), driven by low volume
 #       and wide spreads near close. Trend/impulse phases unaffected.
 #
-#  28i. Macro regime gate extended to SHORT phases in BEAR_MACRO.
-#       Previously only LONG in BEAR_MACRO was gated. Added: skip SHORT in
-#       BEAR_MACRO when phase is BEAR_TREND_CONTINUATION/ACCEPTANCE --- counter-
-#       intuitive but 490-day data shows macro alignment is bidirectional.
-#       Note: gate is disabled for FOLLOW/FADE/MEAN (directional resolved at runtime).
+#  28i. Macro regime gate applies after all direction tokens resolve.
+#       LONG is skipped in BEAR_MACRO and SHORT is skipped in BULL_MACRO,
+#       including FOLLOW/FADE/MEAN/BREAKOUT phases.
 #
 #  ------ NEW IMPROVEMENTS (v29, Backtest Realism & Out-of-Sample Audit) ------
 #
@@ -130,7 +128,7 @@
 #  15. PHASE_TO_ML: POST_IMPULSE_DIGESTION --- NEUTRAL
 #      Data: 2.3% win rate on 1m, 11% on 3m, 23% on 5m even after fix.
 #      Entry too late into move. ML should not trade this label.
-#      Outcome rows still generated --- ML trains to skip.
+#      Research outcomes may be measured, but ML training/execution excludes it.
 #
 #  16. PHASE_TO_ML: ABSORPTION --- NEUTRAL
 #      Data: 5-28% win rate across TFs (worst on 1m).
@@ -385,8 +383,10 @@ PHASE_TO_ML = {
     # ------ IMPULSE UP ---------------------------------------------------------------------------------------------------------------------------------------------
     "IMPULSE_BULL": "IMPULSE_UP",
     "EXPANSION": "IMPULSE_UP",
-    "GAP_CONTINUATION": "IMPULSE_UP",
-    "GAP_TIMEOUT": "TREND_UP",
+    # Direction depends on the opening gap, so these must not be collapsed
+    # into an unconditional bullish label.
+    "GAP_CONTINUATION": "GAP",
+    "GAP_TIMEOUT": "NEUTRAL",
     # ------ IMPULSE DOWN ---------------------------------------------------------------------------------------------------------------------------------------
     "IMPULSE_BEAR": "IMPULSE_DOWN",
     # ------ IMPULSE NEUTRAL ------------------------------------------------------------------------------------------------------------------------------
@@ -394,7 +394,7 @@ PHASE_TO_ML = {
     # POST_IMPULSE_DIGESTION demoted to NEUTRAL (fix 15):
     # Data shows 2.3% / 11% / 23% win rate on 1m/3m/5m even after
     # SHORT fix. Entry too late --- impulse already exhausted by digestion bar.
-    # Outcome rows still generated; ML trains to skip this label.
+    # The execution engine skips this label; it remains useful as context.
     "POST_IMPULSE_DIGESTION": "NEUTRAL",
     # ------ RANGE (mean-revert) ------------------------------------------------------------------------------------------------------------------
     "BALANCE_CHOP": "RANGE",
@@ -410,8 +410,8 @@ PHASE_TO_ML = {
     "GAP_OPEN": "RANGE",
     "AUCTION_IMPULSE_NEUTRAL": "RANGE",
     # ------ REVERSAL (fade the move) ---------------------------------------------------------------------------------------------------
-    "PULLBACK_FAIL": "REVERSAL",
-    "REJECTION": "REVERSAL",
+    "PULLBACK_FAIL": "NEUTRAL",
+    "REJECTION": "NEUTRAL",
     # DISTRIBUTION demoted to NEUTRAL (fix 17):
     # Data: 2-4% win rate across all TFs. Fires inside bull-trending
     # markets where SHORT bias consistently fails. Context signal only.
@@ -475,8 +475,8 @@ PHASE_MODEL = {
     #     not p75+. Previous p75 targets caused TP hit rate of 11---25%;
     #     p50 targets raise TP rate to ~45---55% improving WR-driven expectancy.
     #
-    #  5. NEUTRAL dir phases generate outcome rows (ML training signal)
-    #     but are skipped by the live execution engine.
+    #  5. NEUTRAL dir phases are context-only and do not generate simulated
+    #     trades or live execution signals.
     #
     #  6. lookahead_min: calibrated to p75 of actual exit_after_candles -- tf_min.
     #     Trend: 45---60 min. Impulse/gap: 15---30 min. Range: 20---30 min.
@@ -502,7 +502,7 @@ PHASE_MODEL = {
         "tp": 0.8,
         "sl": 0.7,
         "lookahead_min": 15,
-        # Direction unknown --- outcome used for training classification only.
+        # Direction unknown; measured as mean reversion research only.
     },
     # v28: EXPANSION TP reduced 1.5---1.0, lookahead trimmed 20---15 min.
     # Exit p75 = 2 bars on 15m --- 30 min already wide. 15 min is correct.
@@ -513,7 +513,7 @@ PHASE_MODEL = {
         "lookahead_min": 15,
     },
     # v28: POST_IMPULSE_DIGESTION TP reduced 1.0---0.6, SL tightened 0.7---0.5.
-    # MFE p50 = 0.60R; MAE p75 = 0.28R. Still generates outcome rows for ML.
+    # MFE p50 = 0.60R; MAE p75 = 0.28R.
     "POST_IMPULSE_DIGESTION": {
         "dir": "FOLLOW",
         "tp": 0.6,
@@ -588,7 +588,7 @@ PHASE_MODEL = {
         "tp": 1.0,
         "sl": 0.8,
         "lookahead_min": 30,
-        # No directional trade. Outcome recorded so ML learns to skip.
+        # No directional trade; retained as market context.
     },
     # v28: COMPRESSION TP reduced 1.5---0.8. dir=BREAKOUT resolves via EMA
     # slope --- produces ~50% directional accuracy --- R:R must carry the load.
@@ -707,7 +707,7 @@ PHASE_MODEL = {
     # v28: GAP_TIMEOUT demoted dir FOLLOW---NEUTRAL.
     # TP hit rate was only 10.9% --- FOLLOW direction is wrong after timeout.
     # Gap timeout on 15m resolves into balance/chop, not continuation.
-    # Outcome rows retained so ML learns to skip.
+    # Retained as market context; no directional outcome is simulated.
     "GAP_TIMEOUT": {
         "dir": "NEUTRAL",
         "tp": 1.0,
@@ -725,6 +725,24 @@ PHASE_MODEL = {
         "sl": 0.7,
         "lookahead_min": 30,
     },
+    "AUCTION_IMPULSE_UP": {
+        "dir": "LONG",
+        "tp": 1.0,
+        "sl": 0.7,
+        "lookahead_min": 20,
+    },
+    "AUCTION_IMPULSE_DOWN": {
+        "dir": "SHORT",
+        "tp": 1.0,
+        "sl": 0.7,
+        "lookahead_min": 20,
+    },
+    "AUCTION_IMPULSE_NEUTRAL": {
+        "dir": "NEUTRAL",
+        "tp": 0.0,
+        "sl": 0.0,
+        "lookahead_min": 15,
+    },
     "GAP_OPEN": {
         "dir": "MEAN",
         "tp": 0.8,
@@ -734,7 +752,7 @@ PHASE_MODEL = {
     # ------ Reversal / structural phases ------------------------------------------------------------------------------------------------
     # v28: PULLBACK_FAIL demoted dir FADE---NEUTRAL.
     # TP hit rate was 3.2% --- FADE direction almost never works on 15m.
-    # Outcome rows retained (realized_r will be strongly negative --- ML learns skip).
+    # Retained as market context; no directional outcome is simulated.
     "PULLBACK_FAIL": {
         "dir": "NEUTRAL",
         "tp": 1.2,
@@ -785,6 +803,7 @@ def _simulate_exit_vectorized(
     closes: np.ndarray,
     n: int,
     is_short: bool = False,
+    excursion_n: int | None = None,
 ):
     """
     Direction-aware exit simulation.
@@ -805,30 +824,34 @@ def _simulate_exit_vectorized(
                  SL hit when highs >= sl (above entry, price rises to stop)
                  MFE = max(entry - lows),  MAE = min(entry - highs)
     """
-    if n <= 0:
+    available = min(len(highs), len(lows), len(closes))
+    n = min(n, available)
+    requested_research_n = excursion_n if excursion_n is not None else n
+    research_n = min(max(n, requested_research_n), available)
+    if n <= 0 or research_n <= 0:
         return "TIME_EXIT", entry, 0, 0.0, 0.0
 
     if is_short:
         # Favorable: price drops below entry
-        mfe = np.maximum.accumulate(entry - lows[:n])
-        mae = np.minimum.accumulate(entry - highs[:n])
         sl_hits = np.where(highs[:n] >= sl)[0]  # stop: price rises to sl
         tp_hits = np.where(lows[:n] <= tp)[0]  # target: price drops to tp
+        full_mfe = max(0.0, float(np.max(entry - lows[:research_n])))
+        full_mae = min(0.0, float(np.min(entry - highs[:research_n])))
     else:
         # Favorable: price rises above entry
-        mfe = np.maximum.accumulate(highs[:n] - entry)
-        mae = np.minimum.accumulate(lows[:n] - entry)
         sl_hits = np.where(lows[:n] <= sl)[0]  # stop: price drops to sl
         tp_hits = np.where(highs[:n] >= tp)[0]  # target: price rises to tp
+        full_mfe = max(0.0, float(np.max(highs[:research_n] - entry)))
+        full_mae = min(0.0, float(np.min(lows[:research_n] - entry)))
 
     sl_idx = sl_hits[0] if len(sl_hits) else n
     tp_idx = tp_hits[0] if len(tp_hits) else n
 
     if sl_idx == n and tp_idx == n:
-        return "TIME_EXIT", closes[n - 1], n, float(mfe[-1]), float(mae[-1])
+        return "TIME_EXIT", closes[n - 1], n, full_mfe, full_mae
     if sl_idx <= tp_idx:
-        return "SL_HIT", sl, sl_idx + 1, float(mfe[sl_idx]), float(mae[sl_idx])
-    return "TP_HIT", tp, tp_idx + 1, float(mfe[tp_idx]), float(mae[tp_idx])
+        return "SL_HIT", sl, sl_idx + 1, full_mfe, full_mae
+    return "TP_HIT", tp, tp_idx + 1, full_mfe, full_mae
 
 
 # ------ IMPROVEMENT 1: numpy-based state machine ---------------------------------------------------------------
@@ -852,6 +875,17 @@ _HYSTERESIS_ALLOWED = frozenset(
         "POST_IMPULSE_DIGESTION",
     }
 )
+
+
+def _post_impulse_trend_phase(impulse_dir: str, close: float, open_: float):
+    """Return the directional continuation/digestion label after an impulse."""
+    if impulse_dir == "BEAR":
+        return (
+            "BEAR_TREND_CONTINUATION"
+            if close <= open_
+            else "BEAR_TREND_DIGESTION"
+        )
+    return "TREND_CONTINUATION" if close >= open_ else "TREND_DIGESTION"
 
 
 def _run_state_machine(
@@ -891,6 +925,7 @@ def _run_state_machine(
     distribution_max_streak: int = 5,  # max consecutive distribution bars
     # ------ Post-impulse controls ------------------------------------------------------------------------------------------------------------------------------------------------
     pullback_min_bars: int = 2,  # adverse bars before PULLBACK_FAIL fires
+    post_impulse_max_bars: int = 10,  # maximum lifetime of post-impulse resolver
     # ------ Trend context decay ------------------------------------------------------------------------------------------------------------------------------------------------------
     trend_context_decay: int = 20,  # bars without signal --- context resets
     # ------ No-man's-land RE floors (P3a / P3b) ---------------------------------------------------------------------------------------------------
@@ -996,7 +1031,7 @@ def _run_state_machine(
     dist_arr = distribution.to_numpy()
     ab_brk = absorption_break.to_numpy()
     db_brk = distribution_break.to_numpy()
-    ema_slope_arr = df["ema_21_slope"].to_numpy(dtype=float)
+    ema_slope_raw_arr = df["ema_21_slope"].to_numpy(dtype=float)
 
     ema9_arr = (
         df["ema_9"].to_numpy(dtype=float) if "ema_9" in df.columns else close_arr.copy()
@@ -1006,7 +1041,7 @@ def _run_state_machine(
         if "ema_50" in df.columns
         else close_arr.copy()
     )
-    vr_arr = (
+    volatility_ratio_arr = (
         df["vol_ratio"].to_numpy(dtype=float)
         if "vol_ratio" in df.columns
         else np.ones(n)
@@ -1062,6 +1097,13 @@ def _run_state_machine(
     )
     with np.errstate(divide="ignore", invalid="ignore"):
         atr_pct_arr = np.where(close_arr > 0, atr14_arr / close_arr, 0.01)
+        # State thresholds must be comparable across symbols and timeframes.
+        # Express EMA slope as a fraction of ATR instead of raw rupee movement.
+        ema_slope_arr = np.where(
+            np.isfinite(atr14_arr) & (atr14_arr > 0),
+            ema_slope_raw_arr / atr14_arr,
+            0.0,
+        )
 
     prev_atr_arr = (
         df["prev_day_atr"].to_numpy(dtype=float)
@@ -1093,14 +1135,21 @@ def _run_state_machine(
     gap_atr_arr = df["gap_atr"].to_numpy(dtype=float)
     bar_date_arr = df["date"].tolist()
 
-    _gfp = pd.Series(gap_fill_pct_arr)
+    # Learn gap thresholds only from actual gap-session bars. The shift keeps
+    # the current bar out of its own threshold and avoids future backfills.
+    _gap_observations = pd.Series(gap_fill_pct_arr).where(np.abs(gap_atr_arr) > 0)
     _gfp_p75 = (
-        _gfp.rolling(max(roll_20, 5), min_periods=5).quantile(0.75).bfill().fillna(0.80)
+        _gap_observations.rolling(max(roll_20, 5), min_periods=5)
+        .quantile(0.75)
+        .shift(1)
+        .ffill()
+        .fillna(0.80)
     )
     _gfp_p25 = (
-        _gfp.rolling(max(roll_20, 5), min_periods=5)
+        _gap_observations.rolling(max(roll_20, 5), min_periods=5)
         .quantile(0.25)
-        .bfill()
+        .shift(1)
+        .ffill()
         .fillna(-0.50)
     )
     gap_filled_thr_arr = np.clip(_gfp_p75.to_numpy(), 0.65, 0.95)
@@ -1145,6 +1194,7 @@ def _run_state_machine(
     absorption_streak = 0
     distribution_streak = 0
     pullback_bars = 0
+    post_impulse_bars = 0
 
     session_open_price = float(open_arr[0]) if n > 0 else 0.0
     session_prev_atr = (
@@ -1170,6 +1220,7 @@ def _run_state_machine(
         if new_day:
             compression_streak = 0
             pullback_bars = 0
+            post_impulse_bars = 0
             absorption_streak = 0
             distribution_streak = 0
             trend_context = "NEUTRAL"
@@ -1221,11 +1272,19 @@ def _run_state_machine(
         # Prevents false trend terminations from minor 1-bar wicks in choppy structures.
         choch_bear_confirmed = (
             ps_curr == "BEAR"
-            and (ema_slope_arr[i] <= 0.002 or trend_exhaustion[i] == 1 or vr_arr[i] >= 1.0)
+            and (
+                ema_slope_arr[i] <= 0.002
+                or trend_exhaustion[i] == 1
+                or volatility_ratio_arr[i] >= 1.0
+            )
         )
         choch_bull_confirmed = (
             ps_curr == "BULL"
-            and (ema_slope_arr[i] >= -0.002 or trend_exhaustion[i] == 1 or vr_arr[i] >= 1.0)
+            and (
+                ema_slope_arr[i] >= -0.002
+                or trend_exhaustion[i] == 1
+                or volatility_ratio_arr[i] >= 1.0
+            )
         )
 
         if trend_context == "BULL" and choch_bear_confirmed:
@@ -1241,6 +1300,7 @@ def _run_state_machine(
             gap_auction_active[i] = 0
             gap_auction_origin[i] = 0
             post_impulse_active[i] = 0
+            post_impulse_bars = 0
             impulse_dir[i] = None
             impulse_origin_low[i] = np.nan
             impulse_origin_high[i] = np.nan
@@ -1295,7 +1355,9 @@ def _run_state_machine(
             is_large = session_context_arr[i] == "LARGE_GAP_SESSION"
 
             # Feature 3: Adaptive Gap Direction Evaluation based on volume & opening bar structure
-            vol_high = (vr_arr[i] >= 1.1) or (vol_arr[i] > vol_ma20_arr[i])
+            vol_high = (volatility_ratio_arr[i] >= 1.1) or (
+                vol_arr[i] > vol_ma20_arr[i]
+            )
             bar_bullish = close_arr[i] >= open_arr[i]
             bar_bearish = close_arr[i] <= open_arr[i]
 
@@ -1315,7 +1377,8 @@ def _run_state_machine(
                     _dbg(i, "E1:gap_down_fade")
             else:
                 market_phase[i] = "GAP_OPEN"
-            _dbg(i, "E1:gap_open")
+            if not phase_reason or not phase_reason[i]:
+                _dbg(i, "E1:gap_open")
             continue
 
         # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -1382,6 +1445,7 @@ def _run_state_machine(
 
         if impulse_allowed and bull_arr[i - 1]:
             post_impulse_active[i] = 1
+            post_impulse_bars = 0
             impulse_dir[i] = "BULL"
             trend_context = "BULL"
             trend_context_bars = 0
@@ -1389,6 +1453,7 @@ def _run_state_machine(
             impulse_origin_high[i] = high_arr[i - 1]
         elif impulse_allowed and bear_arr[i - 1]:
             post_impulse_active[i] = 1
+            post_impulse_bars = 0
             impulse_dir[i] = "BEAR"
             trend_context = "BEAR"
             trend_context_bars = 0
@@ -1396,6 +1461,7 @@ def _run_state_machine(
             impulse_origin_high[i] = high_arr[i - 1]
         elif impulse_allowed and neut_arr[i - 1]:
             post_impulse_active[i] = 1
+            post_impulse_bars = 0
             impulse_dir[i] = "NEUTRAL"
             impulse_origin_low[i] = low_arr[i - 1]
             impulse_origin_high[i] = high_arr[i - 1]
@@ -1404,6 +1470,13 @@ def _run_state_machine(
             impulse_dir[i] = impulse_dir[i - 1]
             impulse_origin_low[i] = impulse_origin_low[i - 1]
             impulse_origin_high[i] = impulse_origin_high[i - 1]
+
+        if post_impulse_active[i] == 1:
+            post_impulse_bars += 1
+            if post_impulse_bars > post_impulse_max_bars:
+                post_impulse_active[i] = 0
+                post_impulse_bars = 0
+                pullback_bars = 0
 
         if post_impulse_active[i] == 1 and not (
             bull_arr[i] or bear_arr[i] or neut_arr[i]
@@ -1452,7 +1525,7 @@ def _run_state_machine(
             # ABSORPTION
             if (
                 vol_arr[i] > vol_ma20_arr[i]
-                and vr_arr[i] >= absorption_vol_thr
+                and volatility_ratio_arr[i] >= absorption_vol_thr
                 and ae == 0
                 and re < 0.35
             ):
@@ -1508,11 +1581,16 @@ def _run_state_machine(
                 continue
 
             if ae == 1 and re > 0.45:
-                if close_arr[i] >= open_arr[i]:
-                    market_phase[i] = "TREND_CONTINUATION"
-                else:
-                    market_phase[i] = "TREND_DIGESTION"
-                trend_context = "BULL"
+                market_phase[i] = _post_impulse_trend_phase(
+                    idir, close_arr[i], open_arr[i]
+                )
+                trend_context = (
+                    "BEAR"
+                    if idir == "BEAR"
+                    else ("BULL" if idir == "BULL" else "NEUTRAL")
+                )
+                post_impulse_active[i] = 0
+                post_impulse_bars = 0
                 trend_context_bars = 0
             else:
                 market_phase[i] = "POST_IMPULSE_DIGESTION"
@@ -1677,7 +1755,7 @@ def _run_state_machine(
                 else:
                     market_phase[i] = "BALANCE_CHOP"
                     _dbg(i, "P3a:no_location_distribution_demoted")
-            elif ab_arr[i] and vr_arr[i] >= absorption_vol_thr:
+            elif ab_arr[i] and volatility_ratio_arr[i] >= absorption_vol_thr:
                 if at_key_location:
                     market_phase[i] = "ABSORPTION"
                     absorption_streak += 1
@@ -1761,7 +1839,7 @@ def _run_state_machine(
                 else:
                     market_phase[i] = "TREND_DIGESTION"
                     _dbg(i, "P3b:tv_flip_demoted_digestion(bearish_close)")
-            elif ab_arr[i] and vr_arr[i] >= absorption_vol_thr:
+            elif ab_arr[i] and volatility_ratio_arr[i] >= absorption_vol_thr:
                 market_phase[i] = "ABSORPTION"
                 absorption_streak += 1
                 _dbg(i, "P3b:absorption")
@@ -1930,7 +2008,7 @@ def _run_state_machine(
                     market_phase[i] = "BALANCE_CHOP"
                     _dbg(i, "P5:no_location_distribution_demoted")
 
-            elif ab_arr[i] and vr_arr[i] >= absorption_vol_thr:
+            elif ab_arr[i] and volatility_ratio_arr[i] >= absorption_vol_thr:
                 if at_key_location:
                     market_phase[i] = "ABSORPTION"
                     absorption_streak += 1
@@ -2278,6 +2356,10 @@ def _load_phase_params(symbol: str, exchange: str, timeframe: str, conn) -> dict
         )
     except Exception:
         try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
             df = read_sql_safe(
                 """
                 SELECT market_phase, optimal_tp, optimal_sl, optimal_lookahead_min,
@@ -2294,6 +2376,10 @@ def _load_phase_params(symbol: str, exchange: str, timeframe: str, conn) -> dict
     params = {}
     if not df.empty:
         for _, row in df.iterrows():
+            # Legacy rows without a recorded calibration window cannot be
+            # proven out-of-sample, so they must not influence simulation.
+            if "calibrated_to" not in row.index or pd.isna(row["calibrated_to"]):
+                continue
             params[row["market_phase"]] = {
                 "tp": float(row["optimal_tp"]),
                 "sl": float(row["optimal_sl"]),

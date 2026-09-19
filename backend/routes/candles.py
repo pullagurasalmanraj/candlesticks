@@ -44,35 +44,57 @@ def api_candles_check():
         symbol = payload.get("symbol", "").upper().strip()
         timeframe = payload.get("timeframe", "").strip()
         instrument_key = payload.get("instrument_key", "").strip()
+        start_date = payload.get("start_date")
+        end_date = payload.get("end_date")
         exchange = detect_exchange(instrument_key) if instrument_key else payload.get("exchange", "NSE")
 
         if not symbol or not timeframe:
             return jsonify({"error": "symbol and timeframe required"}), 400
 
         is_daily = timeframe.upper() in ["1D", "1DAY", "DAY", "1440"]
+        range_start = date.fromisoformat(min(start_date, end_date)) if start_date and end_date else None
+        range_end = date.fromisoformat(max(start_date, end_date)) if start_date and end_date else None
         
         with get_db_conn() as conn:
             with conn.cursor() as cur:
                 if is_daily:
                     cur.execute("""
-                        SELECT COUNT(*) as count 
+                        SELECT COUNT(*) AS count,
+                               MIN(timestamp::date) AS first_date,
+                               MAX(timestamp::date) AS last_date
                         FROM daily_candles 
                         WHERE symbol=%s AND exchange=%s AND timeframe='1D'
-                    """, (symbol, exchange))
+                          AND (%s::date IS NULL OR timestamp::date >= %s::date)
+                          AND (%s::date IS NULL OR timestamp::date <= %s::date)
+                    """, (symbol, exchange, range_start, range_start, range_end, range_end))
                 else:
                     db_tf = timeframe
                     if db_tf.isdigit():
                         db_tf = f"{db_tf}m"
                     cur.execute("""
-                        SELECT COUNT(*) as count 
+                        SELECT COUNT(*) AS count,
+                               MIN(timestamp::date) AS first_date,
+                               MAX(timestamp::date) AS last_date
                         FROM intraday_candles 
                         WHERE symbol=%s AND exchange=%s AND timeframe=%s
-                    """, (symbol, exchange, db_tf))
+                          AND (%s::date IS NULL OR timestamp::date >= %s::date)
+                          AND (%s::date IS NULL OR timestamp::date <= %s::date)
+                    """, (symbol, exchange, db_tf, range_start, range_start, range_end, range_end))
                 
                 res = cur.fetchone()
                 count = res["count"] if res else 0
+                first_date = res["first_date"] if res else None
+                last_date = res["last_date"] if res else None
                 
         exists = count > 0
+        if range_start and range_end:
+            exists = bool(
+                exists
+                and first_date is not None
+                and last_date is not None
+                and first_date <= range_start
+                and last_date >= range_end
+            )
         if exists:
             print(f"\n>>> [Check] {symbol} ({exchange}) {timeframe} data is already present in database ({count} rows). Bypassing bulk fetch.\n")
             
@@ -81,7 +103,11 @@ def api_candles_check():
             "symbol": symbol,
             "timeframe": timeframe,
             "exists": exists,
-            "count": count
+            "count": count,
+            "first_date": str(first_date) if first_date else None,
+            "last_date": str(last_date) if last_date else None,
+            "requested_from": str(range_start) if range_start else None,
+            "requested_to": str(range_end) if range_end else None,
         })
     except Exception as e:
         import traceback
@@ -233,13 +259,24 @@ def api_candles_history():
             with get_db_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT COUNT(*) as count 
+                        SELECT COUNT(*) AS count,
+                               MIN(timestamp::date) AS first_date,
+                               MAX(timestamp::date) AS last_date
                         FROM intraday_candles 
                         WHERE symbol=%s AND exchange=%s AND timeframe=%s AND timestamp::date >= %s::date AND timestamp::date <= %s::date
-                    """, (symbol, exchange, db_tf, start_date, end_date))
+                    """, (symbol, exchange, db_tf, start_dt, end_dt))
                     res_count = cur.fetchone()
                     existing_count = res_count["count"] if res_count else 0
-            if existing_count > 0:
+                    first_existing = res_count["first_date"] if res_count else None
+                    last_existing = res_count["last_date"] if res_count else None
+            range_covered = bool(
+                existing_count > 0
+                and first_existing is not None
+                and last_existing is not None
+                and first_existing <= start_dt
+                and last_existing >= end_dt
+            )
+            if range_covered:
                 print(f"\n>>> [Validation] {symbol} ({exchange}) {db_tf} candles are already present in database ({existing_count} rows). Skipping Upstox API fetch.\n")
                 return jsonify({
                     "status": "success", 
@@ -335,19 +372,32 @@ def api_daily_candles():
             return jsonify({"error": "symbol, instrument_key, start_date, end_date required"}), 400
 
         exchange = detect_exchange(instrument_key)
+        requested_start = date.fromisoformat(min(start_date, end_date))
+        requested_end = date.fromisoformat(max(start_date, end_date))
 
         # Check if daily candles already exist for this date range in DB
         if not payload.get("force", False):
             with get_db_conn() as conn:
                 with conn.cursor() as cur:
                     cur.execute("""
-                        SELECT COUNT(*) as count 
+                        SELECT COUNT(*) AS count,
+                               MIN(timestamp::date) AS first_date,
+                               MAX(timestamp::date) AS last_date
                         FROM daily_candles 
                         WHERE symbol=%s AND exchange=%s AND timeframe='1D' AND timestamp::date >= %s::date AND timestamp::date <= %s::date
-                    """, (symbol, exchange, start_date, end_date))
+                    """, (symbol, exchange, requested_start, requested_end))
                     res_count = cur.fetchone()
                     existing_count = res_count["count"] if res_count else 0
-            if existing_count > 0:
+                    first_existing = res_count["first_date"] if res_count else None
+                    last_existing = res_count["last_date"] if res_count else None
+            range_covered = bool(
+                existing_count > 0
+                and first_existing is not None
+                and last_existing is not None
+                and first_existing <= requested_start
+                and last_existing >= requested_end
+            )
+            if range_covered:
                 print(f"\n>>> [Validation] {symbol} ({exchange}) daily (1D) candles are already present in database ({existing_count} rows). Skipping Upstox API fetch.\n")
                 return jsonify({
                     "status": "success", 
@@ -366,7 +416,7 @@ def api_daily_candles():
             return jsonify({"error": "Missing Upstox access token"}), 401
 
         encoded_key = quote(instrument_key, safe="")
-        url = f"{UPSTOX_V3_BASE}/historical-candle/{encoded_key}/days/1/{end_date}/{start_date}"
+        url = f"{UPSTOX_V3_BASE}/historical-candle/{encoded_key}/days/1/{requested_end}/{requested_start}"
         r   = safe_requests.get(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}, timeout=30)
 
         if r.status_code != 200:

@@ -43,10 +43,10 @@ export async function fetchHistoricalCandlesAPI({
         body: JSON.stringify(payload)
     });
 
-    const result = await res.json();
+    const result = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-        throw new Error(result.error || "API error");
+        throw new Error(result.error || result.details || `Candle API failed (${res.status})`);
     }
 
     return result;
@@ -73,10 +73,10 @@ export async function storeCandlesAPI(payload, timeframe) {
         body: JSON.stringify(payload)
     });
 
-    const result = await res.json();
+    const result = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-        throw new Error(result.error || "API error");
+        throw new Error(result.error || result.details || `Candle API failed (${res.status})`);
     }
 
     return result;

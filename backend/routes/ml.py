@@ -118,38 +118,41 @@ EXEC_PARAMS = {
     "FADE_GAP_DOWN":   {"dir": "LONG",  "tp": 1.0, "sl": 0.6, "risk_pct": 0.010},
     "FOLLOW_GAP_UP":   {"dir": "LONG",  "tp": 1.5, "sl": 0.8, "risk_pct": 0.010},
     "FOLLOW_GAP_DOWN": {"dir": "SHORT", "tp": 1.5, "sl": 0.8, "risk_pct": 0.010},
-    "REVERSAL":        {"dir": "FADE",  "tp": 0.7, "sl": 0.5, "risk_pct": 0.008},
+    "FOLLOW_MOMENTUM": {"dir": "FOLLOW", "tp": 1.0, "sl": 0.8, "risk_pct": 0.012},
+    "FOLLOW_GAP":      {"dir": "FOLLOW", "tp": 0.8, "sl": 0.7, "risk_pct": 0.010},
     "SKIP":            {"dir": "NONE",  "tp": 0,   "sl": 0,   "risk_pct": 0},
 }
 
 # Phase label → execution-aligned ML class
 PHASE_TO_EXEC = {
     "IMPULSE_BULL":              "LONG_MOMENTUM",
-    "EXPANSION":                 "LONG_MOMENTUM",
-    "GAP_CONTINUATION":          "LONG_MOMENTUM",
+    "EXPANSION":                 "FOLLOW_MOMENTUM",
+    "GAP_CONTINUATION":          "FOLLOW_GAP",
     "IMPULSE_BEAR":              "SHORT_MOMENTUM",
     "TREND_CONTINUATION":        "LONG_TREND",
     "TREND_ACCEPTANCE":          "LONG_TREND",
     "TREND_PAUSE":               "LONG_TREND",
     "TREND_DIGESTION":           "LONG_TREND",
-    "GAP_TIMEOUT":               "LONG_TREND",
+    "GAP_TIMEOUT":               "SKIP",
     "BEAR_TREND_CONTINUATION":   "SHORT_TREND",
     "BEAR_TREND_ACCEPTANCE":     "SHORT_TREND",
     "BEAR_TREND_PAUSE":          "SHORT_TREND",
     "BEAR_TREND_DIGESTION":      "SHORT_TREND",
     "MODERATE_GAP_UP":           "FADE_GAP_UP",
     "MODERATE_GAP_AUCTION_BEAR": "FADE_GAP_UP",
-    "MODERATE_GAP_DOWN":         "FADE_GAP_DOWN",
+    "MODERATE_GAP_DOWN":         "FOLLOW_GAP_DOWN",
     "MODERATE_GAP_AUCTION_BULL": "FADE_GAP_DOWN",
-    "LARGE_GAP_UP":              "FOLLOW_GAP_UP",
+    "LARGE_GAP_UP":              "FADE_GAP_UP",
     "LARGE_GAP_AUCTION_BULL":    "FOLLOW_GAP_UP",
     "AUCTION_IMPULSE_UP":        "FOLLOW_GAP_UP",
     "LARGE_GAP_DOWN":            "FOLLOW_GAP_DOWN",
     "LARGE_GAP_AUCTION_BEAR":    "FOLLOW_GAP_DOWN",
     "AUCTION_IMPULSE_DOWN":      "FOLLOW_GAP_DOWN",
-    "PULLBACK_FAIL":             "REVERSAL",
-    "REJECTION":                 "REVERSAL",
-    "DISTRIBUTION":              "REVERSAL",
+    "GAP_UP_FADE":               "FADE_GAP_UP",
+    "GAP_DOWN_FADE":             "FADE_GAP_DOWN",
+    "PULLBACK_FAIL":             "SKIP",
+    "REJECTION":                 "SKIP",
+    "DISTRIBUTION":              "SKIP",
     "BALANCE_CHOP":              "SKIP",
     "COMPRESSION":               "SKIP",
     "GAP_AUCTION_CHOP":          "SKIP",
@@ -157,11 +160,40 @@ PHASE_TO_EXEC = {
     "GAP_OPEN":                  "SKIP",
     "IMPULSE_NEUTRAL":           "SKIP",
     "POST_IMPULSE_DIGESTION":    "SKIP",
+    "ABSORPTION":                "SKIP",
+    "AUCTION_IMPULSE_NEUTRAL":   "SKIP",
     "UNCLASSIFIED":              "SKIP",
 }
 
 SLIPPAGE_PTS  = 0.05
 TOTAL_COST_PCT = 0.00150
+
+
+def _resolve_exec_direction(exec_class, row):
+    """Resolve dynamic execution classes from information available on the bar."""
+    raw_dir = EXEC_PARAMS.get(exec_class, {}).get("dir", "NONE")
+    if raw_dir != "FOLLOW":
+        return raw_dir
+
+    gap_atr = float(row.get("gap_atr", 0) or 0)
+    if gap_atr > 0:
+        return "LONG"
+    if gap_atr < 0:
+        return "SHORT"
+    ema_slope = float(row.get("ema_21_slope", 0) or 0)
+    return "SHORT" if ema_slope < 0 else "LONG"
+
+
+def _cost_r_feature(row, exec_class):
+    """Return transaction cost as a fraction of the configured stop risk."""
+    cfg = EXEC_PARAMS.get(exec_class, {})
+    sl_atr = float(cfg.get("sl", 0) or 0)
+    atr = float(row.get("atr_14", 0) or 0)
+    price = float(row.get("reference_price", row.get("close", 0)) or 0)
+    risk_points = sl_atr * atr
+    if risk_points <= 0 or price <= 0:
+        return 0.0
+    return (price * TOTAL_COST_PCT) / risk_points
 
 
 def _get_engine():
@@ -287,12 +319,18 @@ def _load_training_data(symbol: str, timeframe: str, engine,
 
     sql = """
         SELECT
-            so.ts, so.symbol, so.timeframe,
+            so.ts, so.exit_ts, so.symbol, so.timeframe,
             -- ── Targets ──────────────────────────────────────────
             so.realized_r,
             CASE WHEN so.realized_r > 0 THEN 1 ELSE 0 END AS win,
             so.exit_reason,
-            so.outcome_timing,
+            (SELECT prev.outcome_timing
+               FROM strategy_outcomes prev
+              WHERE prev.symbol=so.symbol
+                AND prev.exchange=so.exchange
+                AND prev.timeframe=so.timeframe
+                AND prev.exit_ts < so.ts
+              ORDER BY prev.exit_ts DESC LIMIT 1) AS outcome_timing,
             so.mfe_r, so.mae_r,
             so.exit_after_candles,
             -- ── LTF market context features ───────────────────────
@@ -330,10 +368,26 @@ def _load_training_data(symbol: str, timeframe: str, engine,
             so.vwap_trend_fired,
             so.volume_expansion_fired,
             so.atr_14
+            , i.close AS reference_price
+            , (SELECT prev.market_phase FROM market_context prev
+                WHERE prev.symbol=mc.symbol AND prev.exchange=mc.exchange
+                  AND prev.timeframe=mc.timeframe AND prev.ts < mc.ts
+                ORDER BY prev.ts DESC OFFSET 0 LIMIT 1) AS phase_lag_1
+            , (SELECT prev.market_phase FROM market_context prev
+                WHERE prev.symbol=mc.symbol AND prev.exchange=mc.exchange
+                  AND prev.timeframe=mc.timeframe AND prev.ts < mc.ts
+                ORDER BY prev.ts DESC OFFSET 1 LIMIT 1) AS phase_lag_2
+            , (SELECT prev.market_phase FROM market_context prev
+                WHERE prev.symbol=mc.symbol AND prev.exchange=mc.exchange
+                  AND prev.timeframe=mc.timeframe AND prev.ts < mc.ts
+                ORDER BY prev.ts DESC OFFSET 2 LIMIT 1) AS phase_lag_3
         FROM strategy_outcomes so
         JOIN market_context mc
-          ON so.symbol=mc.symbol AND so.exchange=mc.exchange
+         ON so.symbol=mc.symbol AND so.exchange=mc.exchange
          AND so.timeframe=mc.timeframe AND so.ts=mc.ts
+        JOIN indicators i
+          ON so.symbol=i.symbol AND so.exchange=i.exchange
+         AND so.timeframe=i.timeframe AND so.ts=i.ts
         WHERE so.symbol=%(symbol)s AND so.timeframe=%(timeframe)s
           AND so.realized_r IS NOT NULL
           AND mc.market_phase NOT IN ('UNCLASSIFIED')
@@ -341,7 +395,7 @@ def _load_training_data(symbol: str, timeframe: str, engine,
     """
     df = pd.read_sql(sql, engine,
                      params={"symbol": symbol, "timeframe": timeframe},
-                     parse_dates=["ts"])
+                     parse_dates=["ts", "exit_ts"])
 
     if df.empty:
         return df
@@ -380,10 +434,15 @@ def _load_training_data(symbol: str, timeframe: str, engine,
 
     # ── Add lag features (LTF phase sequence) ────────────────────
     for lag in range(1, LAG_N + 1):
-        df[f"phase_lag_{lag}"] = df["market_phase"].shift(lag).fillna("UNCLASSIFIED")
+        col = f"phase_lag_{lag}"
+        if col not in df.columns:
+            df[col] = df["market_phase"].shift(lag)
+        df[col] = df[col].fillna("UNCLASSIFIED")
 
     df["exec_class"]   = df["market_phase"].map(PHASE_TO_EXEC).fillna("SKIP")
-    df["cost_r_ratio"] = (df["atr_14"] * TOTAL_COST_PCT).where(df["atr_14"] > 0, 0)
+    df["cost_r_ratio"] = df.apply(
+        lambda row: _cost_r_feature(row, row["exec_class"]), axis=1
+    )
 
     df = df.dropna(subset=["realized_r", "market_phase"])
     return df
@@ -396,20 +455,29 @@ def _walk_forward_splits(df, n_splits=5, test_frac=0.15):
     Never looks into the future.
     """
     total = len(df)
-    test_size = int(total * test_frac)
+    test_size = max(1, int(total * test_frac))
     min_train = int(total * 0.40)   # need at least 40% to train
 
     splits = []
+    first_test_start = max(min_train, total - n_splits * test_size)
     for k in range(n_splits):
-        test_end   = total - k * (test_size // n_splits)
-        test_start = test_end - test_size
-        if test_start < min_train:
+        test_start = first_test_start + k * test_size
+        test_end = min(total, test_start + test_size)
+        if test_start >= total or test_end <= test_start:
             break
-        splits.append((
-            df.iloc[:test_start].copy(),
-            df.iloc[test_start:test_end].copy()
-        ))
-    return list(reversed(splits))   # chronological order
+        train_df = df.iloc[:test_start].copy()
+        test_df = df.iloc[test_start:test_end].copy()
+        # Purge training labels whose realized exit reaches into the test
+        # window. Temporal ordering by entry time alone still leaks their
+        # future path into validation.
+        if "exit_ts" in train_df.columns and not test_df.empty:
+            test_start_ts = pd.Timestamp(test_df["ts"].iloc[0])
+            train_df = train_df[
+                train_df["exit_ts"].notna()
+                & (pd.to_datetime(train_df["exit_ts"]) < test_start_ts)
+            ]
+        splits.append((train_df, test_df))
+    return splits
 
 
 def _get_feature_cols(df):
@@ -465,13 +533,17 @@ def train_pipeline():
         X = df_trade[all_feat]
         y_bin = df_trade["win"]
         y_reg = df_trade["realized_r"]
+        if y_bin.nunique() < 2:
+            return jsonify({"error": "Training data must contain wins and losses"}), 400
 
         # ── Walk-forward validation ───────────────────────────────
         splits = _walk_forward_splits(df_trade, n_splits=4, test_frac=0.20)
-        auc_scores, mae_scores = [], []
+        auc_scores, mae_scores, oof_parts = [], [], []
 
         for train_df, test_df in splits:
             if len(train_df) < 100 or len(test_df) < 30:
+                continue
+            if train_df["win"].nunique() < 2 or test_df["win"].nunique() < 2:
                 continue
             X_tr = train_df[all_feat]; X_te = test_df[all_feat]
 
@@ -484,7 +556,8 @@ def train_pipeline():
                     class_weight="balanced", random_state=42, verbose=-1))
             ])
             clf.fit(X_tr, train_df["win"])
-            auc = roc_auc_score(test_df["win"], clf.predict_proba(X_te)[:, 1])
+            test_prob = clf.predict_proba(X_te)[:, 1]
+            auc = roc_auc_score(test_df["win"], test_prob)
             auc_scores.append(auc)
 
             # Regressor
@@ -496,8 +569,13 @@ def train_pipeline():
                     random_state=42, verbose=-1))
             ])
             reg.fit(X_tr, train_df["realized_r"])
-            mae = mean_absolute_error(test_df["realized_r"], reg.predict(X_te))
+            test_r = reg.predict(X_te)
+            mae = mean_absolute_error(test_df["realized_r"], test_r)
             mae_scores.append(mae)
+            fold_predictions = test_df[["market_phase", "realized_r"]].copy()
+            fold_predictions["pred_prob"] = test_prob
+            fold_predictions["pred_r"] = test_r
+            oof_parts.append(fold_predictions)
 
         # ── Final fit on all data ─────────────────────────────────
         final_clf = Pipeline([
@@ -519,13 +597,17 @@ def train_pipeline():
         final_reg.fit(X, y_reg)
 
         # ── Per-phase performance analysis ────────────────────────
-        # Apply final classifier to full data — shows which phases
-        # the model finds most/least predictable.
-        df_trade["pred_prob"] = final_clf.predict_proba(X)[:, 1]
-        df_trade["pred_r"]    = final_reg.predict(X)
+        # Phase diagnostics and thresholds use out-of-fold rows only.
+        analysis_df = (
+            pd.concat(oof_parts, ignore_index=True)
+            if oof_parts
+            else pd.DataFrame(
+                columns=["market_phase", "realized_r", "pred_prob", "pred_r"]
+            )
+        )
 
         phase_stats = {}
-        for phase, grp in df_trade.groupby("market_phase"):
+        for phase, grp in analysis_df.groupby("market_phase"):
             if len(grp) < 20:
                 continue
             wins  = (grp["realized_r"] > 0).sum()
@@ -533,20 +615,22 @@ def train_pipeline():
             avg_r = grp["realized_r"].mean()
             # Optimal threshold: where predicted prob best separates wins
             thresholds = np.arange(0.4, 0.85, 0.05)
-            best_thresh, best_exp = 0.6, -999
+            best_thresh, best_exp = 0.6, None
             for t in thresholds:
                 taken = grp[grp["pred_prob"] >= t]
                 if len(taken) < 5:
                     continue
                 exp = taken["realized_r"].mean()
-                if exp > best_exp:
+                if best_exp is None or exp > best_exp:
                     best_exp, best_thresh = exp, t
             phase_stats[phase] = {
                 "samples":        total,
                 "win_rate":       round(wins / total, 3),
                 "avg_r":          round(avg_r, 4),
                 "recommended_threshold": round(best_thresh, 2),
-                "expected_r_at_threshold": round(best_exp, 4),
+                "expected_r_at_threshold": (
+                    round(best_exp, 4) if best_exp is not None else None
+                ),
                 "exec_class":     PHASE_TO_EXEC.get(phase, "SKIP"),
             }
 
@@ -581,7 +665,7 @@ def train_pipeline():
                 "sym":  symbol, "tf": timeframe,
                 "mt":   "binary_gate+r_predictor",
                 "ta":   datetime.now(timezone.utc),
-                "tf1":  df_trade["ts"].min(), "tt1": df_trade["ts"].max(),
+                "tf1":  df_trade["ts"].min(), "tt1": df_trade["exit_ts"].max(),
                 "tf2":  splits[-1][1]["ts"].min() if splits else df_trade["ts"].min(),
                 "tt2":  splits[-1][1]["ts"].max() if splits else df_trade["ts"].max(),
                 "rows": len(df_trade),
@@ -658,10 +742,17 @@ def predict_signal():
 
         # Pull the latest labelled bar from market_context
         latest_sql = """
-            SELECT mc.*, so.outcome_timing,
+            SELECT mc.*,
+                   (SELECT prev.outcome_timing
+                      FROM strategy_outcomes prev
+                     WHERE prev.symbol=mc.symbol
+                       AND prev.exchange=mc.exchange
+                       AND prev.timeframe=mc.timeframe
+                       AND prev.exit_ts < mc.ts
+                     ORDER BY prev.exit_ts DESC LIMIT 1) AS outcome_timing,
                    so.orb_fired, so.ema_trend_fired, so.atr_expansion_fired,
                    so.vwap_trend_fired, so.volume_expansion_fired,
-                   so.atr_14,
+                   so.atr_14, i.close AS reference_price,
                    -- Lag features from previous bars
                    LAG(mc.market_phase, 1) OVER (ORDER BY mc.ts) AS phase_lag_1,
                    LAG(mc.market_phase, 2) OVER (ORDER BY mc.ts) AS phase_lag_2,
@@ -670,6 +761,9 @@ def predict_signal():
             LEFT JOIN strategy_outcomes so
               ON mc.symbol=so.symbol AND mc.exchange=so.exchange
              AND mc.timeframe=so.timeframe AND mc.ts=so.ts
+            LEFT JOIN indicators i
+              ON mc.symbol=i.symbol AND mc.exchange=i.exchange
+             AND mc.timeframe=i.timeframe AND mc.ts=i.ts
             WHERE mc.symbol=%(symbol)s AND mc.timeframe=%(timeframe)s
             ORDER BY mc.ts DESC
             LIMIT 5
@@ -700,7 +794,7 @@ def predict_signal():
 
         # Add exec_class and cost_r_ratio
         feat_row["exec_class"]    = exec_class
-        feat_row["cost_r_ratio"]  = float(bar.get("atr_14", 0.2) or 0.2) * TOTAL_COST_PCT
+        feat_row["cost_r_ratio"] = _cost_r_feature(bar, exec_class)
 
         X_pred = pd.DataFrame([feat_row])[all_feat].fillna(0)
 
@@ -713,13 +807,14 @@ def predict_signal():
         recommended     = win_prob >= phase_threshold and expected_r > 0
 
         exec_cfg = EXEC_PARAMS.get(exec_class, {})
+        direction = _resolve_exec_direction(exec_class, bar)
 
         return jsonify({
             "status":          "SIGNAL",
             "ts":              str(bar.get("ts", "")),
             "market_phase":    market_phase,
             "exec_class":      exec_class,
-            "direction":       exec_cfg.get("dir", "NONE"),
+            "direction":       direction,
             "win_prob":        round(win_prob, 4),
             "expected_r":      round(expected_r, 4),
             "threshold_used":  round(phase_threshold, 2),
@@ -792,7 +887,7 @@ def predict_signal_htf():
                 "SELECT model_path FROM ml_model_runs WHERE id=%(id)s",
                 engine, params={"id": run_id})
             if row.empty:
-                return None, None, None
+                return None, None, None, "NONE"
             clf_path  = row.iloc[0]["model_path"]
             reg_path  = clf_path.replace("binary_gate", "r_predictor")
             meta_path = clf_path.replace("binary_gate", "phase_meta")
@@ -806,9 +901,16 @@ def predict_signal_htf():
             # Pull latest bar for this specific timeframe
             bar_df = pd.read_sql("""
                 SELECT mc.*,
-                       so.outcome_timing,
+                       (SELECT prev.outcome_timing
+                          FROM strategy_outcomes prev
+                         WHERE prev.symbol=mc.symbol
+                           AND prev.exchange=mc.exchange
+                           AND prev.timeframe=mc.timeframe
+                           AND prev.exit_ts < mc.ts
+                         ORDER BY prev.exit_ts DESC LIMIT 1) AS outcome_timing,
                        so.orb_fired, so.ema_trend_fired, so.atr_expansion_fired,
                        so.vwap_trend_fired, so.volume_expansion_fired, so.atr_14,
+                       i.close AS reference_price,
                        LAG(mc.market_phase,1) OVER (ORDER BY mc.ts) AS phase_lag_1,
                        LAG(mc.market_phase,2) OVER (ORDER BY mc.ts) AS phase_lag_2,
                        LAG(mc.market_phase,3) OVER (ORDER BY mc.ts) AS phase_lag_3
@@ -816,12 +918,15 @@ def predict_signal_htf():
                 LEFT JOIN strategy_outcomes so
                   ON mc.symbol=so.symbol AND mc.exchange=so.exchange
                  AND mc.timeframe=so.timeframe AND mc.ts=so.ts
+                LEFT JOIN indicators i
+                  ON mc.symbol=i.symbol AND mc.exchange=i.exchange
+                 AND mc.timeframe=i.timeframe AND mc.ts=i.ts
                 WHERE mc.symbol=%(symbol)s AND mc.timeframe=%(tf)s
                 ORDER BY mc.ts DESC LIMIT 5
             """, engine, params={"symbol": symbol, "tf": meta["timeframe"]})
 
             if bar_df.empty:
-                return None, None, None
+                return None, None, None, "NONE"
 
             bar   = bar_df.iloc[0]
             phase = str(bar.get("market_phase", "UNCLASSIFIED"))
@@ -833,36 +938,55 @@ def predict_signal_htf():
             for c in cat_cols:
                 feat_row[c] = str(bar.get(c, "NEUTRAL") or "NEUTRAL")
             feat_row["exec_class"]   = ecls
-            feat_row["cost_r_ratio"] = float(bar.get("atr_14", 0.2) or 0.2) * TOTAL_COST_PCT
+            feat_row["cost_r_ratio"] = _cost_r_feature(bar, ecls)
 
             X = pd.DataFrame([feat_row])[all_feat].fillna(0)
             wp = float(clf.predict_proba(X)[0, 1])
-            return wp, phase, meta["phase_stats"].get(phase, {})
+            direction = _resolve_exec_direction(ecls, bar)
+            return wp, phase, meta["phase_stats"].get(phase, {}), direction
 
         # ── Stage 1: HTF (15m) ────────────────────────────────────
-        htf_prob, htf_phase, htf_meta = (None, "NEUTRAL", {})
+        htf_prob, htf_phase, htf_meta, htf_direction = (
+            None,
+            "NEUTRAL",
+            {},
+            "NONE",
+        )
         if run_id_htf:
-            htf_prob, htf_phase, htf_meta = _get_prob(run_id_htf, "15m")
+            htf_prob, htf_phase, htf_meta, htf_direction = _get_prob(
+                run_id_htf, "15m"
+            )
             results["htf"] = {
                 "phase": htf_phase,
                 "win_prob": round(htf_prob, 4) if htf_prob is not None else None,
                 "exec_class": PHASE_TO_EXEC.get(htf_phase, "SKIP"),
+                "direction": htf_direction,
             }
         htf_bias = htf_prob if htf_prob is not None else 0.5
 
         # ── Stage 2: MTF (5m/3m) ─────────────────────────────────
-        mtf_prob, mtf_phase, mtf_meta = (None, "NEUTRAL", {})
+        mtf_prob, mtf_phase, mtf_meta, mtf_direction = (
+            None,
+            "NEUTRAL",
+            {},
+            "NONE",
+        )
         if run_id_mtf:
-            mtf_prob, mtf_phase, mtf_meta = _get_prob(run_id_mtf, "5m")
+            mtf_prob, mtf_phase, mtf_meta, mtf_direction = _get_prob(
+                run_id_mtf, "5m"
+            )
             results["mtf"] = {
                 "phase": mtf_phase,
                 "win_prob": round(mtf_prob, 4) if mtf_prob is not None else None,
                 "exec_class": PHASE_TO_EXEC.get(mtf_phase, "SKIP"),
+                "direction": mtf_direction,
             }
         mtf_bias = mtf_prob if mtf_prob is not None else 0.5
 
         # ── Stage 3: LTF (1m) — primary signal ───────────────────
-        ltf_prob, ltf_phase, ltf_meta = _get_prob(run_id_ltf, timeframe)
+        ltf_prob, ltf_phase, ltf_meta, ltf_direction = _get_prob(
+            run_id_ltf, timeframe
+        )
         if ltf_prob is None:
             return jsonify({"error": "No signal data for LTF model"}), 400
 
@@ -887,22 +1011,14 @@ def predict_signal_htf():
 
         # ── Alignment check (diagnostic) ─────────────────────────
         # True alignment: HTF and LTF exec_class point the same direction
-        htf_exec  = PHASE_TO_EXEC.get(htf_phase, "SKIP")
-        ltf_exec  = exec_class
-        aligned   = (
-            (htf_exec in ("LONG_MOMENTUM","LONG_TREND","FOLLOW_GAP_DOWN","FADE_GAP_UP") and
-             ltf_exec in ("LONG_MOMENTUM","LONG_TREND","FOLLOW_GAP_DOWN","FADE_GAP_UP"))
-            or
-            (htf_exec in ("SHORT_MOMENTUM","SHORT_TREND","FOLLOW_GAP_UP","FADE_GAP_DOWN") and
-             ltf_exec in ("SHORT_MOMENTUM","SHORT_TREND","FOLLOW_GAP_UP","FADE_GAP_DOWN"))
-        )
+        aligned = htf_direction in ("LONG", "SHORT") and htf_direction == ltf_direction
 
         return jsonify({
             "status":           "SIGNAL",
             "symbol":           symbol,
             "ltf_phase":        ltf_phase,
             "ltf_exec_class":   exec_class,
-            "direction":        exec_cfg.get("dir", "NONE"),
+            "direction":        ltf_direction,
             "ltf_win_prob":     round(ltf_prob, 4),
             "htf_win_prob":     round(htf_bias, 4),
             "mtf_win_prob":     round(mtf_bias, 4),
@@ -928,9 +1044,9 @@ def predict_signal_htf():
 @ml_bp.route("/api/paper-trade/run", methods=["POST"])
 def run_paper_trade():
     """
-    Replay paper trading using the binary_gate model.
-    Fixed: entry uses next-bar open (not close). Costs applied.
-    Fixed: per-phase thresholds from meta. Per-phase capital tracking.
+    Replay model selections against stored, next-bar strategy outcomes.
+    Stored outcomes already include slippage and transaction costs.
+    Uses per-phase thresholds and tracks capital by phase.
     """
     data = request.get_json() or {}
     for k in ["model_run_id", "symbol", "timeframe", "margin_per_share"]:
@@ -950,12 +1066,21 @@ def run_paper_trade():
     try:
         engine = _get_engine()
 
-        row = pd.read_sql("SELECT model_path FROM ml_model_runs WHERE id=%(id)s",
+        row = pd.read_sql(
+                          "SELECT model_path, train_to FROM ml_model_runs WHERE id=%(id)s",
                           engine, params={"id": model_run_id})
         if row.empty:
             return jsonify({"error": "Invalid model_run_id"}), 400
 
         clf_path  = row.iloc[0]["model_path"]
+        train_to = pd.to_datetime(row.iloc[0]["train_to"], utc=True)
+        requested_from = pd.to_datetime(data.get("from_date"), utc=True) if data.get("from_date") else train_to
+        evaluation_from = max(train_to, requested_from)
+        evaluation_to = pd.to_datetime(
+            data.get("to_date") or datetime.now(timezone.utc), utc=True
+        )
+        if evaluation_from > evaluation_to:
+            return jsonify({"error": "Evaluation window is empty"}), 400
         reg_path  = clf_path.replace("binary_gate", "r_predictor")
         meta_path = clf_path.replace("binary_gate", "phase_meta")
 
@@ -968,14 +1093,22 @@ def run_paper_trade():
         # Load all outcome data with features
         df = pd.read_sql("""
             SELECT
-                so.ts, so.market_phase,
+                so.ts, so.exit_ts, so.market_phase,
                 so.realized_r,
-                so.atr_14, so.exit_reason, so.outcome_timing,
+                so.atr_14, so.exit_reason,
+                (SELECT prev.outcome_timing
+                   FROM strategy_outcomes prev
+                  WHERE prev.symbol=so.symbol
+                    AND prev.exchange=so.exchange
+                    AND prev.timeframe=so.timeframe
+                    AND prev.exit_ts < so.ts
+                  ORDER BY prev.exit_ts DESC LIMIT 1) AS outcome_timing,
                 so.orb_fired, so.ema_trend_fired, so.atr_expansion_fired,
                 so.vwap_trend_fired, so.volume_expansion_fired,
                 mc.minute_of_day, mc.ema_21_slope, mc.vwap_dist_pct,
                 mc.day_high_dist, mc.day_low_dist, mc.orb_dist_pct,
-                mc.gap_pct, mc.gap_atr, mc.volume_expansion, mc.atr_expanding,
+                mc.gap_pct, mc.gap_atr, mc.impulse_dir,
+                mc.volume_expansion, mc.atr_expanding,
                 mc.range_efficiency, mc.vwap_acceptance, mc.momentum_decay,
                 mc.candle_overlap, mc.vix, mc.vix_change,
                 mc.vix_regime, mc.gap_regime, mc.gap_dir,
@@ -985,8 +1118,19 @@ def run_paper_trade():
                 COALESCE(mc.price_structure,'NEUTRAL')    AS price_structure,
                 COALESCE(mc.session_type,'NORMAL_DAY')    AS session_type,
                 COALESCE(mc.macro_regime,'NEUTRAL_MACRO') AS macro_regime,
-                -- next bar open for realistic entry (shift(-1))
-                LEAD(i.open, 1) OVER (ORDER BY so.ts) AS next_open
+                i.close AS reference_price,
+                (SELECT prev.market_phase FROM market_context prev
+                  WHERE prev.symbol=mc.symbol AND prev.exchange=mc.exchange
+                    AND prev.timeframe=mc.timeframe AND prev.ts < mc.ts
+                  ORDER BY prev.ts DESC OFFSET 0 LIMIT 1) AS phase_lag_1,
+                (SELECT prev.market_phase FROM market_context prev
+                  WHERE prev.symbol=mc.symbol AND prev.exchange=mc.exchange
+                    AND prev.timeframe=mc.timeframe AND prev.ts < mc.ts
+                  ORDER BY prev.ts DESC OFFSET 1 LIMIT 1) AS phase_lag_2,
+                (SELECT prev.market_phase FROM market_context prev
+                  WHERE prev.symbol=mc.symbol AND prev.exchange=mc.exchange
+                    AND prev.timeframe=mc.timeframe AND prev.ts < mc.ts
+                  ORDER BY prev.ts DESC OFFSET 2 LIMIT 1) AS phase_lag_3
             FROM strategy_outcomes so
             JOIN market_context mc
               ON so.symbol=mc.symbol AND so.exchange=mc.exchange
@@ -996,18 +1140,33 @@ def run_paper_trade():
              AND so.timeframe=i.timeframe AND so.ts=i.ts
             WHERE so.symbol=%(symbol)s AND so.timeframe=%(timeframe)s
               AND so.realized_r IS NOT NULL
+              AND so.ts > %(evaluation_from)s
+              AND so.ts <= %(evaluation_to)s
             ORDER BY so.ts
-        """, engine, params={"symbol": symbol, "timeframe": timeframe},
-              parse_dates=["ts"])
+        """, engine, params={
+              "symbol": symbol,
+              "timeframe": timeframe,
+              "evaluation_from": evaluation_from,
+              "evaluation_to": evaluation_to,
+              },
+              parse_dates=["ts", "exit_ts"])
 
         if df.empty:
-            return jsonify({"error": "No data found"}), 400
+            return jsonify({
+                "error": "No out-of-sample outcomes found after model train_to",
+                "train_to": train_to.isoformat(),
+            }), 400
 
         # Add lag features
         for lag in range(1, LAG_N + 1):
-            df[f"phase_lag_{lag}"] = df["market_phase"].shift(lag).fillna("UNCLASSIFIED")
+            col = f"phase_lag_{lag}"
+            if col not in df.columns:
+                df[col] = df["market_phase"].shift(lag)
+            df[col] = df[col].fillna("UNCLASSIFIED")
         df["exec_class"]   = df["market_phase"].map(PHASE_TO_EXEC).fillna("SKIP")
-        df["cost_r_ratio"] = df["atr_14"] * TOTAL_COST_PCT
+        df["cost_r_ratio"] = df.apply(
+            lambda row: _cost_r_feature(row, row["exec_class"]), axis=1
+        )
 
         # Predict on all bars
         X_all = df[all_feat].fillna(0)
@@ -1047,12 +1206,10 @@ def run_paper_trade():
                 continue
 
             exec_cfg = EXEC_PARAMS.get(exec_cls, {})
-            if exec_cfg.get("dir") == "NONE":
+            direction = _resolve_exec_direction(exec_cls, row)
+            if direction == "NONE":
                 continue
 
-            is_short    = exec_cfg["dir"] == "SHORT"
-            next_open   = float(row.get("next_open") or row.get("atr_14", 0))
-            entry       = next_open + SLIPPAGE_PTS if not is_short else next_open - SLIPPAGE_PTS
             R           = exec_cfg["sl"] * atr
             if R <= 0:
                 continue
@@ -1063,8 +1220,11 @@ def run_paper_trade():
             if qty <= 0:
                 continue
 
-            # PnL from stored realized_r (already cost-adjusted in strategy.py)
-            pnl = float(row["realized_r"]) * R * qty
+            # Stored realized_r is already net of costs and expressed against
+            # the strategy's own 1R. Apply it directly to account risk instead
+            # of rescaling it with a different ML stop definition.
+            actual_risk = qty * R
+            pnl = float(row["realized_r"]) * actual_risk
 
             capital += pnl
             peak     = max(peak, capital)
@@ -1078,7 +1238,7 @@ def run_paper_trade():
                 "ts":           row["ts"].isoformat(),
                 "market_phase": phase,
                 "exec_class":   exec_cls,
-                "direction":    exec_cfg["dir"],
+                "direction":    direction,
                 "win_prob":     round(float(row["win_prob"]), 4),
                 "threshold":    round(float(threshold_p), 2),
                 "realized_r":   round(float(row["realized_r"]), 4),
@@ -1124,6 +1284,8 @@ def run_paper_trade():
         return jsonify({
             "status":             "SUCCESS",
             "paper_trade_run_id": run_id,
+            "evaluation_from": evaluation_from.isoformat(),
+            "evaluation_to": evaluation_to.isoformat(),
             "final_capital":      round(capital, 2),
             "net_pnl":            round(capital - starting_capital, 2),
             "net_pnl_pct":        round((capital - starting_capital) / starting_capital * 100, 2),

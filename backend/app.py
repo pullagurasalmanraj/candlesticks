@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 from flask import Flask, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from config import FRONTEND_DIR, SECRET_KEY, BASE_DIR
+from config import FRONTEND_DIR, SECRET_KEY, BASE_DIR, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
 from extensions import init_oauth
 
 # ── Create app ───────────────────────────────────────────────────
@@ -30,8 +30,8 @@ app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 app.secret_key = SECRET_KEY
 app.config.update(
     SECRET_KEY=SECRET_KEY,
-    GOOGLE_CLIENT_ID=os.getenv("GOOGLE_CLIENT_ID"),
-    GOOGLE_CLIENT_SECRET=os.getenv("GOOGLE_CLIENT_SECRET"),
+    GOOGLE_CLIENT_ID=GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET=GOOGLE_CLIENT_SECRET,
     SESSION_COOKIE_NAME="candlesticks_session",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",

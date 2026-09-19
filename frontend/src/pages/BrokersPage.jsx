@@ -94,8 +94,11 @@ export default function BrokersPage() {
             .catch(() => {});
     }, []);
 
-    // Broker disconnect only — resets view state without wiping server token
-    const handleDisconnect = () => {
+    // Broker disconnect — clears server tokens and resets local view state
+    const handleDisconnect = async () => {
+        try {
+            await fetch("/api/auth/disconnect", { method: "POST" });
+        } catch {}
         localStorage.removeItem("upstox_connected");
         localStorage.removeItem("upstox_access_token");
         localStorage.removeItem("upstox_token_expiry");

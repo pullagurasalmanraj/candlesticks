@@ -19,9 +19,9 @@ export async function downloadExcelAPI({
 
   const type = res.headers.get("content-type") || "";
 
-  if (type.includes("application/json")) {
+  if (!res.ok || type.includes("application/json")) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || "Server error");
+    throw new Error(err.error || `Excel download failed (${res.status})`);
   }
 
   const blob = await res.blob();

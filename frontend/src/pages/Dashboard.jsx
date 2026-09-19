@@ -172,6 +172,7 @@ export default function Dashboard() {
     const [histStart, setHistStart] = useState(null);
     const [histEnd, setHistEnd] = useState(null);
     const [isFetchingHistory, setIsFetchingHistory] = useState(false);
+    const [isDownloadingExcel, setIsDownloadingExcel] = useState(false);
     const [years, setYears] = useState("");
     const [force, setForce] = useState(false);
 
@@ -553,6 +554,11 @@ export default function Dashboard() {
         if (!selectedInstrument) return setToast("Select from search list first.");
 
         setIsFetchingHistory(true);
+        setOperationResult(null);
+        setToast({
+            type: "loading",
+            message: `Checking and downloading ${selectedSymbol} candles (${formatYMD(histStart)} to ${formatYMD(histEnd)})...`,
+        });
         const t0 = performance.now();
         try {
             if (!force) {
@@ -562,14 +568,19 @@ export default function Dashboard() {
                     body: JSON.stringify({
                         symbol: selectedSymbol,
                         instrument_key: selectedInstrument.instrument_key,
-                        timeframe
+                        timeframe,
+                        start_date: formatYMD(histStart),
+                        end_date: formatYMD(histEnd),
                     })
                 });
-                const check = await checkRes.json();
+                const check = await checkRes.json().catch(() => ({}));
+                if (!checkRes.ok) {
+                    throw new Error(check.error || "Unable to check existing candle data");
+                }
                 if (check.exists) {
                     const elapsedMs = (performance.now() - t0).toFixed(1);
                     const timeStr = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
-                    setToast(`⚡ DB Cache (${timeStr}): Candles already present`);
+                    setToast({ type: "success", message: `DB cache (${timeStr}): Candles already present` });
                     setOperationResult({
                         title: `Candles Already Present (${timeStr})`,
                         type: "candles",
@@ -581,11 +592,14 @@ export default function Dashboard() {
                         already_exists: true,
                         duration: timeStr
                     });
-                    setIsFetchingHistory(false);
                     return;
                 }
             }
 
+            setToast({
+                type: "loading",
+                message: `Downloading ${selectedSymbol} candles from the market data provider...`,
+            });
             const r = await fetchHistoricalCandlesAPI({
                 symbol: selectedSymbol, instrument_key: selectedInstrument.instrument_key,
                 timeframe, histStart, histEnd, force
@@ -593,9 +607,9 @@ export default function Dashboard() {
             const elapsedMs = (performance.now() - t0).toFixed(1);
             const timeStr = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
             if (r.already_exists) {
-                setToast(`⚡ DB Cache (${timeStr}): Candles already present`);
+                setToast({ type: "success", message: `DB cache (${timeStr}): Candles already present` });
             } else {
-                setToast(`🚀 Stored ${r.inserted} candles in ${timeStr}`);
+                setToast({ type: "success", message: `Stored ${r.inserted || 0} candles in ${timeStr}` });
             }
             setOperationResult({
                 title: r.already_exists ? `Candles Already Present (${timeStr})` : `Candles Fetched & Stored (${timeStr})`,
@@ -608,7 +622,9 @@ export default function Dashboard() {
                 already_exists: !!r.already_exists,
                 duration: timeStr
             });
-        } catch (err) { setToast(err.message); }
+        } catch (err) {
+            setToast({ type: "error", message: err.message || "Candle download failed" });
+        }
         finally { setIsFetchingHistory(false); }
     };
 
@@ -618,8 +634,16 @@ export default function Dashboard() {
         const sym = selectedSymbol.toUpperCase();
         const key = selectedInstrument.instrument_key;
         const months = years * 12;
+        const bulkToday = new Date();
+        const bulkEndDate = formatYMD(bulkToday);
+        const bulkStartDate = formatYMD(new Date(bulkToday.getFullYear(), bulkToday.getMonth() - (months - 1), 1));
 
         setIsFetchingHistory(true);
+        setOperationResult(null);
+        setToast({
+            type: "loading",
+            message: `Preparing ${years} year(s) of ${sym} candle history...`,
+        });
         const t0 = performance.now();
         try {
             if (!force) {
@@ -629,45 +653,46 @@ export default function Dashboard() {
                     body: JSON.stringify({
                         symbol: sym,
                         instrument_key: key,
-                        timeframe
+                        timeframe,
+                        start_date: bulkStartDate,
+                        end_date: bulkEndDate,
                     })
                 });
-                const check = await checkRes.json();
+                const check = await checkRes.json().catch(() => ({}));
+                if (!checkRes.ok) {
+                    throw new Error(check.error || "Unable to check existing candle data");
+                }
                 if (check.exists) {
                     const elapsedMs = (performance.now() - t0).toFixed(1);
                     const timeStr = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
-                    setToast(`⚡ DB Cache (${timeStr}): All data already present.`);
-                    let today = new Date();
-                    let finalEndDate = formatYMD(new Date(today.getFullYear(), today.getMonth() + 1, 0));
-                    let finalStartDate = formatYMD(new Date(today.getFullYear() - years, today.getMonth(), 1));
+                    setToast({ type: "success", message: `DB cache (${timeStr}): All data already present.` });
                     setOperationResult({
                         title: `Bulk Fetch Bypassed (${timeStr})`,
                         type: "candles",
                         symbol: sym,
                         timeframe: timeframe === "1440" ? "1D" : timeframe,
                         rows: check.count,
-                        fromDate: finalStartDate,
-                        toDate: finalEndDate,
+                        fromDate: bulkStartDate,
+                        toDate: bulkEndDate,
                         duration: `${years} Year(s) (${timeStr})`,
                         already_exists: true,
                         skippedChunks: months,
                         totalChunks: months
                     });
-                    setIsFetchingHistory(false);
                     return;
                 }
             }
 
             let today = new Date(), year = today.getFullYear(), month = today.getMonth();
-            setToast(`Fetching ${years} year(s)...`);
+            setToast({ type: "loading", message: `Downloading ${years} year(s) of candles...` });
             let totalInserted = 0;
             let totalSkippedMonths = 0;
             let totalExisting = 0;
-            let finalEndDate = formatYMD(new Date(year, month + 1, 0));
+            let finalEndDate = bulkEndDate;
             let finalStartDate = "";
             for (let i = 0; i < months; i++) {
                 const start = new Date(year, month, 1);
-                const end = new Date(year, month + 1, 0);
+                const end = i === 0 ? bulkToday : new Date(year, month + 1, 0);
                 if (i === months - 1) {
                     finalStartDate = formatYMD(start);
                 }
@@ -675,10 +700,16 @@ export default function Dashboard() {
                 if (r.already_exists) {
                     totalSkippedMonths++;
                     totalExisting += (r.total || 0);
-                    setToast(`Already present: ${formatYMD(start)} → ${formatYMD(end)}`);
+                    setToast({
+                        type: "loading",
+                        message: `Candle download ${i + 1}/${months}: ${formatYMD(start)} to ${formatYMD(end)} already cached`,
+                    });
                 } else {
                     totalInserted += (r.inserted || 0);
-                    setToast(`Stored ${formatYMD(start)} → ${formatYMD(end)}`);
+                    setToast({
+                        type: "loading",
+                        message: `Candle download ${i + 1}/${months}: stored ${r.inserted || 0} rows for ${formatYMD(start)} to ${formatYMD(end)}`,
+                    });
                 }
                 month--;
                 if (month < 0) { month = 11; year--; }
@@ -688,9 +719,9 @@ export default function Dashboard() {
             const timeStr = elapsedMs >= 1000 ? `${(elapsedMs / 1000).toFixed(2)}s` : `${elapsedMs}ms`;
             const allSkipped = totalSkippedMonths === months;
             if (allSkipped) {
-                setToast(`⚡ DB Cache (${timeStr}): All data already present.`);
+                setToast({ type: "success", message: `DB cache (${timeStr}): All data already present.` });
             } else {
-                setToast(`🚀 Done fetching ${years} year(s) in ${timeStr}.`);
+                setToast({ type: "success", message: `Downloaded ${years} year(s) of candles in ${timeStr}.` });
             }
             setOperationResult({
                 title: allSkipped ? `Bulk Fetch Bypassed (${timeStr})` : `Bulk Candle Fetch Completed (${timeStr})`,
@@ -705,7 +736,9 @@ export default function Dashboard() {
                 skippedChunks: totalSkippedMonths,
                 totalChunks: months
             });
-        } catch (err) { setToast(err.message); }
+        } catch (err) {
+            setToast({ type: "error", message: err.message || "Bulk candle download failed" });
+        }
         finally { setIsFetchingHistory(false); }
     };
 
@@ -714,14 +747,21 @@ export default function Dashboard() {
         if (!selectedInstrument) return setToast("Select stock from search list first.");
         const key = selectedInstrument.instrument_key;
         if (!key) return setToast("No instrument_key found.");
+        setIsDownloadingExcel(true);
+        setToast({ type: "loading", message: `Preparing ${selectedSymbol} candle Excel file...` });
         try {
             const blob = await downloadExcelAPI({ instrument_key: key, symbol: selectedSymbol.trim().toUpperCase(), startDate, endDate });
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url; a.download = `${selectedSymbol}_data.xlsx`;
             document.body.appendChild(a); a.click(); a.remove();
-            setToast("Excel downloaded.");
-        } catch (err) { setToast(err.message || "Failed to download."); }
+            window.URL.revokeObjectURL(url);
+            setToast({ type: "success", message: "Candle Excel file downloaded." });
+        } catch (err) {
+            setToast({ type: "error", message: err.message || "Failed to download candle Excel file." });
+        } finally {
+            setIsDownloadingExcel(false);
+        }
     };
 
     if (isLoading) {
@@ -749,7 +789,7 @@ export default function Dashboard() {
                     backgroundColor: "rgba(0, 0, 0, 0.65)",
                     backdropFilter: "blur(6px)",
                     display: "flex", alignItems: "center", justifyContent: "center",
-                    zIndex: 10000,
+                    zIndex: 11000,
                     animation: "fadeIn 0.2s ease"
                 }}>
                     <div style={{
@@ -817,14 +857,18 @@ export default function Dashboard() {
             {/* ── Toast Notification ─────────────────────────────────── */}
             {toast && (
                 <div style={{
-                    position: "fixed", bottom: 24, right: 24, zIndex: 9999,
-                    background: "rgba(30, 41, 59, 0.9)", backdropFilter: "blur(12px)",
-                    border: "1px solid rgba(255, 255, 255, 0.1)", borderRadius: "10px",
+                    position: "fixed", bottom: 24, right: 24, zIndex: 12000,
+                    background: "rgba(15, 23, 42, 0.96)", backdropFilter: "blur(12px)",
+                    border: `1px solid ${toast.type === "error" ? "rgba(239,68,68,0.65)" : toast.type === "success" ? "rgba(16,185,129,0.65)" : "rgba(59,130,246,0.65)"}`,
+                    borderRadius: "10px",
                     padding: "12px 18px", color: "#fff",
                     boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5)",
                     display: "flex", alignItems: "center", gap: "12px",
                     minWidth: "280px", maxWidth: "360px"
-                }}>
+                }} role="status" aria-live="polite" aria-busy={toast.type === "loading"}>
+                    <div aria-hidden="true" style={{ fontSize: "1rem" }}>
+                        {toast.type === "loading" ? "⏳" : toast.type === "success" ? "✓" : toast.type === "error" ? "!" : "i"}
+                    </div>
                     <div style={{ flex: 1, fontSize: "0.8rem", fontWeight: "500" }}>{toast.message}</div>
                     <button onClick={() => setToastState(null)} style={{ background: "transparent", border: "none", color: "#888", cursor: "pointer" }}>✕</button>
                 </div>
@@ -851,6 +895,8 @@ export default function Dashboard() {
                 years={years}
                 setYears={setYears}
                 isApplyingIndicators={isApplyingIndicators}
+                isFetchingHistory={isFetchingHistory}
+                isDownloadingExcel={isDownloadingExcel}
                 runBulkFetch={runBulkFetch}
                 applyIndicators={applyIndicators}
                 fetchHistoricalCandles={fetchHistoricalCandles}
