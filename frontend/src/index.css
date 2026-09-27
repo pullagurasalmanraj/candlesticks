@@ -14,30 +14,36 @@
    if JS is slow. They match AURORA_LIGHT exactly.
    ──────────────────────────────────────────────────────────── */
 :root {
-    --bg-primary: #f0f4ff;
+    --bg-primary: #f5f7fb;
     --bg-secondary: #ffffff;
-    --bg-tertiary: #e4ecf8;
-    --bg-hover: #dae6f5;
-    --border-color: #c2d3ea;
-    --border-subtle: #dce8f5;
-    --text-primary: #0a1929;
-    --text-secondary: #3d5a7a;
-    --text-muted: #7a9bbf;
-    --accent-blue: #1565c0;
-    --accent-blue-hover: #0d47a1;
-    --accent-blue-muted: rgba(21, 101, 192, 0.1);
-    --accent-up: #1b5e20;
-    --accent-down: #b71c1c;
-    --accent-gold: #e65100;
-    --glow: rgba(21, 101, 192, 0.4);
-    --glow-green: rgba(27, 94, 32, 0.3);
-    --glow-red: rgba(183, 28, 28, 0.3);
-    --navbar-height: 60px;
+    --bg-elevated: #fbfcff;
+    --bg-tertiary: #edf1f7;
+    --bg-hover: #e4e9f2;
+    --border-color: #d5dce8;
+    --border-subtle: #e8ecf3;
+    --text-primary: #172033;
+    --text-secondary: #526079;
+    --text-muted: #8994a8;
+    --accent-blue: #a78bfa;
+    --accent-blue-hover: #c4b5fd;
+    --accent-blue-muted: rgba(167, 139, 250, 0.14);
+    --accent-contrast: #1e1537;
+    --accent-up: #087f5b;
+    --accent-down: #d92d20;
+    --accent-gold: #b54708;
+    --glow: rgba(167, 139, 250, 0.31);
+    --glow-green: rgba(8, 127, 91, 0.18);
+    --glow-red: rgba(217, 45, 32, 0.18);
+    --surface-glass: rgba(255, 255, 255, 0.78);
+    --surface-glass-strong: rgba(255, 255, 255, 0.94);
+    --page-gradient: radial-gradient(circle at 8% 0%, rgba(124, 92, 255, 0.08), transparent 34%), #f5f7fb;
+    --accent-gradient: linear-gradient(135deg, #a78bfa, #c4b5fd);
+    --navbar-height: 64px;
     --sidebar-width: 240px;
     --sidebar-collapsed: 64px;
-    --card-radius: 12px;
-    --input-radius: 8px;
-    --button-radius: 8px;
+    --card-radius: 16px;
+    --input-radius: 10px;
+    --button-radius: 10px;
     --font-body: 'DM Sans', 'Segoe UI', sans-serif;
     --font-display: 'Syne', sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
@@ -65,7 +71,8 @@ body,
 }
 
 body {
-    background-color: var(--bg-primary);
+    background: var(--page-gradient);
+    background-attachment: fixed;
     color: var(--text-primary);
     font-family: var(--font-body);
     -webkit-font-smoothing: antialiased;
@@ -73,6 +80,21 @@ body {
     transition:
         background-color 0.25s ease,
         color 0.25s ease;
+    overflow-x: hidden;
+}
+
+* {
+    scrollbar-color: var(--border-color) transparent;
+}
+
+::selection {
+    color: var(--text-primary);
+    background: var(--accent-blue-muted);
+}
+
+:focus-visible {
+    outline: 2px solid var(--accent-blue);
+    outline-offset: 2px;
 }
 
 
@@ -118,9 +140,19 @@ pre,
 /* ── Glass ─────────────────────────────────────────────────────── */
 
 .glass {
-    background: rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(14px);
+    background: var(--surface-glass);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
     border: 1px solid var(--border-subtle);
+}
+
+.theme-hover {
+    transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.theme-hover:hover {
+    background-color: var(--bg-hover) !important;
+    border-color: var(--accent-blue) !important;
 }
 
 
@@ -364,21 +396,3 @@ video {
 }
 
 /* ── Light Theme Overrides (Softer View) ─────────────────── */
-html.light {
-    --bg-primary: #f8fafc !important;
-    /* Slate 50 */
-    --bg-secondary: #ffffff !important;
-    --bg-tertiary: #f1f5f9 !important;
-    /* Slate 100 */
-    --bg-hover: #e2e8f0 !important;
-    /* Slate 200 */
-    --border-color: #e2e8f0 !important;
-    --border-subtle: #f1f5f9 !important;
-    --text-primary: #334155 !important;
-    /* Slate 700 - Softer than black */
-    --text-secondary: #64748b !important;
-    /* Slate 500 */
-    --text-muted: #94a3b8 !important;
-    /* Slate 400 */
-    --accent-blue-muted: rgba(59, 130, 246, 0.08) !important;
-}

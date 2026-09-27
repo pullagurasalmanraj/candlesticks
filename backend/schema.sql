@@ -446,7 +446,19 @@ CREATE TABLE public.market_context (
     vol_ratio double precision DEFAULT 1.0,
     vwap_dist_atr double precision,
     impulse_dir text,
-    phase_reason text
+    phase_reason text,
+    story_regime text,
+    bar_event text,
+    regime_rule_score real CHECK (regime_rule_score IS NULL OR regime_rule_score BETWEEN 0 AND 1),
+    event_rule_score real CHECK (event_rule_score IS NULL OR event_rule_score BETWEEN 0 AND 1),
+    regime_age_bars integer DEFAULT 0,
+    candidate_regime text,
+    candidate_age_bars integer DEFAULT 0,
+    candidate_rule_score real CHECK (candidate_rule_score IS NULL OR candidate_rule_score BETWEEN 0 AND 1),
+    regime_reason_code text,
+    event_reason_code text,
+    reason_details jsonb DEFAULT '{}'::jsonb,
+    story_version integer DEFAULT 1
 );
 
 
@@ -489,7 +501,22 @@ CREATE VIEW public.market_context_ist AS
     price_structure,
     session_type,
     macro_regime,
-    vol_ratio
+    vol_ratio,
+    vwap_dist_atr,
+    impulse_dir,
+    phase_reason,
+    story_regime,
+    bar_event,
+    regime_rule_score,
+    event_rule_score,
+    regime_age_bars,
+    candidate_regime,
+    candidate_age_bars,
+    candidate_rule_score,
+    regime_reason_code,
+    event_reason_code,
+    reason_details,
+    story_version
    FROM public.market_context;
 
 

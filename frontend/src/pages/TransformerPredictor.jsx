@@ -2,12 +2,8 @@ import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { motion } from "framer-motion";
 import { Search, Upload, Calendar, Cpu } from "lucide-react";
-import { useTheme } from "../context/ThemeContext";
 
 export default function TransformerPredictor() {
-    const { theme } = useTheme();
-    const isLight = theme === "light";
-
     const [symbol, setSymbol] = useState("");
     const [filteredSymbols, setFilteredSymbols] = useState([]);
     const [start, setStart] = useState("");
@@ -110,23 +106,23 @@ export default function TransformerPredictor() {
 
     return (
         <div
-            className={`min-h-screen flex flex-col items-center justify-center px-4 py-10 transition-colors ${isLight
-                ? "bg-gradient-to-br from-slate-50 via-gray-50 to-slate-100 text-slate-700"
-                : "bg-gradient-to-br from-[#0b0f19] via-[#111827] to-[#1e293b] text-gray-100"
-                }`}
+            className="min-h-screen flex flex-col items-center justify-center px-4 py-10 transition-colors"
+            style={{ background: "transparent", color: "var(--text-primary)" }}
         >
             <motion.div
                 initial={{ opacity: 0, y: 25 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.4 }}
-                className={`w-full max-w-2xl p-8 rounded-2xl shadow-xl border ${isLight
-                    ? "bg-white border-gray-200"
-                    : "bg-gray-900/60 border-gray-700"
-                    }`}
+                className="w-full max-w-2xl p-8 border"
+                style={{
+                    borderRadius: "var(--card-radius)", background: "var(--surface-glass)",
+                    borderColor: "var(--border-color)", boxShadow: "var(--shadow-card)",
+                    backdropFilter: "blur(20px) saturate(140%)",
+                }}
             >
                 <h2
-                    className={`text-3xl font-bold flex items-center gap-2 mb-6 ${isLight ? "text-indigo-700" : "text-indigo-400"
-                        }`}
+                    className="text-3xl font-bold flex items-center gap-2 mb-6"
+                    style={{ color: "var(--accent-blue)" }}
                 >
                     <Cpu size={28} /> Transformer Stock Predictor
                 </h2>
@@ -136,10 +132,8 @@ export default function TransformerPredictor() {
                     <div className="relative dropdown-area">
                         <label className="block font-semibold mb-1">Stock Symbol</label>
                         <div
-                            className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${isLight
-                                ? "border-gray-300 bg-white"
-                                : "border-gray-700 bg-gray-800"
-                                }`}
+                            className="flex items-center gap-2 px-3 py-2 rounded-lg border"
+                            style={{ borderColor: "var(--border-color)", background: "var(--bg-tertiary)" }}
                         >
                             <Search size={18} className="opacity-70" />
                             <input
@@ -147,27 +141,23 @@ export default function TransformerPredictor() {
                                 placeholder="Search stock (e.g. INFY, RELIANCE)"
                                 value={symbol}
                                 onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-                                className={`w-full outline-none bg-transparent ${isLight ? "text-slate-700" : "text-gray-100"
-                                    }`}
+                                className="w-full outline-none bg-transparent"
+                                style={{ color: "var(--text-primary)" }}
                             />
                         </div>
 
                         {showDropdown && filteredSymbols.length > 0 && (
                             <div
-                                className={`absolute z-50 mt-1 w-full max-h-56 overflow-y-auto rounded-lg shadow-lg border ${isLight
-                                    ? "bg-white border-gray-200"
-                                    : "bg-gray-800 border-gray-700"
-                                    }`}
+                                className="absolute z-50 mt-1 w-full max-h-56 overflow-y-auto rounded-lg shadow-lg border"
+                                style={{ background: "var(--bg-secondary)", borderColor: "var(--border-color)", boxShadow: "var(--shadow-card)" }}
                             >
                                 {filteredSymbols.map((item) => (
                                     <button
                                         key={item.symbol}
                                         type="button"
                                         onClick={() => handleSelectSymbol(item.symbol)}
-                                        className={`w-full text-left px-4 py-2 text-sm ${isLight
-                                            ? "hover:bg-blue-100 text-slate-700"
-                                            : "hover:bg-gray-700 text-gray-100"
-                                            }`}
+                                        className="theme-hover w-full text-left px-4 py-2 text-sm"
+                                        style={{ color: "var(--text-primary)" }}
                                     >
                                         {item.symbol} – {item.name}
                                     </button>
@@ -198,10 +188,8 @@ export default function TransformerPredictor() {
                                     value={start}
                                     onChange={(e) => setStart(e.target.value)}
                                     disabled={use100Years}
-                                    className={`w-full p-2 rounded-lg border ${isLight
-                                        ? "border-gray-300 bg-white"
-                                        : "border-gray-700 bg-gray-800"
-                                        }`}
+                                    className="w-full p-2 rounded-lg border"
+                                    style={{ borderColor: "var(--border-color)", background: "var(--bg-tertiary)", color: "var(--text-primary)" }}
                                 />
                             </div>
                         </div>
@@ -215,10 +203,8 @@ export default function TransformerPredictor() {
                                     value={end}
                                     onChange={(e) => setEnd(e.target.value)}
                                     disabled={use100Years}
-                                    className={`w-full p-2 rounded-lg border ${isLight
-                                        ? "border-gray-300 bg-white"
-                                        : "border-gray-700 bg-gray-800"
-                                        }`}
+                                    className="w-full p-2 rounded-lg border"
+                                    style={{ borderColor: "var(--border-color)", background: "var(--bg-tertiary)", color: "var(--text-primary)" }}
                                 />
                             </div>
                         </div>
@@ -230,10 +216,8 @@ export default function TransformerPredictor() {
                             Upload Excel (optional)
                         </label>
                         <div
-                            className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer ${isLight
-                                ? "border-gray-300 hover:bg-gray-100"
-                                : "border-gray-700 hover:bg-gray-800"
-                                }`}
+                            className="theme-hover flex items-center gap-3 p-3 rounded-lg border cursor-pointer"
+                            style={{ borderColor: "var(--border-color)", background: "var(--bg-tertiary)" }}
                             onClick={() => document.getElementById("fileInput").click()}
                         >
                             <Upload size={20} />
@@ -256,12 +240,8 @@ export default function TransformerPredictor() {
                     <motion.button
                         whileTap={{ scale: 0.97 }}
                         disabled={loading}
-                        className={`w-full py-3 rounded-xl font-semibold flex justify-center items-center gap-2 transition-all ${loading
-                            ? "opacity-70 cursor-wait"
-                            : isLight
-                                ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                : "bg-indigo-500 hover:bg-indigo-400 text-white"
-                            }`}
+                        className={`w-full py-3 rounded-xl font-semibold flex justify-center items-center gap-2 transition-all ${loading ? "opacity-70 cursor-wait" : ""}`}
+                        style={{ background: "var(--accent-gradient)", color: "var(--accent-contrast)", boxShadow: "var(--shadow-glow-blue)" }}
                     >
                         {loading ? "Predicting..." : "🔮 Predict with Transformer"}
                     </motion.button>
@@ -273,10 +253,8 @@ export default function TransformerPredictor() {
                         initial={{ opacity: 0, y: 30 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.4 }}
-                        className={`mt-8 p-6 rounded-2xl shadow-2xl border overflow-hidden ${isLight
-                            ? "bg-gradient-to-br from-white via-indigo-50 to-gray-100 border-indigo-200"
-                            : "bg-gradient-to-br from-gray-900 via-gray-800 to-gray-700 border-indigo-700"
-                            }`}
+                        className="mt-8 p-6 rounded-2xl shadow-2xl border overflow-hidden"
+                        style={{ background: "linear-gradient(145deg, var(--bg-secondary), var(--bg-tertiary))", borderColor: "var(--accent-blue)" }}
                     >
                         {result.error ? (
                             <div className="text-center text-red-500 font-semibold">
@@ -285,14 +263,14 @@ export default function TransformerPredictor() {
                         ) : (
                             <>
                                 <h3
-                                    className={`text-2xl font-extrabold mb-4 text-center ${isLight ? "text-indigo-700" : "text-indigo-400"
-                                        }`}
+                                    className="text-2xl font-extrabold mb-4 text-center"
+                                    style={{ color: "var(--accent-blue)" }}
                                 >
                                     🚀 Prediction Summary
                                 </h3>
                                 <p className="text-center text-lg font-semibold">
                                     Symbol:{" "}
-                                    <span className="text-indigo-500">
+                                    <span style={{ color: "var(--accent-blue)" }}>
                                         {result.symbol || "CUSTOM"}
                                     </span>
                                 </p>
@@ -306,7 +284,7 @@ export default function TransformerPredictor() {
                                         transition={{ type: "spring", stiffness: 120 }}
                                         className="relative mt-2"
                                     >
-                                        <span className="text-5xl font-extrabold text-green-500">
+                                        <span className="text-5xl font-extrabold" style={{ color: "var(--accent-up)" }}>
                                             ₹{Number(result.predicted_open).toFixed(2)}
                                         </span>
                                     </motion.div>
@@ -314,7 +292,7 @@ export default function TransformerPredictor() {
 
                                 <p className="text-center text-sm mt-4 opacity-75">
                                     📊 Data Processed:{" "}
-                                    <span className="font-semibold text-indigo-500">
+                                    <span className="font-semibold" style={{ color: "var(--accent-blue)" }}>
                                         {result.rows_used || "N/A"} rows
                                     </span>
                                 </p>
@@ -328,10 +306,8 @@ export default function TransformerPredictor() {
                                         whileHover={{ scale: 1.05 }}
                                         whileTap={{ scale: 0.95 }}
                                         onClick={() => setResult(null)}
-                                        className={`px-6 py-2 rounded-lg font-medium shadow-md transition-all ${isLight
-                                            ? "bg-indigo-600 hover:bg-indigo-700 text-white"
-                                            : "bg-indigo-500 hover:bg-indigo-400 text-white"
-                                            }`}
+                                        className="px-6 py-2 rounded-lg font-medium shadow-md transition-all"
+                                        style={{ background: "var(--accent-gradient)", color: "var(--accent-contrast)", boxShadow: "var(--shadow-glow-blue)" }}
                                     >
                                         🔄 New Prediction
                                     </motion.button>

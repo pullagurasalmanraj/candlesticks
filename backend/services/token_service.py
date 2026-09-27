@@ -8,7 +8,7 @@ from cryptography.fernet import Fernet
 
 from config     import TOKENS_FILE, ENV_FILE, UPSTOX_API_BASE, SECRET_KEY, INDIA_TZ
 from config     import UPSTOX_CLIENT_ID, UPSTOX_CLIENT_SECRET, UPSTOX_REDIRECT_URI, safe_requests
-from extensions import redis_client, REDIS_ENABLED
+from extensions import redis_client
 
 
 def _get_cipher():
@@ -45,7 +45,9 @@ def decrypt_token(cipher_token: str) -> str:
 
 def load_saved_tokens() -> dict:
     data = {}
-    if REDIS_ENABLED and redis_client:
+    # Retry Redis on every read. REDIS_ENABLED reflects only the import-time
+    # health check and can stay False after a transient startup failure.
+    if redis_client is not None:
         try:
             t = redis_client.get("upstox:tokens")
             if t:
@@ -91,25 +93,32 @@ def save_tokens(data: dict):
     if encrypted_dict.get("refresh_token"):
         encrypted_dict["refresh_token"] = encrypt_token(encrypted_dict["refresh_token"])
 
-    if REDIS_ENABLED and redis_client:
+    redis_saved = False
+    if redis_client is not None:
         try:
-            redis_client.set("upstox:tokens", json.dumps(encrypted_dict))
+            redis_saved = bool(
+                redis_client.set("upstox:tokens", json.dumps(encrypted_dict))
+            )
         except Exception as e:
             print("⚠️  Redis token write failed:", e)
+
+    file_saved = False
     try:
         with open(TOKENS_FILE, "w") as f:
             json.dump(encrypted_dict, f, indent=2)
-    except Exception:
-        pass
-        try:
-            set_key(ENV_FILE, "UPSTOX_ACCESS_TOKEN", encrypted_dict["access_token"])
-        except Exception:
-            pass
-    print("🔒 Encrypted token saved to Redis, tokens.json, and .env.")
+        file_saved = True
+    except Exception as e:
+        print("⚠️ Token file write failed:", e)
+
+    print(
+        f"🔒 Encrypted token storage complete "
+        f"(redis={redis_saved}, file={file_saved})."
+    )
+    return {"redis": redis_saved, "file": file_saved}
 
 
 def clear_saved_tokens():
-    if REDIS_ENABLED and redis_client:
+    if redis_client is not None:
         try:
             redis_client.delete("upstox:tokens")
         except Exception as e:

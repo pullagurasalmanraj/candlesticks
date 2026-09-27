@@ -30,7 +30,7 @@ import {
     ShieldAlert
 } from "lucide-react";
 
-import { useTheme, ACCENT_PRESETS } from "../context/ThemeContext";
+import { useTheme, ACCENT_PRESETS, THEME_PRESETS } from "../context/ThemeContext";
 import { loadProfile, saveProfile } from "../utils/profileStorage";
 import {
     WATCHLIST_CAP_OPTIONS,
@@ -51,11 +51,11 @@ const AVATAR_PRESETS = [
 ];
 
 const ACCENT_COLOR_OPTIONS = [
-    { id: "cyan", hex: "#00E5FF", label: "Cyan Blue" },
-    { id: "emerald", hex: "#10B981", label: "Emerald Green" },
-    { id: "purple", hex: "#A855F7", label: "Neon Purple" },
-    { id: "amber", hex: "#F59E0B", label: "Amber Gold" },
-    { id: "rose", hex: "#F43F5E", label: "Crimson Rose" },
+    { id: "cyan", hex: ACCENT_PRESETS.cyan.hex, label: "Arctic Cyan" },
+    { id: "emerald", hex: ACCENT_PRESETS.emerald.hex, label: "Emerald" },
+    { id: "purple", hex: ACCENT_PRESETS.purple.hex, label: "Soft Violet" },
+    { id: "amber", hex: ACCENT_PRESETS.amber.hex, label: "Amber" },
+    { id: "rose", hex: ACCENT_PRESETS.rose.hex, label: "Rose" },
 ];
 
 function getInitials(name) {
@@ -129,7 +129,15 @@ function getStorageUsageInfo() {
 }
 
 export default function SettingsPage() {
-    const { theme, toggleTheme, accentColor, setAccentColor } = useTheme();
+    const {
+        theme,
+        themePreference,
+        setThemeMode,
+        colorScheme,
+        setColorScheme,
+        accentColor,
+        setAccentColor,
+    } = useTheme();
     const fileRef = useRef(null);
     const importRef = useRef(null);
 
@@ -292,6 +300,8 @@ export default function SettingsPage() {
                 capitalPreset,
                 chartStyle,
                 densityMode,
+                themePreference,
+                colorScheme,
                 accentColor,
                 soundEnabled,
                 autoRefreshSec,
@@ -328,6 +338,8 @@ export default function SettingsPage() {
                     if (p.capitalPreset) setCapitalPreset(p.capitalPreset);
                     if (p.chartStyle) setChartStyle(p.chartStyle);
                     if (p.densityMode) setDensityMode(p.densityMode);
+                    if (p.themePreference) setThemeMode(p.themePreference);
+                    if (p.colorScheme) setColorScheme(p.colorScheme);
                     if (p.accentColor) setAccentColor(p.accentColor);
                 }
                 refreshStats("Settings imported successfully!");
@@ -452,7 +464,7 @@ export default function SettingsPage() {
                         borderRadius: 12,
                         border: "none",
                         background: "var(--accent-blue)",
-                        color: "#fff",
+                        color: "var(--accent-contrast)",
                         fontSize: "0.9rem",
                         fontWeight: 700,
                         cursor: "pointer",
@@ -514,7 +526,7 @@ export default function SettingsPage() {
                         borderRadius: "50%",
                         background: form.photo
                             ? "transparent"
-                            : "linear-gradient(135deg, var(--accent-blue), #3B82F6)",
+                            : "var(--accent-gradient)",
                         border: "2px solid var(--border-color)",
                         display: "flex",
                         alignItems: "center",
@@ -633,7 +645,7 @@ export default function SettingsPage() {
                             borderRadius: 12,
                             border: "none",
                             background: "var(--accent-blue)",
-                            color: "#fff",
+                            color: "var(--accent-contrast)",
                             fontSize: "0.85rem",
                             fontWeight: 700,
                             cursor: "pointer",
@@ -754,7 +766,7 @@ export default function SettingsPage() {
                         <div style={{ display: "grid", gap: 24 }}>
                             <div>
                                 <h2 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                    Profile & Trader Identity
+                                    Profile &amp; Trader Identity
                                 </h2>
                                 <p style={{ margin: "4px 0 0", fontSize: "0.84rem", color: "var(--text-secondary)" }}>
                                     Personalize your avatar and trader credentials visible across trading terminals.
@@ -773,7 +785,7 @@ export default function SettingsPage() {
                                             width: 76,
                                             height: 76,
                                             borderRadius: "50%",
-                                            background: form.photo ? "transparent" : "linear-gradient(135deg, var(--accent-blue), #3B82F6)",
+                                            background: form.photo ? "transparent" : "var(--accent-gradient)",
                                             border: "2px dashed var(--accent-blue)",
                                             display: "flex",
                                             alignItems: "center",
@@ -850,27 +862,83 @@ export default function SettingsPage() {
                         <div style={{ display: "grid", gap: 24 }}>
                             <div>
                                 <h2 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                    Appearance & Theme Studio
+                                    Appearance &amp; Theme Studio
                                 </h2>
                                 <p style={{ margin: "4px 0 0", fontSize: "0.84rem", color: "var(--text-secondary)" }}>
                                     Customize visual themes, color accents, and layout density in real time.
                                 </p>
                             </div>
 
-                            {/* Dark/Light Mode Switch */}
-                            <div style={{ padding: 18, borderRadius: 14, background: "var(--bg-tertiary)", border: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                                <div>
-                                    <div style={{ fontSize: "0.92rem", fontWeight: 700, color: "var(--text-primary)", marginBottom: 4 }}>
-                                        Theme Mode
-                                    </div>
-                                    <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-                                        Currently active: <strong>{theme === "dark" ? "Dark Cyber Mode" : "Light Mode"}</strong>
-                                    </div>
+                            <div>
+                                <label style={{ display: "block", fontSize: "0.74rem", fontWeight: 700, color: "var(--text-muted)", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                                    Brightness
+                                </label>
+                                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+                                    {[
+                                        { id: "light", label: "Light", icon: Sun },
+                                        { id: "dark", label: "Dark", icon: Moon },
+                                        { id: "system", label: "System", icon: Monitor },
+                                    ].map(({ id, label, icon: Icon }) => {
+                                        const selected = themePreference === id;
+                                        return (
+                                            <button
+                                                key={id}
+                                                type="button"
+                                                onClick={() => setThemeMode(id)}
+                                                aria-pressed={selected}
+                                                style={{
+                                                    padding: "13px 14px", borderRadius: 12,
+                                                    border: selected ? "1px solid var(--accent-blue)" : "1px solid var(--border-color)",
+                                                    background: selected ? "var(--accent-blue-muted)" : "var(--bg-tertiary)",
+                                                    color: selected ? "var(--accent-blue)" : "var(--text-secondary)",
+                                                    fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                                                    boxShadow: selected ? "var(--shadow-glow-blue)" : "none",
+                                                }}
+                                            >
+                                                <Icon size={16} /> {label}
+                                            </button>
+                                        );
+                                    })}
                                 </div>
-                                <button type="button" onClick={toggleTheme} style={{ padding: "10px 18px", borderRadius: 10, border: "1px solid var(--border-color)", background: "var(--bg-primary)", color: "var(--text-primary)", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
-                                    {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-                                    {theme === "dark" ? "Switch to Light" : "Switch to Dark"}
-                                </button>
+                                <div style={{ marginTop: 8, fontSize: "0.75rem", color: "var(--text-muted)" }}>
+                                    {themePreference === "system" ? `Following your device (${theme})` : `Using ${theme} mode`}
+                                </div>
+                            </div>
+
+                            <div>
+                                <label style={{ display: "block", fontSize: "0.74rem", fontWeight: 700, color: "var(--text-muted)", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                                    Surface Style
+                                </label>
+                                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>
+                                    {Object.entries(THEME_PRESETS).map(([id, preset]) => {
+                                        const selected = colorScheme === id;
+                                        return (
+                                            <button
+                                                key={id}
+                                                type="button"
+                                                onClick={() => setColorScheme(id)}
+                                                aria-pressed={selected}
+                                                style={{
+                                                    padding: 14, borderRadius: 14, textAlign: "left", cursor: "pointer",
+                                                    border: selected ? "1px solid var(--accent-blue)" : "1px solid var(--border-color)",
+                                                    background: selected ? "var(--accent-blue-muted)" : "var(--bg-tertiary)",
+                                                    color: "var(--text-primary)", boxShadow: selected ? "var(--shadow-glow-blue)" : "none",
+                                                }}
+                                            >
+                                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                                                    <div style={{ display: "flex" }}>
+                                                        {preset.preview.map((swatch, index) => (
+                                                            <span key={swatch} style={{ width: 24, height: 24, borderRadius: "50%", background: swatch, marginLeft: index ? -6 : 0, border: "2px solid var(--bg-tertiary)" }} />
+                                                        ))}
+                                                    </div>
+                                                    {selected && <Check size={16} style={{ color: "var(--accent-blue)" }} />}
+                                                </div>
+                                                <div style={{ fontWeight: 750, fontSize: "0.88rem" }}>{preset.label}</div>
+                                                <div style={{ fontSize: "0.72rem", color: "var(--text-secondary)", marginTop: 3, lineHeight: 1.4 }}>{preset.description}</div>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
                             </div>
 
                             {/* Primary Accent Picker */}
@@ -944,7 +1012,7 @@ export default function SettingsPage() {
                         <div style={{ display: "grid", gap: 24 }}>
                             <div>
                                 <h2 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                    Trading Preferences & Calculator Defaults
+                                    Trading Preferences &amp; Calculator Defaults
                                 </h2>
                                 <p style={{ margin: "4px 0 0", fontSize: "0.84rem", color: "var(--text-secondary)" }}>
                                     Set default capital presets, watchlist buckets, and tick streaming speeds.
@@ -999,7 +1067,7 @@ export default function SettingsPage() {
                             <div style={{ padding: 16, borderRadius: 12, background: "var(--bg-tertiary)", border: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                                 <div>
                                     <div style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--text-primary)", marginBottom: 2 }}>
-                                        Audio Ticks & Order Alerts
+                                        Audio Ticks &amp; Order Alerts
                                     </div>
                                     <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
                                         Play subtle audio chime when key price alerts trigger.
@@ -1013,7 +1081,7 @@ export default function SettingsPage() {
                                         borderRadius: 10,
                                         border: "1px solid var(--border-color)",
                                         background: soundEnabled ? "var(--accent-blue)" : "var(--bg-primary)",
-                                        color: soundEnabled ? "#fff" : "var(--text-muted)",
+                                        color: soundEnabled ? "var(--accent-contrast)" : "var(--text-muted)",
                                         fontWeight: 700,
                                         cursor: "pointer",
                                     }}
@@ -1053,7 +1121,7 @@ export default function SettingsPage() {
                             </div>
 
                             <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                                <button type="button" onClick={() => { window.location.href = "/brokers"; }} style={{ padding: "12px 20px", borderRadius: 12, border: "none", background: "var(--accent-blue)", color: "#fff", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
+                                <button type="button" onClick={() => { window.location.href = "/brokers"; }} style={{ padding: "12px 20px", borderRadius: 12, border: "none", background: "var(--accent-blue)", color: "var(--accent-contrast)", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
                                     <RefreshCw size={16} /> Re-authenticate Upstox API
                                 </button>
                                 <button type="button" onClick={handleDisconnectBroker} style={{ padding: "12px 20px", borderRadius: 12, border: "1px solid rgba(239, 68, 68, 0.4)", background: "rgba(239, 68, 68, 0.1)", color: "#EF4444", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
@@ -1068,7 +1136,7 @@ export default function SettingsPage() {
                         <div style={{ display: "grid", gap: 24 }}>
                             <div>
                                 <h2 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                    Data & Workspace Sentinel
+                                    Data &amp; Workspace Sentinel
                                 </h2>
                                 <p style={{ margin: "4px 0 0", fontSize: "0.84rem", color: "var(--text-secondary)" }}>
                                     Export your workspace configuration to JSON or clear local tick caches.
@@ -1135,7 +1203,7 @@ export default function SettingsPage() {
                         <div style={{ display: "grid", gap: 24 }}>
                             <div>
                                 <h2 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                    Security & Terminal Lock Layer
+                                    Security &amp; Terminal Lock Layer
                                 </h2>
                                 <p style={{ margin: "4px 0 0", fontSize: "0.84rem", color: "var(--text-secondary)" }}>
                                     Set up a 4-digit Security PIN to lock the terminal console.
@@ -1176,7 +1244,7 @@ export default function SettingsPage() {
                                     <button
                                         type="button"
                                         onClick={handleSetPin}
-                                        style={{ height: 40, padding: "0 18px", borderRadius: 10, border: "none", background: "var(--accent-blue)", color: "#fff", fontWeight: 700, cursor: "pointer" }}
+                                        style={{ height: 40, padding: "0 18px", borderRadius: 10, border: "none", background: "var(--accent-blue)", color: "var(--accent-contrast)", fontWeight: 700, cursor: "pointer" }}
                                     >
                                         Save PIN
                                     </button>

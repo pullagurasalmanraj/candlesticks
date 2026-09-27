@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
+import { getWebSocketUrl } from "../utils/websocketUrl";
+
+const WS_URL = getWebSocketUrl();
 
 export default function useWebSocketPrices(instrumentByKey) {
 
@@ -41,7 +44,7 @@ export default function useWebSocketPrices(instrumentByKey) {
         const connect = () => {
             if (closedRef.current) return;
 
-            const ws = new WebSocket("ws://localhost:9000");
+            const ws = new WebSocket(WS_URL);
             wsRef.current = ws;
 
             ws.onopen = () => {
@@ -132,7 +135,7 @@ export default function useWebSocketPrices(instrumentByKey) {
         if (wsRef.current?.readyState === WebSocket.OPEN) return;
         closedRef.current = false;
 
-        const ws = new WebSocket("ws://localhost:9000");
+        const ws = new WebSocket(WS_URL);
         wsRef.current = ws;
 
         ws.onopen = () => {

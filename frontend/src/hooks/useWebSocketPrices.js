@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { INDEX_KEY_TO_SYMBOL } from "../context/indexes";
+import { getWebSocketUrl } from "../utils/websocketUrl";
 
-const WS_URL = "ws://localhost:9000";
+const WS_URL = getWebSocketUrl();
 
 const CLEANED_INDEX_SYMBOLS = {
     NIFTY: "NIFTY",

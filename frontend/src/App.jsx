@@ -143,7 +143,7 @@ function Sidebar({ collapsed, setCollapsed }) {
         textDecoration: "none",
         transition:     "all 0.15s ease",
         background:     isActive ? "var(--accent-blue)"        : "transparent",
-        color:          isActive ? "#ffffff"                   : "var(--text-primary)",
+        color:          isActive ? "var(--accent-contrast)"    : "var(--text-primary)",
         boxShadow:      isActive ? "var(--shadow-glow-blue)"   : "none",
     });
 
@@ -154,7 +154,8 @@ function Sidebar({ collapsed, setCollapsed }) {
             flexShrink:    0,
             display:       "flex",
             flexDirection: "column",
-            background:    "var(--bg-secondary)",
+            background:    "var(--surface-glass-strong)",
+            backdropFilter:"blur(18px) saturate(135%)",
             borderRight:   "1px solid var(--border-color)",
             transition:    "width 0.25s ease",
             overflow:      "hidden",
@@ -249,7 +250,7 @@ function Sidebar({ collapsed, setCollapsed }) {
                             textTransform: "uppercase", color: "var(--text-muted)",
                             padding: "0 6px", marginBottom: 8,
                         }}>
-                            AI & Models
+                            AI &amp; Models
                         </div>
                     )}
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -351,7 +352,6 @@ function getPageTitle(pathname) {
 
 // ── App shell ────────────────────────────────────────────────────
 function AppShell() {
-    const { theme } = useTheme();
     const location  = useLocation();
     const [collapsed,    setCollapsed]    = useState(false);
     const [profileOpen,  setProfileOpen]  = useState(false);
@@ -364,7 +364,7 @@ function AppShell() {
 
     if (isStandalone) {
         return (
-            <div style={{ minHeight: "100vh", background: "var(--bg-primary)" }}>
+            <div style={{ minHeight: "100vh", background: "var(--page-gradient)" }}>
                 <NetworkStatusOverlay />
                 <Suspense fallback={<SkeletonLoader />}>
                     <Routes>
@@ -389,7 +389,7 @@ function AppShell() {
     return (
         <div style={{
             display: "flex", height: "100vh", overflow: "hidden",
-            background: "var(--bg-primary)",
+            background: "var(--page-gradient)",
         }}>
             {/* Global Network Health & Disconnect Overlay */}
             <NetworkStatusOverlay />
@@ -405,7 +405,8 @@ function AppShell() {
                     height:        "var(--navbar-height)",
                     flexShrink:    0,
                     borderBottom:  "1px solid var(--border-color)",
-                    background:    "var(--bg-secondary)",
+                    background:    "var(--surface-glass)",
+                    backdropFilter:"blur(18px) saturate(135%)",
                     display:       "flex",
                     alignItems:    "center",
                     justifyContent:"space-between",
@@ -443,7 +444,7 @@ function AppShell() {
                 </header>
 
                 {/* ── Page content ─────────────────────────── */}
-                <main style={{ flex: 1, overflowY: "auto", background: "var(--bg-primary)" }}>
+                <main style={{ flex: 1, overflowY: "auto", background: "transparent" }}>
                     <Suspense fallback={<SkeletonLoader />}>
                         <Routes>
                             <Route path="/"            element={<ProtectedRoute><BrokerProtectedRoute><Dashboard /></BrokerProtectedRoute></ProtectedRoute>} />

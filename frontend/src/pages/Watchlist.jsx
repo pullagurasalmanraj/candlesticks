@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useTheme } from "../context/ThemeContext";
+import { getWebSocketUrl } from "../utils/websocketUrl";
 import {
     DEFAULT_WATCHLIST_CAP,
     WATCHLIST_CAP_KEYS,
@@ -15,9 +15,6 @@ import {
 } from "../utils/watchlistUtils";
 
 export default function Watchlist() {
-    const { theme } = useTheme();
-    const isLight = theme === "light";
-
     const [watchlistsByCap, setWatchlistsByCap] = useState(() => readStoredWatchlistsByCap());
     const [activeCap, setActiveCap] = useState(() => readPreferredWatchlistCap());
     const [prices, setPrices] = useState({});
@@ -62,7 +59,7 @@ export default function Watchlist() {
         function connectWS() {
             if (wsRef.current) return;
 
-            const ws = new WebSocket("ws://localhost:9000");
+            const ws = new WebSocket(getWebSocketUrl());
             wsRef.current = ws;
 
             ws.onopen = () => {
@@ -158,8 +155,8 @@ export default function Watchlist() {
     };
 
     return (
-        <div className={`p-6 min-h-screen ${isLight ? "bg-slate-50 text-slate-700" : "bg-[#0b0f19] text-gray-100"}`}>
-            <h2 className={`text-3xl font-bold mb-6 ${isLight ? "text-yellow-600" : "text-yellow-400"}`}>
+        <div className="p-6 min-h-screen" style={{ background: "transparent", color: "var(--text-primary)" }}>
+            <h2 className="text-3xl font-bold mb-6" style={{ color: "var(--accent-gold)" }}>
                 My Watchlist
             </h2>
 
@@ -170,12 +167,13 @@ export default function Watchlist() {
                         <button
                             key={capItem.key}
                             onClick={() => setActiveCap(capItem.key)}
-                            className={`px-3 py-1.5 rounded-full text-sm border transition ${isActive
-                                    ? "border-blue-500 bg-blue-500/15 text-blue-500"
-                                    : isLight
-                                        ? "border-slate-300 bg-white text-slate-600"
-                                        : "border-gray-700 bg-[#111827] text-gray-300"
-                                }`}
+                            className="px-3 py-1.5 rounded-full text-sm border transition"
+                            style={{
+                                borderColor: isActive ? "var(--accent-blue)" : "var(--border-color)",
+                                background: isActive ? "var(--accent-blue-muted)" : "var(--bg-secondary)",
+                                color: isActive ? "var(--accent-blue)" : "var(--text-secondary)",
+                                boxShadow: isActive ? "var(--shadow-glow-blue)" : "none",
+                            }}
                         >
                             {capItem.label} ({watchlistCountByCap[capItem.key] || 0})
                         </button>
@@ -184,7 +182,7 @@ export default function Watchlist() {
             </div>
 
             {activeWatchlistItems.length === 0 ? (
-                <p className="text-center mt-20 text-gray-400">
+                <p className="text-center mt-20" style={{ color: "var(--text-muted)" }}>
                     {getWatchlistCapLabel(activeCap)} list is empty.
                 </p>
             ) : (
@@ -198,36 +196,43 @@ export default function Watchlist() {
                         const percent = info.percent ?? 0;
 
                         const trend = priceChange[key];
-                        const color =
-                            trend === "up" ? "text-green-500"
-                                : trend === "down" ? "text-red-500"
-                                    : "text-blue-400";
+                        const color = trend === "up"
+                            ? "var(--accent-up)"
+                            : trend === "down" ? "var(--accent-down)" : "var(--accent-blue)";
 
                         return (
                             <div
                                 key={`${activeCap}-${inst.symbol}-${key}`}
-                                className={`relative rounded-lg p-4 shadow-md border ${isLight ? "bg-white border-gray-200" : "bg-[#161b22] border-gray-700"}`}
+                                className="relative p-4 border"
+                                style={{
+                                    borderRadius: "var(--card-radius)",
+                                    background: "var(--surface-glass)",
+                                    borderColor: "var(--border-color)",
+                                    boxShadow: "var(--shadow-card)",
+                                    backdropFilter: "blur(16px) saturate(135%)",
+                                }}
                             >
                                 <button
                                     onClick={() => removeFromWatchlist(inst.symbol)}
-                                    className="absolute top-2 right-2 text-yellow-400 text-xl"
+                                    className="absolute top-2 right-2 text-xl"
+                                    style={{ color: "var(--accent-gold)" }}
                                     title="Remove from current cap watchlist"
                                 >
                                     x
                                 </button>
 
                                 <h3 className="text-lg font-bold">{inst.symbol}</h3>
-                                <p className="text-xs text-gray-400">{inst.instrument_key}</p>
+                                <p className="text-xs" style={{ color: "var(--text-muted)" }}>{inst.instrument_key}</p>
 
-                                <p className={`text-xl mt-3 font-bold ${color}`}>
+                                <p className="text-xl mt-3 font-bold" style={{ color }}>
                                     Rs. {ltp !== "--" ? ltp.toFixed(2) : "--.--"}
                                 </p>
 
-                                <p className={`text-sm font-semibold ${color}`}>
+                                <p className="text-sm font-semibold" style={{ color }}>
                                     {ltp === "--" ? "--" : `${change.toFixed(2)} (${percent.toFixed(2)}%)`}
                                 </p>
 
-                                <p className="text-xs text-gray-400">
+                                <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                                     {ltp === "--" ? "Waiting for ticks..." : "Real-time update"}
                                 </p>
                             </div>

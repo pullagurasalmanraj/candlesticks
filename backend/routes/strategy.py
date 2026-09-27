@@ -943,6 +943,18 @@ def offline_label_market_context():
                 impulse_dir,
                 context_label,
                 phase_reason,
+                story_regime,
+                bar_event,
+                regime_rule_score,
+                event_rule_score,
+                regime_age_bars,
+                candidate_regime,
+                candidate_age_bars,
+                candidate_rule_score,
+                regime_reason_code,
+                event_reason_code,
+                reason_details,
+                story_version,
                 created_at
             ) VALUES %s
             ON CONFLICT (symbol,exchange,timeframe,ts) DO UPDATE SET
@@ -979,6 +991,18 @@ def offline_label_market_context():
                 impulse_dir=EXCLUDED.impulse_dir,
                 context_label=EXCLUDED.context_label,
                 phase_reason=EXCLUDED.phase_reason,
+                story_regime=EXCLUDED.story_regime,
+                bar_event=EXCLUDED.bar_event,
+                regime_rule_score=EXCLUDED.regime_rule_score,
+                event_rule_score=EXCLUDED.event_rule_score,
+                regime_age_bars=EXCLUDED.regime_age_bars,
+                candidate_regime=EXCLUDED.candidate_regime,
+                candidate_age_bars=EXCLUDED.candidate_age_bars,
+                candidate_rule_score=EXCLUDED.candidate_rule_score,
+                regime_reason_code=EXCLUDED.regime_reason_code,
+                event_reason_code=EXCLUDED.event_reason_code,
+                reason_details=EXCLUDED.reason_details,
+                story_version=EXCLUDED.story_version,
                 created_at=EXCLUDED.created_at
         """
         RULE_SQL = """
@@ -996,6 +1020,47 @@ def offline_label_market_context():
             with conn.cursor() as cur:
                 cur.execute("ALTER TABLE market_context ADD COLUMN IF NOT EXISTS context_label text;")
                 cur.execute("ALTER TABLE market_context ADD COLUMN IF NOT EXISTS phase_reason text;")
+                cur.execute(
+                    """
+                    ALTER TABLE market_context
+                        ADD COLUMN IF NOT EXISTS story_regime text,
+                        ADD COLUMN IF NOT EXISTS bar_event text,
+                        ADD COLUMN IF NOT EXISTS regime_rule_score real,
+                        ADD COLUMN IF NOT EXISTS event_rule_score real,
+                        ADD COLUMN IF NOT EXISTS regime_age_bars integer DEFAULT 0,
+                        ADD COLUMN IF NOT EXISTS candidate_regime text,
+                        ADD COLUMN IF NOT EXISTS candidate_age_bars integer DEFAULT 0,
+                        ADD COLUMN IF NOT EXISTS candidate_rule_score real,
+                        ADD COLUMN IF NOT EXISTS regime_reason_code text,
+                        ADD COLUMN IF NOT EXISTS event_reason_code text,
+                        ADD COLUMN IF NOT EXISTS reason_details jsonb DEFAULT '{}'::jsonb,
+                        ADD COLUMN IF NOT EXISTS story_version integer DEFAULT 1
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE OR REPLACE VIEW market_context_ist AS
+                    SELECT symbol, exchange, timeframe,
+                           ts AT TIME ZONE 'Asia/Kolkata' AS ts,
+                           vwap_dist_pct, day_high_dist, day_low_dist,
+                           orb_dist_pct, gap_pct, minute_of_day,
+                           volume_expansion, atr_expanding, range_efficiency,
+                           vwap_acceptance, momentum_decay, candle_overlap,
+                           market_phase, context_label,
+                           created_at AT TIME ZONE 'Asia/Kolkata' AS created_at,
+                           vix, vix_change, vix_regime, ema_21_slope,
+                           gap_atr, gap_dir, gap_regime, ml_label, tf_role,
+                           trend_exhaustion, obv_slope, macd_expanding,
+                           price_structure, session_type, macro_regime, vol_ratio,
+                           vwap_dist_atr, impulse_dir, phase_reason,
+                           story_regime, bar_event, regime_rule_score,
+                           event_rule_score, regime_age_bars, candidate_regime,
+                           candidate_age_bars, candidate_rule_score,
+                           regime_reason_code, event_reason_code, reason_details,
+                           story_version
+                    FROM market_context
+                    """
+                )
                 cur.execute("ALTER TABLE strategy_outcomes ADD COLUMN IF NOT EXISTS phase_reason text;")
 
                 # Discard stale warmup-era labels from earlier runs.
@@ -2333,6 +2398,11 @@ def get_market_context_reasons():
         df = read_sql_safe(
             """
             SELECT ts, market_phase, ml_label, price_structure,
+                   story_regime, bar_event,
+                   regime_rule_score, event_rule_score,
+                   regime_age_bars, candidate_regime, candidate_age_bars,
+                   candidate_rule_score, regime_reason_code,
+                   event_reason_code, reason_details, story_version,
                    COALESCE(context_label, '') AS context_label,
                    COALESCE(phase_reason, '')  AS phase_reason
             FROM market_context
@@ -2356,6 +2426,18 @@ def get_market_context_reasons():
             "market_phase": row["market_phase"],
             "ml_label": row["ml_label"],
             "price_structure": row["price_structure"],
+            "story_regime": row["story_regime"],
+            "bar_event": row["bar_event"],
+            "regime_rule_score": row["regime_rule_score"],
+            "event_rule_score": row["event_rule_score"],
+            "regime_age_bars": row["regime_age_bars"],
+            "candidate_regime": row["candidate_regime"],
+            "candidate_age_bars": row["candidate_age_bars"],
+            "candidate_rule_score": row["candidate_rule_score"],
+            "regime_reason_code": row["regime_reason_code"],
+            "event_reason_code": row["event_reason_code"],
+            "reason_details": row["reason_details"],
+            "story_version": row["story_version"],
             "context_label": row["context_label"],
             "phase_reason": row["phase_reason"],
         }

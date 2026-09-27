@@ -779,7 +779,7 @@ export default function Dashboard() {
     return (
         <div style={{
             minHeight: "calc(100vh - var(--navbar-height))",
-            background: "var(--bg-primary)",
+            background: "transparent",
             color: "var(--text-primary)",
         }}>
             {/* ── Success Popup Modal ────────────────────────────────────────── */}
@@ -793,9 +793,10 @@ export default function Dashboard() {
                     animation: "fadeIn 0.2s ease"
                 }}>
                     <div style={{
-                        background: "var(--bg-secondary)",
+                        background: "var(--surface-glass-strong)",
+                        backdropFilter: "blur(22px) saturate(140%)",
                         border: "1px solid var(--border-color)",
-                        borderRadius: "12px",
+                        borderRadius: "var(--card-radius)",
                         padding: "24px",
                         width: "90%",
                         maxWidth: "420px",
@@ -807,10 +808,10 @@ export default function Dashboard() {
                             <div style={{
                                 width: "32px", height: "32px", borderRadius: "50%",
                                 background: operationResult.already_exists
-                                    ? "linear-gradient(135deg, #3B82F6, #1D4ED8)"
+                                    ? "var(--accent-gradient)"
                                     : "linear-gradient(135deg, #10B981, #059669)",
                                 display: "flex", alignItems: "center", justifyContent: "center",
-                                color: "#fff", fontSize: "1rem", fontWeight: "bold"
+                                color: operationResult.already_exists ? "var(--accent-contrast)" : "#fff", fontSize: "1rem", fontWeight: "bold"
                             }}>
                                 {operationResult.already_exists ? "i" : "✓"}
                             </div>
@@ -833,7 +834,7 @@ export default function Dashboard() {
                             </div>
                             <div style={{ display: "flex", justifyContent: "space-between", borderBottom: "1px dashed var(--border-color)", paddingBottom: "6px" }}>
                                 <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>Rows Processed</span>
-                                <span style={{ fontWeight: "700", fontSize: "0.8rem", color: "#10B981" }}>{Number(operationResult.rows).toLocaleString()}</span>
+                                <span style={{ fontWeight: "700", fontSize: "0.8rem", color: "var(--accent-up)" }}>{Number(operationResult.rows).toLocaleString()}</span>
                             </div>
                         </div>
 
@@ -841,8 +842,8 @@ export default function Dashboard() {
                             <button
                                 onClick={() => setOperationResult(null)}
                                 style={{
-                                    background: "linear-gradient(135deg, var(--accent-blue), #1D4ED8)",
-                                    color: "#fff", border: "none", borderRadius: "6px",
+                                    background: "var(--accent-gradient)",
+                                    color: "var(--accent-contrast)", border: "none", borderRadius: "8px",
                                     padding: "8px 18px", fontSize: "0.8rem", fontWeight: "600",
                                     cursor: "pointer", boxShadow: "var(--shadow-glow-blue)"
                                 }}
@@ -858,10 +859,10 @@ export default function Dashboard() {
             {toast && (
                 <div style={{
                     position: "fixed", bottom: 24, right: 24, zIndex: 12000,
-                    background: "rgba(15, 23, 42, 0.96)", backdropFilter: "blur(12px)",
-                    border: `1px solid ${toast.type === "error" ? "rgba(239,68,68,0.65)" : toast.type === "success" ? "rgba(16,185,129,0.65)" : "rgba(59,130,246,0.65)"}`,
+                    background: "var(--surface-glass-strong)", backdropFilter: "blur(18px) saturate(140%)",
+                    border: `1px solid ${toast.type === "error" ? "var(--accent-down)" : toast.type === "success" ? "var(--accent-up)" : "var(--accent-blue)"}`,
                     borderRadius: "10px",
-                    padding: "12px 18px", color: "#fff",
+                    padding: "12px 18px", color: "var(--text-primary)",
                     boxShadow: "0 10px 25px -5px rgba(0,0,0,0.5)",
                     display: "flex", alignItems: "center", gap: "12px",
                     minWidth: "280px", maxWidth: "360px"
@@ -981,7 +982,7 @@ export default function Dashboard() {
                                         border: "none", borderRadius: 6, padding: "6px 12px",
                                         fontSize: "0.74rem", fontWeight: 600, cursor: "pointer",
                                         background: viewMode === tab.id ? "var(--accent-blue)" : "transparent",
-                                        color: viewMode === tab.id ? "#fff" : "var(--text-muted)",
+                                        color: viewMode === tab.id ? "var(--accent-contrast)" : "var(--text-muted)",
                                         transition: "all 0.15s ease",
                                     }}
                                 >
@@ -997,7 +998,7 @@ export default function Dashboard() {
                             style={{
                                 border: "1px solid var(--accent-blue)",
                                 borderRadius: 8,
-                                background: "rgba(59,130,246,0.15)",
+                                background: "var(--accent-blue-muted)",
                                 color: "var(--accent-blue)",
                                 padding: "7px 14px",
                                 fontSize: "0.78rem",
@@ -1018,7 +1019,7 @@ export default function Dashboard() {
                                 <span style={{
                                     fontSize: "0.62rem",
                                     background: "var(--accent-blue)",
-                                    color: "#fff",
+                                    color: "var(--accent-contrast)",
                                     borderRadius: 4,
                                     padding: "1px 5px"
                                 }}>
@@ -1064,7 +1065,7 @@ export default function Dashboard() {
                                 style={{
                                     borderRadius: 20,
                                     border: `1px solid ${filterCategory === f.id ? "var(--accent-blue)" : "var(--border-subtle)"}`,
-                                    background: filterCategory === f.id ? "rgba(59,130,246,0.18)" : "transparent",
+                                    background: filterCategory === f.id ? "var(--accent-blue-muted)" : "transparent",
                                     color: filterCategory === f.id ? "var(--accent-blue)" : "var(--text-muted)",
                                     fontSize: "0.7rem", fontWeight: 600, padding: "3px 10px", cursor: "pointer",
                                 }}
@@ -1165,7 +1166,7 @@ export default function Dashboard() {
                                                 onClick={() => setWatchlistTab("watchlist")}
                                                 style={{
                                                     background: watchlistTab !== "barometer" ? "var(--accent-blue)" : "transparent",
-                                                    color: watchlistTab !== "barometer" ? "#fff" : "var(--text-muted)",
+                                                    color: watchlistTab !== "barometer" ? "var(--accent-contrast)" : "var(--text-muted)",
                                                     border: "none",
                                                     borderRadius: 4,
                                                     padding: "3px 8px",
@@ -1181,7 +1182,7 @@ export default function Dashboard() {
                                                 onClick={() => setWatchlistTab("barometer")}
                                                 style={{
                                                     background: watchlistTab === "barometer" ? "var(--accent-blue)" : "transparent",
-                                                    color: watchlistTab === "barometer" ? "#fff" : "var(--text-muted)",
+                                                    color: watchlistTab === "barometer" ? "var(--accent-contrast)" : "var(--text-muted)",
                                                     border: "none",
                                                     borderRadius: 4,
                                                     padding: "3px 8px",
@@ -1367,8 +1368,8 @@ export default function Dashboard() {
                                             type="button"
                                             onClick={() => setIsToolsOpen(true)}
                                             style={{
-                                                background: "linear-gradient(135deg, var(--accent-blue), #1D4ED8)",
-                                                color: "#fff",
+                                                background: "var(--accent-gradient)",
+                                                color: "var(--accent-contrast)",
                                                 border: "none", borderRadius: 8, padding: "8px 16px",
                                                 fontSize: "0.8rem", fontWeight: 700, cursor: "pointer",
                                                 boxShadow: "var(--shadow-glow-blue)",
@@ -1446,8 +1447,8 @@ export default function Dashboard() {
                                                                 {misPrice && (
                                                                     <span style={{
                                                                         fontSize: "0.7rem", fontWeight: 800, fontFamily: "var(--font-mono)",
-                                                                        color: "var(--accent-blue)", background: "rgba(59, 130, 246, 0.12)",
-                                                                        border: "1px solid rgba(59, 130, 246, 0.3)", borderRadius: 4, padding: "1px 6px"
+                                                                        color: "var(--accent-blue)", background: "var(--accent-blue-muted)",
+                                                                        border: "1px solid var(--glow)", borderRadius: 4, padding: "1px 6px"
                                                                     }}>
                                                                         MIS: ₹{misPrice.toLocaleString("en-IN", { minimumFractionDigits: 2 })} (5x)
                                                                     </span>

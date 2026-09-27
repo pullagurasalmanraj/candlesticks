@@ -888,6 +888,327 @@ def _post_impulse_trend_phase(impulse_dir: str, close: float, open_: float):
     return "TREND_CONTINUATION" if close >= open_ else "TREND_DIGESTION"
 
 
+# `market_phase` remains the legacy detailed label used by the execution and ML
+# paths.  These mappings expose the same decision as a short-lived bar event,
+# while `_derive_market_story` below maintains the slower market regime.
+PHASE_TO_BAR_EVENT = {
+    "TREND_CONTINUATION": "CONTINUATION",
+    "BEAR_TREND_CONTINUATION": "CONTINUATION",
+    "TREND_ACCEPTANCE": "ACCEPTANCE",
+    "BEAR_TREND_ACCEPTANCE": "ACCEPTANCE",
+    "TREND_DIGESTION": "DIGESTION",
+    "BEAR_TREND_DIGESTION": "DIGESTION",
+    "TREND_PAUSE": "PAUSE",
+    "BEAR_TREND_PAUSE": "PAUSE",
+    "POST_IMPULSE_DIGESTION": "DIGESTION",
+    "IMPULSE_BULL": "IMPULSE",
+    "IMPULSE_BEAR": "IMPULSE",
+    "IMPULSE_NEUTRAL": "IMPULSE",
+    "AUCTION_IMPULSE_UP": "IMPULSE",
+    "AUCTION_IMPULSE_DOWN": "IMPULSE",
+    "AUCTION_IMPULSE_NEUTRAL": "IMPULSE",
+    "EXPANSION": "EXPANSION",
+    "COMPRESSION": "COMPRESSION",
+    "BALANCE_CHOP": "CHOP",
+    "GAP_AUCTION_CHOP": "CHOP",
+    "ABSORPTION": "ABSORPTION",
+    "DISTRIBUTION": "DISTRIBUTION",
+    "PULLBACK_FAIL": "PULLBACK_FAIL",
+    "REJECTION": "REJECTION",
+    "LARGE_GAP_UP": "GAP_OPEN",
+    "MODERATE_GAP_UP": "GAP_OPEN",
+    "LARGE_GAP_DOWN": "GAP_OPEN",
+    "MODERATE_GAP_DOWN": "GAP_OPEN",
+    "GAP_OPEN": "GAP_OPEN",
+    "LARGE_GAP_AUCTION_BULL": "GAP_AUCTION",
+    "MODERATE_GAP_AUCTION_BULL": "GAP_AUCTION",
+    "LARGE_GAP_AUCTION_BEAR": "GAP_AUCTION",
+    "MODERATE_GAP_AUCTION_BEAR": "GAP_AUCTION",
+    "GAP_UP_FADE": "GAP_FADE",
+    "GAP_DOWN_FADE": "GAP_FADE",
+    "GAP_CONTINUATION": "GAP_CONTINUATION",
+    "GAP_FILLED": "GAP_FILL",
+    "GAP_TIMEOUT": "GAP_TIMEOUT",
+    "UNCLASSIFIED": "UNCLASSIFIED",
+}
+
+GAP_STORY_EVENTS = frozenset(
+    {"GAP_OPEN", "GAP_AUCTION", "GAP_FADE", "GAP_CONTINUATION", "GAP_FILL", "GAP_TIMEOUT"}
+)
+RANGE_STORY_EVENTS = frozenset(
+    {"CHOP", "COMPRESSION", "ABSORPTION", "DISTRIBUTION"}
+)
+
+
+def _finite_float(value, default=0.0):
+    """Return a finite float suitable for scores and JSON evidence."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return result if math.isfinite(result) else float(default)
+
+
+def _derive_market_story(
+    df,
+    confirmation_bars: int = 3,
+    confirmation_score: float = 0.65,
+    reversal_score: float = 0.75,
+):
+    """Derive a causal, persistent regime and a per-bar event.
+
+    The score is deterministic rule agreement, not a probability of a future
+    price move.  Regime state is reset at each session and consumes rows only
+    in chronological order.  An opposite directional proposal always passes
+    through TRANSITION before the new regime can be confirmed.
+    """
+    n = len(df)
+    if n == 0:
+        return df
+
+    def _values(name, default):
+        if name in df.columns:
+            return df[name].to_numpy()
+        return np.full(n, default)
+
+    phases = _values("market_phase", "UNCLASSIFIED")
+    dates = _values("date", None)
+    opens = _values("open", 0.0).astype(float)
+    closes = _values("close", 0.0).astype(float)
+    ema9 = _values("ema_9", np.nan).astype(float)
+    ema21 = _values("ema_21", np.nan).astype(float)
+    ema50 = _values("ema_50", np.nan).astype(float)
+    ema_slope = _values("ema_21_slope", 0.0).astype(float)
+    atr14 = _values("atr_14", 0.0).astype(float)
+    vwap_dist_atr = _values("vwap_dist_atr", 0.0).astype(float)
+    structures = _values("price_structure", "NEUTRAL")
+    vol_ratio = _values("vol_ratio", 1.0).astype(float)
+    obv_slope = _values("obv_slope", 0.0).astype(float)
+    range_eff = _values("range_efficiency", 0.0).astype(float)
+    atr_expanding = _values("atr_expanding", 0).astype(float)
+    candle_overlap = _values("candle_overlap", 0).astype(float)
+    gap_atr = _values("gap_atr", 0.0).astype(float)
+    legacy_reasons = _values("_phase_reason", "")
+
+    story_regimes = ["TRANSITION"] * n
+    bar_events = ["UNCLASSIFIED"] * n
+    regime_scores = np.zeros(n, dtype=float)
+    event_scores = np.zeros(n, dtype=float)
+    regime_ages = np.zeros(n, dtype=int)
+    candidate_regimes = ["TRANSITION"] * n
+    candidate_ages = np.zeros(n, dtype=int)
+    candidate_scores = np.zeros(n, dtype=float)
+    regime_reason_codes = ["REGIME_INITIALIZING"] * n
+    event_reason_codes = ["EVENT_UNCLASSIFIED"] * n
+    reason_details = [{} for _ in range(n)]
+
+    current_regime = "TRANSITION"
+    current_age = 0
+    candidate_regime = None
+    candidate_age = 0
+    transition_origin = None
+
+    directional = {"BULL_TREND", "BEAR_TREND"}
+
+    for i in range(n):
+        new_day = i == 0 or dates[i] != dates[i - 1]
+        if new_day:
+            current_regime = "TRANSITION"
+            current_age = 0
+            candidate_regime = None
+            candidate_age = 0
+            transition_origin = None
+
+        phase = str(phases[i])
+        event = PHASE_TO_BAR_EVENT.get(phase, phase or "UNCLASSIFIED")
+        bar_events[i] = event
+
+        atr = max(abs(_finite_float(atr14[i])), 1e-9)
+        slope_atr = _finite_float(ema_slope[i]) / atr
+        slope_strength = float(np.clip(abs(slope_atr) / 0.03, 0.0, 1.0))
+        vwap_value = _finite_float(vwap_dist_atr[i])
+        vwap_strength = float(np.clip(abs(vwap_value), 0.0, 1.0))
+        vr = max(_finite_float(vol_ratio[i], 1.0), 0.0)
+        volume_strength = float(np.clip(vr - 1.0, 0.0, 1.0))
+        obv_value = _finite_float(obv_slope[i])
+        structure = str(structures[i])
+
+        bull_stack = bool(
+            np.isfinite(ema9[i])
+            and np.isfinite(ema21[i])
+            and np.isfinite(ema50[i])
+            and ema9[i] > ema21[i] > ema50[i]
+        )
+        bear_stack = bool(
+            np.isfinite(ema9[i])
+            and np.isfinite(ema21[i])
+            and np.isfinite(ema50[i])
+            and ema9[i] < ema21[i] < ema50[i]
+        )
+        bull_participation = (0.5 + 0.5 * volume_strength) if obv_value > 0 else 0.0
+        bear_participation = (0.5 + 0.5 * volume_strength) if obv_value < 0 else 0.0
+
+        bull_core = (
+            0.25 * slope_strength * float(slope_atr > 0)
+            + 0.20 * vwap_strength * float(vwap_value > 0)
+            + 0.15 * float(bull_stack)
+            + 0.20 * float(structure == "BULL")
+            + 0.10 * bull_participation
+        )
+        bear_core = (
+            0.25 * slope_strength * float(slope_atr < 0)
+            + 0.20 * vwap_strength * float(vwap_value < 0)
+            + 0.15 * float(bear_stack)
+            + 0.20 * float(structure == "BEAR")
+            + 0.10 * bear_participation
+        )
+        directional_edge = bull_core - bear_core
+
+        if event in GAP_STORY_EVENTS:
+            proposed = "GAP_AUCTION"
+        elif directional_edge >= 0.25 and bull_core >= 0.50:
+            proposed = "BULL_TREND"
+        elif directional_edge <= -0.25 and bear_core >= 0.50:
+            proposed = "BEAR_TREND"
+        elif max(bull_core, bear_core) < 0.35 or (
+            event in RANGE_STORY_EVENTS and abs(directional_edge) < 0.20
+        ):
+            proposed = "RANGE"
+        else:
+            proposed = "TRANSITION"
+
+        if proposed == candidate_regime:
+            candidate_age += 1
+        else:
+            candidate_regime = proposed
+            candidate_age = 1
+
+        persistence = min(candidate_age / max(confirmation_bars, 1), 1.0)
+        bull_score = float(np.clip(bull_core + 0.10 * persistence, 0.0, 1.0))
+        bear_score = float(np.clip(bear_core + 0.10 * persistence, 0.0, 1.0))
+        range_score = float(
+            np.clip(1.0 - max(bull_core, bear_core) + 0.10 * persistence, 0.0, 1.0)
+        )
+        transition_score = float(
+            np.clip(1.0 - abs(directional_edge), 0.0, 1.0)
+        )
+        proposed_score = {
+            "BULL_TREND": bull_score,
+            "BEAR_TREND": bear_score,
+            "RANGE": range_score,
+            "GAP_AUCTION": float(
+                np.clip(0.60 + 0.40 * min(abs(_finite_float(gap_atr[i])) / 1.5, 1.0), 0.0, 1.0)
+            ),
+            "TRANSITION": transition_score,
+        }[proposed]
+
+        previous_regime = current_regime
+        reason_code = "REGIME_RETAINED_PENDING_CONFIRMATION"
+        opposite = (
+            current_regime == "BULL_TREND" and proposed == "BEAR_TREND"
+        ) or (
+            current_regime == "BEAR_TREND" and proposed == "BULL_TREND"
+        )
+
+        if proposed == "GAP_AUCTION":
+            current_regime = "GAP_AUCTION"
+            transition_origin = None
+            reason_code = "REGIME_GAP_ACTIVE"
+        elif current_regime == "GAP_AUCTION":
+            current_regime = "TRANSITION"
+            transition_origin = "GAP_AUCTION"
+            reason_code = "REGIME_GAP_RESOLVED"
+        elif opposite:
+            transition_origin = current_regime
+            current_regime = "TRANSITION"
+            reason_code = "REGIME_OPPOSITE_SIGNAL"
+        elif proposed == current_regime:
+            reason_code = "REGIME_EVIDENCE_CONFIRMED"
+        else:
+            required_score = (
+                reversal_score
+                if transition_origin in directional
+                and proposed in directional
+                and proposed != transition_origin
+                else confirmation_score
+            )
+            if candidate_age >= confirmation_bars and proposed_score >= required_score:
+                current_regime = proposed
+                transition_origin = None
+                reason_code = "REGIME_CANDIDATE_CONFIRMED"
+            elif proposed == "TRANSITION" and candidate_age >= 2:
+                if current_regime in directional:
+                    transition_origin = current_regime
+                current_regime = "TRANSITION"
+                reason_code = "REGIME_CONFLICT_CONFIRMED"
+
+        current_age = current_age + 1 if current_regime == previous_regime else 1
+        current_support = {
+            "BULL_TREND": bull_score,
+            "BEAR_TREND": bear_score,
+            "RANGE": range_score,
+            "GAP_AUCTION": proposed_score if proposed == "GAP_AUCTION" else 0.0,
+            "TRANSITION": transition_score,
+        }[current_regime]
+
+        re_value = float(np.clip(_finite_float(range_eff[i]), 0.0, 1.0))
+        overlap = float(np.clip(_finite_float(candle_overlap[i]), 0.0, 1.0))
+        atr_flag = float(_finite_float(atr_expanding[i]) > 0)
+        direction_support = max(bull_score, bear_score)
+        if event == "IMPULSE":
+            event_score = 0.35 * volume_strength + 0.35 * re_value + 0.30 * atr_flag
+        elif event in {"CONTINUATION", "ACCEPTANCE", "EXPANSION"}:
+            event_score = 0.60 * direction_support + 0.40 * re_value
+        elif event in {"DIGESTION", "PAUSE"}:
+            event_score = 0.50 * direction_support + 0.30 * (1.0 - re_value) + 0.20 * overlap
+        elif event in RANGE_STORY_EVENTS:
+            event_score = 0.50 * (1.0 - max(bull_core, bear_core)) + 0.30 * overlap + 0.20 * (1.0 - re_value)
+        elif event in GAP_STORY_EVENTS:
+            event_score = proposed_score
+        else:
+            event_score = 0.50 * direction_support + 0.50 * re_value
+
+        story_regimes[i] = current_regime
+        regime_scores[i] = round(float(np.clip(current_support, 0.0, 1.0)), 4)
+        event_scores[i] = round(float(np.clip(event_score, 0.0, 1.0)), 4)
+        regime_ages[i] = current_age
+        candidate_regimes[i] = candidate_regime
+        candidate_ages[i] = candidate_age
+        candidate_scores[i] = round(proposed_score, 4)
+        regime_reason_codes[i] = reason_code
+        event_reason_codes[i] = f"EVENT_{event}"
+        reason_details[i] = {
+            "score_method": "RULE_V1",
+            "legacy_phase": phase,
+            "legacy_phase_reason": str(legacy_reasons[i]),
+            "proposed_regime": proposed,
+            "bull_score": round(bull_score, 4),
+            "bear_score": round(bear_score, 4),
+            "directional_edge": round(float(directional_edge), 4),
+            "slope_atr": round(float(slope_atr), 4),
+            "vwap_dist_atr": round(float(vwap_value), 4),
+            "bull_ema_stack": bull_stack,
+            "bear_ema_stack": bear_stack,
+            "price_structure": structure,
+            "volume_strength": round(volume_strength, 4),
+            "persistence": round(persistence, 4),
+        }
+
+    df["story_regime"] = story_regimes
+    df["bar_event"] = bar_events
+    df["regime_rule_score"] = regime_scores
+    df["event_rule_score"] = event_scores
+    df["regime_age_bars"] = regime_ages
+    df["candidate_regime"] = candidate_regimes
+    df["candidate_age_bars"] = candidate_ages
+    df["candidate_rule_score"] = candidate_scores
+    df["regime_reason_code"] = regime_reason_codes
+    df["event_reason_code"] = event_reason_codes
+    df["reason_details"] = reason_details
+    df["story_version"] = 1
+    return df
+
+
 def _run_state_machine(
     df,
     # ------ Impulse signals ------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -2141,7 +2462,7 @@ def _run_state_machine(
     df["macd_expanding"] = macd_expanding
     if debug:
         df["_phase_reason"] = phase_reason
-    return df
+    return _derive_market_story(df)
 
 
 # ------ IMPROVEMENT 2: vectorized row building ---------------------------------------------------------------------
@@ -2213,6 +2534,18 @@ def _build_market_rows(df, symbol, exchange, timeframe, now):
         if "_phase_reason" in df.columns
         else [""] * len(ts_list)
     )
+    story_regime_arr = df.get("story_regime", pd.Series("TRANSITION", index=df.index)).values
+    bar_event_arr = df.get("bar_event", pd.Series("UNCLASSIFIED", index=df.index)).values
+    regime_score_arr = df.get("regime_rule_score", pd.Series(0.0, index=df.index)).values
+    event_score_arr = df.get("event_rule_score", pd.Series(0.0, index=df.index)).values
+    regime_age_arr = df.get("regime_age_bars", pd.Series(0, index=df.index)).values
+    candidate_regime_arr = df.get("candidate_regime", pd.Series("TRANSITION", index=df.index)).values
+    candidate_age_arr = df.get("candidate_age_bars", pd.Series(0, index=df.index)).values
+    candidate_score_arr = df.get("candidate_rule_score", pd.Series(0.0, index=df.index)).values
+    regime_reason_arr = df.get("regime_reason_code", pd.Series("REGIME_INITIALIZING", index=df.index)).values
+    event_reason_arr = df.get("event_reason_code", pd.Series("EVENT_UNCLASSIFIED", index=df.index)).values
+    reason_details_arr = df.get("reason_details", pd.Series([{} for _ in range(len(df))], index=df.index)).values
+    story_version_arr = df.get("story_version", pd.Series(1, index=df.index)).values
     return [
         (
             symbol,
@@ -2249,13 +2582,32 @@ def _build_market_rows(df, symbol, exchange, timeframe, now):
             str(st),
             str(mr),
             float(row[20]),
-            str(imp_d) if imp_d is not None else None,
+            str(impl_d) if impl_d is not None else None,
             str(p_reason),
             str(p_reason),
+            str(story_regime),
+            str(bar_event),
+            float(regime_score),
+            float(event_score),
+            int(regime_age),
+            str(candidate_regime),
+            int(candidate_age),
+            float(candidate_score),
+            str(regime_reason),
+            str(event_reason),
+            json.dumps(reason_detail, separators=(",", ":"), sort_keys=True),
+            int(story_version),
             now,
         )
-        for ts, phase, ml_lbl, tf_r, row, v_reg, g_d, g_r, ps, st, mr, imp_d, p_reason in zip(
-            ts_list, phase_arr, ml_labels, tf_role_arr, arr, vix_reg, gap_dir, gap_reg, ps_arr, st_arr, mr_arr, impl_dir_arr, phase_reason_arr
+        for ts, phase, ml_lbl, tf_r, row, v_reg, g_d, g_r, ps, st, mr, impl_d, p_reason,
+            story_regime, bar_event, regime_score, event_score, regime_age,
+            candidate_regime, candidate_age, candidate_score, regime_reason,
+            event_reason, reason_detail, story_version in zip(
+            ts_list, phase_arr, ml_labels, tf_role_arr, arr, vix_reg, gap_dir, gap_reg,
+            ps_arr, st_arr, mr_arr, impl_dir_arr, phase_reason_arr, story_regime_arr,
+            bar_event_arr, regime_score_arr, event_score_arr, regime_age_arr,
+            candidate_regime_arr, candidate_age_arr, candidate_score_arr,
+            regime_reason_arr, event_reason_arr, reason_details_arr, story_version_arr
         )
     ]
 

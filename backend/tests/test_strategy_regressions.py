@@ -18,6 +18,7 @@ from routes.strategy import _session_vix_level  # noqa: E402
 from routes.strategy_logic import (  # noqa: E402
     PHASE_MODEL,
     PHASE_TO_ML,
+    _derive_market_story,
     _post_impulse_trend_phase,
     _simulate_exit_vectorized,
 )
@@ -106,6 +107,49 @@ class TestStrategyRegressions(unittest.TestCase):
             _post_impulse_trend_phase("BEAR", close=101.0, open_=100.0),
             "BEAR_TREND_DIGESTION",
         )
+
+    def test_story_regime_requires_confirmation_and_routes_reversal_through_transition(self):
+        bull = [True, True, True, False, False, False, False]
+        frame = pd.DataFrame(
+            {
+                "date": [pd.Timestamp("2026-09-18").date()] * 7,
+                "market_phase": ["TREND_CONTINUATION"] * 3
+                + ["BEAR_TREND_CONTINUATION"] * 4,
+                "open": [100.0] * 7,
+                "close": [101.0 if is_bull else 99.0 for is_bull in bull],
+                "ema_9": [103.0 if is_bull else 97.0 for is_bull in bull],
+                "ema_21": [102.0 if is_bull else 98.0 for is_bull in bull],
+                "ema_50": [101.0 if is_bull else 99.0 for is_bull in bull],
+                "ema_21_slope": [0.03 if is_bull else -0.03 for is_bull in bull],
+                "atr_14": [1.0] * 7,
+                "vwap_dist_atr": [1.0 if is_bull else -1.0 for is_bull in bull],
+                "price_structure": ["BULL" if is_bull else "BEAR" for is_bull in bull],
+                "vol_ratio": [2.0] * 7,
+                "obv_slope": [1.0 if is_bull else -1.0 for is_bull in bull],
+                "range_efficiency": [0.7] * 7,
+                "atr_expanding": [1] * 7,
+                "candle_overlap": [0] * 7,
+                "gap_atr": [0.0] * 7,
+                "_phase_reason": ["test"] * 7,
+            }
+        )
+
+        result = _derive_market_story(frame)
+
+        self.assertEqual(result.loc[2, "story_regime"], "BULL_TREND")
+        self.assertEqual(result.loc[3, "story_regime"], "TRANSITION")
+        self.assertEqual(result.loc[5, "story_regime"], "BEAR_TREND")
+        self.assertFalse(
+            any(
+                left == "BULL_TREND" and right == "BEAR_TREND"
+                for left, right in zip(
+                    result["story_regime"], result["story_regime"].iloc[1:]
+                )
+            )
+        )
+        self.assertTrue(result["regime_rule_score"].between(0, 1).all())
+        self.assertTrue(result["event_rule_score"].between(0, 1).all())
+        self.assertEqual(set(result["bar_event"]), {"CONTINUATION"})
 
     def test_strategy_and_ml_execution_contract(self):
         expected = {

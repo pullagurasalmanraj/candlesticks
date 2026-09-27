@@ -248,7 +248,8 @@ export default function Navbar({
             ref={navRef}
             style={{
                 height:         "var(--navbar-height)",
-                background:     "var(--bg-secondary)",
+                background:     "var(--surface-glass)",
+                backdropFilter: "blur(18px) saturate(135%)",
                 borderBottom:   "1px solid var(--border-color)",
                 display:        "flex",
                 alignItems:     "center",
@@ -423,7 +424,7 @@ export default function Navbar({
                                         fontSize: "0.82rem",
                                         fontWeight: 600,
                                         fontFamily: "var(--font-body)",
-                                        color: isActive ? "#ffffff" : "var(--text-secondary)",
+                                        color: isActive ? "var(--accent-contrast)" : "var(--text-secondary)",
                                         background: isActive ? "var(--accent-blue)" : "transparent",
                                         boxShadow: isActive ? "var(--shadow-glow-blue)" : "none",
                                         transition: "all 0.15s ease",
@@ -441,7 +442,7 @@ export default function Navbar({
                             display:     "flex", alignItems: "center", gap: 6,
                             padding:     "8px 16px", borderRadius: 7,
                             background:  "var(--accent-blue)",
-                            color:       "#fff",
+                            color:       "var(--accent-contrast)",
                             fontFamily:  "var(--font-body)",
                             fontSize:    "0.85rem", fontWeight: 600,
                             textDecoration: "none",
