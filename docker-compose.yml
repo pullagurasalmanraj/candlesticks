@@ -118,6 +118,9 @@ services:
             CHOKIDAR_USEPOLLING: "true"
             WATCHPACK_POLLING: "true"
             VITE_API_PROXY_TARGET: http://backend:8000
+            # Optional override. When empty, the frontend derives ws://localhost:9000
+            # locally and wss://<current-host>/ws/ in a deployed HTTPS environment.
+            VITE_WS_URL: ${VITE_WS_URL:-}
         ports:
             - "5173:5173"
         depends_on:

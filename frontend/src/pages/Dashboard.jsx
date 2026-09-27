@@ -809,7 +809,7 @@ export default function Dashboard() {
                                 width: "32px", height: "32px", borderRadius: "50%",
                                 background: operationResult.already_exists
                                     ? "var(--accent-gradient)"
-                                    : "linear-gradient(135deg, #10B981, #059669)",
+                                    : "var(--accent-up)",
                                 display: "flex", alignItems: "center", justifyContent: "center",
                                 color: operationResult.already_exists ? "var(--accent-contrast)" : "#fff", fontSize: "1rem", fontWeight: "bold"
                             }}>
@@ -1397,8 +1397,8 @@ export default function Dashboard() {
                                         {/* Hero Stock Header */}
                                         <div style={{
                                             display: "flex", alignItems: "center", justifyContent: "space-between",
-                                            background: "linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary))",
-                                            padding: "20px 24px", borderRadius: 14,
+                                            background: "var(--bg-secondary)",
+                                            padding: "20px 24px", borderRadius: "var(--card-radius)",
                                             border: "1px solid var(--border-color)",
                                             boxShadow: "var(--shadow-card)",
                                             gap: 16,

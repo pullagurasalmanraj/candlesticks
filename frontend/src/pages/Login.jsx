@@ -243,10 +243,8 @@ function InteractiveBriefMockup({ onGetStarted }) {
                 width: "100%",
                 background: "var(--bg-secondary)",
                 border: "1px solid var(--border-color)",
-                borderRadius: 16,
-                boxShadow: theme === "dark" 
-                    ? "0 20px 45px rgba(3, 8, 20, 0.45)" 
-                    : "0 12px 30px rgba(15, 23, 42, 0.12)",
+                borderRadius: "var(--card-radius)",
+                boxShadow: "var(--shadow-card)",
                 overflow: "hidden",
                 display: "flex",
                 flexDirection: "column",
@@ -392,7 +390,7 @@ function InteractiveBriefMockup({ onGetStarted }) {
                                                 height: 6,
                                                 borderRadius: "50%",
                                                 background: "var(--accent-up)",
-                                                boxShadow: "0 0 6px var(--accent-up)",
+                                                boxShadow: "none",
                                                 animation: "pulse 1.8s infinite"
                                             }} />
                                             {s.label}
@@ -684,7 +682,7 @@ function InteractiveBriefMockup({ onGetStarted }) {
                                                     alignItems: "center",
                                                     justifyContent: "center",
                                                     gap: 6,
-                                                    boxShadow: "var(--shadow-glow-blue)",
+                                                    boxShadow: "none",
                                                     transition: "all 0.15s ease",
                                                 }}
                                                 onMouseEnter={e => e.currentTarget.style.background = "var(--accent-blue-hover)"}
@@ -855,18 +853,15 @@ function AuthCard({
             style={{
                 background: "var(--bg-secondary)",
                 border: "1px solid var(--border-color)",
-                borderRadius: 16,
-                boxShadow:
-                    theme === "dark"
-                        ? "0 14px 36px rgba(3, 8, 20, 0.40)"
-                        : "0 10px 26px rgba(15, 23, 42, 0.11)",
+                borderRadius: "var(--card-radius)",
+                boxShadow: "var(--shadow-card)",
                 overflow: "hidden",
             }}
         >
             <div
                 style={{
                     height: 3,
-                    background: "linear-gradient(90deg, var(--accent-blue), var(--accent-up))",
+                    background: "var(--accent-blue)",
                 }}
             />
 
@@ -1187,11 +1182,10 @@ export default function AuthPage() {
 
     const pageOverlay =
         theme === "dark"
-            ? "radial-gradient(circle at 12% 20%, rgba(79, 158, 255, 0.14), transparent 56%), radial-gradient(circle at 86% 78%, rgba(0, 230, 118, 0.08), transparent 52%), linear-gradient(180deg, rgba(6, 11, 24, 0.05) 0%, rgba(6, 11, 24, 0.22) 100%)"
-            : "radial-gradient(circle at 12% 20%, rgba(59, 130, 246, 0.10), transparent 56%), radial-gradient(circle at 86% 78%, rgba(16, 185, 129, 0.06), transparent 52%), linear-gradient(180deg, rgba(248, 250, 252, 0.05) 0%, rgba(241, 245, 249, 0.18) 100%)";
+            ? "linear-gradient(180deg, rgba(8, 17, 29, 0.18) 0%, rgba(8, 17, 29, 0.62) 100%)"
+            : "linear-gradient(180deg, rgba(241, 244, 247, 0.26) 0%, rgba(241, 244, 247, 0.78) 100%)";
 
-    const statsCardSurface =
-        theme === "dark" ? "rgba(13, 21, 38, 0.58)" : "rgba(255, 255, 255, 0.82)";
+    const statsCardSurface = "var(--bg-secondary)";
 
     return (
         <div
@@ -1232,7 +1226,7 @@ export default function AuthPage() {
                                     gap: 6,
                                     background: "var(--accent-blue-muted)",
                                     border: "1px solid var(--accent-blue)",
-                                    borderRadius: 999,
+                                    borderRadius: 3,
                                     padding: "4px 12px",
                                     width: "fit-content",
                                 }}
@@ -1243,8 +1237,8 @@ export default function AuthPage() {
                                         height: 7,
                                         borderRadius: "50%",
                                         background: "var(--accent-blue)",
-                                        boxShadow: "0 0 8px var(--accent-blue)",
-                                        animation: "pulse 2s infinite",
+                                        boxShadow: "none",
+                                        animation: "none",
                                     }}
                                 />
                                 <span
@@ -1262,8 +1256,8 @@ export default function AuthPage() {
                             <h1
                                 style={{
                                     fontFamily: "var(--font-display)",
-                                    fontSize: "clamp(2.5rem, 5.5vw, 4.0rem)",
-                                    fontWeight: 700,
+                                    fontSize: "clamp(2.25rem, 5vw, 3.5rem)",
+                                    fontWeight: 650,
                                     color: "var(--text-primary)",
                                     letterSpacing: "-0.04em",
                                     lineHeight: 1.0,
@@ -1333,7 +1327,7 @@ export default function AuthPage() {
                                             borderRadius: "var(--button-radius)",
                                             border: "none",
                                             cursor: "pointer",
-                                            boxShadow: "var(--shadow-glow-blue)",
+                                            boxShadow: "none",
                                             transition: "all 0.15s ease",
                                             display: "flex",
                                             alignItems: "center",
@@ -1412,7 +1406,7 @@ export default function AuthPage() {
                                     gap: 6,
                                     background: "var(--accent-blue-muted)",
                                     border: "1px solid var(--accent-blue)",
-                                    borderRadius: 999,
+                                    borderRadius: 3,
                                     padding: "4px 12px",
                                     width: "fit-content",
                                 }}
@@ -1423,8 +1417,8 @@ export default function AuthPage() {
                                         height: 7,
                                         borderRadius: "50%",
                                         background: "var(--accent-blue)",
-                                        boxShadow: "0 0 8px var(--accent-blue)",
-                                        animation: "pulse 2s infinite",
+                                        boxShadow: "none",
+                                        animation: "none",
                                     }}
                                 />
                                 <span
@@ -1442,8 +1436,8 @@ export default function AuthPage() {
                             <h1
                                 style={{
                                     fontFamily: "var(--font-display)",
-                                    fontSize: "clamp(2.2rem, 5vw, 3.8rem)",
-                                    fontWeight: 700,
+                                    fontSize: "clamp(2.1rem, 4.6vw, 3.35rem)",
+                                    fontWeight: 650,
                                     color: "var(--text-primary)",
                                     letterSpacing: "-0.03em",
                                     lineHeight: 1.02,
@@ -1481,9 +1475,8 @@ export default function AuthPage() {
                                         style={{
                                             background: statsCardSurface,
                                             border: "1px solid var(--border-color)",
-                                            borderRadius: 12,
+                                            borderRadius: "var(--card-radius)",
                                             padding: "12px 14px",
-                                            backdropFilter: "blur(4px)",
                                         }}
                                     >
                                         <div

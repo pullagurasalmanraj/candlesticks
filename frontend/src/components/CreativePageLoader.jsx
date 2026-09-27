@@ -38,10 +38,10 @@ export default function CreativePageLoader({ text, subtitle }) {
                 alignItems: "center",
                 justifyContent: "space-between",
                 padding: "10px",
-                borderRadius: 14,
+                borderRadius: "var(--card-radius)",
                 background: "var(--bg-secondary)",
                 border: "1px solid var(--border-color)",
-                boxShadow: "0 8px 30px rgba(0,0,0,0.15)",
+                boxShadow: "var(--shadow-card)",
                 overflow: "hidden",
             }}>
                 {/* Horizontal Grid Lines */}
@@ -55,39 +55,39 @@ export default function CreativePageLoader({ text, subtitle }) {
                     top: 0,
                     bottom: 0,
                     width: "2px",
-                    background: "linear-gradient(180deg, transparent, var(--accent-blue), transparent)",
-                    boxShadow: "0 0 10px var(--accent-blue)",
+                    background: "var(--accent-blue)",
+                    boxShadow: "none",
                     animation: "laserScan 2s ease-in-out infinite alternate",
                 }} />
 
                 {/* Candlestick 1 (Green) */}
                 <div className="candle" style={{ animationDelay: "0s", height: "45px" }}>
                     <div className="wick" style={{ height: "65px", background: "var(--accent-up)" }} />
-                    <div className="body" style={{ height: "30px", background: "var(--accent-up)", boxShadow: "0 0 8px rgba(0,230,118,0.4)" }} />
+                    <div className="body" style={{ height: "30px", background: "var(--accent-up)", boxShadow: "none" }} />
                 </div>
 
                 {/* Candlestick 2 (Red) */}
                 <div className="candle" style={{ animationDelay: "0.25s", height: "35px" }}>
                     <div className="wick" style={{ height: "55px", background: "var(--accent-down)" }} />
-                    <div className="body" style={{ height: "22px", background: "var(--accent-down)", boxShadow: "0 0 8px rgba(255,82,82,0.4)" }} />
+                    <div className="body" style={{ height: "22px", background: "var(--accent-down)", boxShadow: "none" }} />
                 </div>
 
                 {/* Candlestick 3 (Green breakout) */}
                 <div className="candle" style={{ animationDelay: "0.5s", height: "60px" }}>
                     <div className="wick" style={{ height: "75px", background: "var(--accent-up)" }} />
-                    <div className="body" style={{ height: "42px", background: "var(--accent-up)", boxShadow: "0 0 12px rgba(0,230,118,0.5)" }} />
+                    <div className="body" style={{ height: "42px", background: "var(--accent-up)", boxShadow: "none" }} />
                 </div>
 
                 {/* Candlestick 4 (Green momentum) */}
                 <div className="candle" style={{ animationDelay: "0.75s", height: "50px" }}>
                     <div className="wick" style={{ height: "70px", background: "var(--accent-up)" }} />
-                    <div className="body" style={{ height: "36px", background: "var(--accent-up)", boxShadow: "0 0 8px rgba(0,230,118,0.4)" }} />
+                    <div className="body" style={{ height: "36px", background: "var(--accent-up)", boxShadow: "none" }} />
                 </div>
 
                 {/* Candlestick 5 (Doji / Consolidate) */}
                 <div className="candle" style={{ animationDelay: "1s", height: "30px" }}>
                     <div className="wick" style={{ height: "60px", background: "var(--accent-blue)" }} />
-                    <div className="body" style={{ height: "10px", background: "var(--accent-blue)", boxShadow: "0 0 8px rgba(59,130,246,0.4)" }} />
+                    <div className="body" style={{ height: "10px", background: "var(--accent-blue)", boxShadow: "none" }} />
                 </div>
             </div>
 

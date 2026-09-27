@@ -14,52 +14,53 @@
    if JS is slow. They match AURORA_LIGHT exactly.
    ──────────────────────────────────────────────────────────── */
 :root {
-    --bg-primary: #f5f7fb;
+    --bg-primary: #f1f4f7;
     --bg-secondary: #ffffff;
-    --bg-elevated: #fbfcff;
-    --bg-tertiary: #edf1f7;
-    --bg-hover: #e4e9f2;
-    --border-color: #d5dce8;
-    --border-subtle: #e8ecf3;
-    --text-primary: #172033;
-    --text-secondary: #526079;
-    --text-muted: #8994a8;
-    --accent-blue: #a78bfa;
-    --accent-blue-hover: #c4b5fd;
-    --accent-blue-muted: rgba(167, 139, 250, 0.14);
-    --accent-contrast: #1e1537;
-    --accent-up: #087f5b;
-    --accent-down: #d92d20;
-    --accent-gold: #b54708;
-    --glow: rgba(167, 139, 250, 0.31);
-    --glow-green: rgba(8, 127, 91, 0.18);
-    --glow-red: rgba(217, 45, 32, 0.18);
-    --surface-glass: rgba(255, 255, 255, 0.78);
-    --surface-glass-strong: rgba(255, 255, 255, 0.94);
-    --page-gradient: radial-gradient(circle at 8% 0%, rgba(124, 92, 255, 0.08), transparent 34%), #f5f7fb;
-    --accent-gradient: linear-gradient(135deg, #a78bfa, #c4b5fd);
-    --navbar-height: 64px;
-    --sidebar-width: 240px;
+    --bg-elevated: #f8fafc;
+    --bg-tertiary: #e8edf3;
+    --bg-hover: #e1e7ee;
+    --border-color: #cbd4df;
+    --border-subtle: #dde3ea;
+    --text-primary: #172334;
+    --text-secondary: #566579;
+    --text-muted: #7b899a;
+    --accent-blue: #3c78a8;
+    --accent-blue-hover: #4b87b7;
+    --accent-blue-muted: rgba(60, 120, 168, 0.14);
+    --accent-contrast: #ffffff;
+    --accent-up: #247753;
+    --accent-down: #aa4d54;
+    --accent-gold: #876c35;
+    --glow: rgba(60, 120, 168, 0.12);
+    --glow-green: rgba(36, 119, 83, 0.10);
+    --glow-red: rgba(170, 77, 84, 0.10);
+    --surface-glass: #ffffff;
+    --surface-glass-strong: #f8fafc;
+    --page-gradient: #f1f4f7;
+    --accent-gradient: #3c78a8;
+    --navbar-height: 56px;
+    --sidebar-width: 232px;
     --sidebar-collapsed: 64px;
-    --card-radius: 16px;
-    --input-radius: 10px;
-    --button-radius: 10px;
-    --font-body: 'DM Sans', 'Segoe UI', sans-serif;
-    --font-display: 'Syne', sans-serif;
-    --font-mono: 'JetBrains Mono', monospace;
-    --shadow-card: 0 1px 4px rgba(0, 0, 0, 0.2);
-    --shadow-card-hover: 0 6px 20px rgba(0, 0, 0, 0.35);
-    --shadow-glow-blue: 0 0 18px rgba(79, 158, 255, 0.3);
-    --shadow-glow-green: 0 0 14px rgba(0, 230, 118, 0.3);
-    --shadow-glow-red: 0 0 14px rgba(255, 82, 82, 0.3);
+    --card-radius: 6px;
+    --input-radius: 4px;
+    --button-radius: 4px;
+    --font-body: 'Inter', 'Segoe UI', sans-serif;
+    --font-display: 'Inter', 'Segoe UI', sans-serif;
+    --font-mono: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace;
+    --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.06);
+    --shadow-card-hover: 0 2px 5px rgba(15, 23, 42, 0.08);
+    --shadow-dropdown: 0 10px 28px rgba(15, 23, 42, 0.12);
+    --shadow-glow-blue: none;
+    --shadow-glow-green: none;
+    --shadow-glow-red: none;
 }
 
 
 /* ── Base ──────────────────────────────────────────────────────── */
 
 html {
-    font-size: 14px;
-    /* 1rem = 14px, controlled by TYPOGRAPHY.baseSize */
+    font-size: 13px;
+    /* Controlled by TYPOGRAPHY.baseSize */
 }
 
 html,
@@ -81,6 +82,14 @@ body {
         background-color 0.25s ease,
         color 0.25s ease;
     overflow-x: hidden;
+    font-variant-numeric: tabular-nums;
+}
+
+button,
+input,
+select,
+textarea {
+    font: inherit;
 }
 
 * {
@@ -107,7 +116,7 @@ h4,
 h5,
 h6 {
     font-family: var(--font-display);
-    letter-spacing: -0.01em;
+    letter-spacing: -0.015em;
 }
 
 code,
@@ -128,21 +137,19 @@ pre,
     border: 1px solid var(--border-color);
     border-radius: var(--card-radius);
     box-shadow: var(--shadow-card);
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    transition: background-color 0.16s ease, border-color 0.16s ease;
 }
 
 .card:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-card-hover);
+    background: var(--bg-elevated);
+    border-color: var(--accent-blue);
 }
 
 
 /* ── Glass ─────────────────────────────────────────────────────── */
 
 .glass {
-    background: var(--surface-glass);
-    backdrop-filter: blur(18px) saturate(140%);
-    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    background: var(--bg-secondary);
     border: 1px solid var(--border-subtle);
 }
 
@@ -191,15 +198,15 @@ pre,
 }
 
 .neon-text {
-    text-shadow: 0 0 12px var(--glow);
+    text-shadow: none;
 }
 
 
 /* ── Selected glow state ───────────────────────────────────────── */
 
 .glow-selected {
-    animation: glowPulse 2.2s ease-in-out infinite;
-    border: 2px solid var(--accent-blue);
+    animation: none;
+    border: 1px solid var(--accent-blue);
 }
 
 
@@ -214,7 +221,7 @@ pre,
     }
 
     50% {
-        background-color: rgba(255, 230, 0, 0.4);
+        background-color: var(--accent-blue-muted);
     }
 }
 
@@ -227,9 +234,9 @@ pre,
     }
 
     50% {
-        transform: scale(1.04);
-        box-shadow: 0 0 25px rgba(255, 230, 0, 0.7);
-        background-color: rgba(255, 255, 180, 0.25);
+        transform: scale(1);
+        box-shadow: none;
+        background-color: var(--accent-blue-muted);
     }
 
     100% {
@@ -257,7 +264,7 @@ pre,
     }
 
     50% {
-        box-shadow: 0 0 22px var(--glow);
+        box-shadow: none;
     }
 
     100% {
@@ -268,17 +275,17 @@ pre,
 /* Stop stream button blinking animation */
 @keyframes stopPulse {
     0%, 100% {
-        background-color: rgba(255, 82, 82, 0.2);
-        box-shadow: 0 0 4px rgba(255, 82, 82, 0.4);
-        border-color: rgba(255, 82, 82, 0.5);
-        color: #ff5252;
+        background-color: var(--glow-red);
+        box-shadow: none;
+        border-color: var(--accent-down);
+        color: var(--accent-down);
     }
 
     50% {
-        background-color: rgba(255, 82, 82, 0.9);
-        box-shadow: 0 0 12px rgba(255, 82, 82, 0.9);
-        border-color: #ff5252;
-        color: #ffffff;
+        background-color: var(--glow-red);
+        box-shadow: none;
+        border-color: var(--accent-down);
+        color: var(--accent-down);
     }
 }
 
@@ -300,7 +307,7 @@ pre,
 
 video {
     image-rendering: optimizeQuality;
-    filter: contrast(115%) saturate(110%);
+    filter: contrast(105%) saturate(92%);
 }
 
 

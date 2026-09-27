@@ -32,14 +32,13 @@ export function Avatar({ size = 34, onClick, style = {} }) {
             style={{
                 width:          size, height: size,
                 borderRadius:   "50%",
-                background:     photo ? "transparent"
-                    : "linear-gradient(135deg, var(--accent-blue), var(--accent-up))",
+                background:     photo ? "transparent" : "var(--accent-blue-muted)",
                 display:        "flex",
                 alignItems:     "center",
                 justifyContent: "center",
                 fontSize:       size * 0.3 + "px",
                 fontWeight:     700,
-                color:          "#fff",
+                color:          "var(--accent-blue)",
                 fontFamily:     "var(--font-display)",
                 cursor:         onClick ? "pointer" : "default",
                 flexShrink:     0,
@@ -201,7 +200,7 @@ export default function ProfileDrawer({ open, onClose }) {
                 {/* ── Top accent bar */}
                 <div style={{
                     height:     3,
-                    background: "linear-gradient(90deg, var(--accent-blue), var(--accent-up))",
+                    background: "var(--accent-blue)",
                     flexShrink: 0,
                 }} />
 
@@ -265,14 +264,13 @@ export default function ProfileDrawer({ open, onClose }) {
                             style={{
                                 width:          80, height: 80,
                                 borderRadius:   "50%",
-                                background:     form.photo ? "transparent"
-                                    : "linear-gradient(135deg, var(--accent-blue), var(--accent-up))",
+                                background:     form.photo ? "transparent" : "var(--accent-blue-muted)",
                                 display:        "flex",
                                 alignItems:     "center",
                                 justifyContent: "center",
                                 fontSize:       "1.8rem",
                                 fontWeight:     700,
-                                color:          "#fff",
+                                color:          "var(--accent-blue)",
                                 fontFamily:     "var(--font-display)",
                                 cursor:         "pointer",
                                 overflow:       "hidden",
@@ -466,7 +464,7 @@ export default function ProfileDrawer({ open, onClose }) {
                             fontFamily:   "var(--font-body)",
                             cursor:       "pointer",
                             transition:   "all 0.2s ease",
-                            boxShadow:    saved ? "var(--shadow-glow-green)" : "var(--shadow-glow-blue)",
+                            boxShadow:    "none",
                         }}
                     >
                         {saved ? "✓ Saved!" : "Save Changes"}

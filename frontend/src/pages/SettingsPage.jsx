@@ -51,11 +51,11 @@ const AVATAR_PRESETS = [
 ];
 
 const ACCENT_COLOR_OPTIONS = [
-    { id: "cyan", hex: ACCENT_PRESETS.cyan.hex, label: "Arctic Cyan" },
-    { id: "emerald", hex: ACCENT_PRESETS.emerald.hex, label: "Emerald" },
-    { id: "purple", hex: ACCENT_PRESETS.purple.hex, label: "Soft Violet" },
-    { id: "amber", hex: ACCENT_PRESETS.amber.hex, label: "Amber" },
-    { id: "rose", hex: ACCENT_PRESETS.rose.hex, label: "Rose" },
+    { id: "cyan", hex: ACCENT_PRESETS.cyan.hex, label: "Primary Blue" },
+    { id: "emerald", hex: ACCENT_PRESETS.emerald.hex, label: "Risk Teal" },
+    { id: "purple", hex: ACCENT_PRESETS.purple.hex, label: "Slate Blue" },
+    { id: "amber", hex: ACCENT_PRESETS.amber.hex, label: "Research Gold" },
+    { id: "rose", hex: ACCENT_PRESETS.rose.hex, label: "Alert Burgundy" },
 ];
 
 function getInitials(name) {
@@ -440,8 +440,8 @@ export default function SettingsPage() {
                     style={{
                         width: 160,
                         height: 52,
-                        borderRadius: 14,
-                        border: "2px solid var(--accent-blue)",
+                        borderRadius: "var(--input-radius)",
+                        border: "1px solid var(--accent-blue)",
                         background: "var(--bg-tertiary)",
                         color: "var(--text-primary)",
                         fontSize: "1.8rem",
@@ -461,14 +461,14 @@ export default function SettingsPage() {
                     style={{
                         width: "100%",
                         height: 44,
-                        borderRadius: 12,
+                        borderRadius: "var(--button-radius)",
                         border: "none",
                         background: "var(--accent-blue)",
                         color: "var(--accent-contrast)",
                         fontSize: "0.9rem",
                         fontWeight: 700,
                         cursor: "pointer",
-                        boxShadow: "var(--shadow-glow-blue)",
+                        boxShadow: "none",
                     }}
                 >
                     Unlock Console
@@ -488,11 +488,10 @@ export default function SettingsPage() {
                     right: 24,
                     zIndex: 9999,
                     background: "rgba(16, 185, 129, 0.95)",
-                    backdropFilter: "blur(12px)",
                     color: "#fff",
                     padding: "12px 20px",
-                    borderRadius: 12,
-                    boxShadow: "0 10px 25px -5px rgba(16, 185, 129, 0.4)",
+                    borderRadius: "var(--card-radius)",
+                    boxShadow: "var(--shadow-dropdown)",
                     display: "flex",
                     alignItems: "center",
                     gap: 10,
@@ -508,9 +507,9 @@ export default function SettingsPage() {
             {/* ── Top Dynamic Header Banner ── */}
             <div style={{
                 marginBottom: 24,
-                padding: "26px 30px",
-                borderRadius: 20,
-                background: "linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary))",
+                padding: "20px 24px",
+                borderRadius: "var(--card-radius)",
+                background: "var(--bg-secondary)",
                 border: "1px solid var(--border-color)",
                 boxShadow: "var(--shadow-card)",
                 display: "flex",
@@ -535,7 +534,7 @@ export default function SettingsPage() {
                         fontSize: "1.3rem",
                         fontWeight: 800,
                         color: "#fff",
-                        boxShadow: "var(--shadow-glow-blue)",
+                        boxShadow: "none",
                         flexShrink: 0,
                     }}>
                         {form.photo ? (
@@ -596,7 +595,7 @@ export default function SettingsPage() {
                             style={{
                                 height: 42,
                                 padding: "0 16px",
-                                borderRadius: 12,
+                                borderRadius: "var(--button-radius)",
                                 border: "1px solid var(--border-color)",
                                 background: "var(--bg-primary)",
                                 color: "var(--text-primary)",
@@ -620,7 +619,7 @@ export default function SettingsPage() {
                         style={{
                             height: 42,
                             padding: "0 16px",
-                            borderRadius: 12,
+                            borderRadius: "var(--button-radius)",
                             border: "1px solid var(--border-color)",
                             background: "var(--bg-primary)",
                             color: "var(--text-primary)",
@@ -642,7 +641,7 @@ export default function SettingsPage() {
                         style={{
                             height: 42,
                             padding: "0 22px",
-                            borderRadius: 12,
+                            borderRadius: "var(--button-radius)",
                             border: "none",
                             background: "var(--accent-blue)",
                             color: "var(--accent-contrast)",
@@ -652,7 +651,7 @@ export default function SettingsPage() {
                             display: "flex",
                             alignItems: "center",
                             gap: 8,
-                            boxShadow: "var(--shadow-glow-blue)",
+                            boxShadow: "none",
                         }}
                     >
                         <Check size={16} />
@@ -672,7 +671,7 @@ export default function SettingsPage() {
                 <nav style={{
                     background: "var(--bg-secondary)",
                     border: "1px solid var(--border-color)",
-                    borderRadius: 18,
+                    borderRadius: "var(--card-radius)",
                     padding: 12,
                     boxShadow: "var(--shadow-card)",
                     display: "flex",
@@ -862,10 +861,10 @@ export default function SettingsPage() {
                         <div style={{ display: "grid", gap: 24 }}>
                             <div>
                                 <h2 style={{ margin: 0, fontSize: "1.2rem", fontWeight: 700, color: "var(--text-primary)" }}>
-                                    Appearance &amp; Theme Studio
+                                    Appearance &amp; Terminal Theme
                                 </h2>
                                 <p style={{ margin: "4px 0 0", fontSize: "0.84rem", color: "var(--text-secondary)" }}>
-                                    Customize visual themes, color accents, and layout density in real time.
+                                    Select a restrained institutional palette and workspace density.
                                 </p>
                             </div>
 
@@ -887,12 +886,12 @@ export default function SettingsPage() {
                                                 onClick={() => setThemeMode(id)}
                                                 aria-pressed={selected}
                                                 style={{
-                                                    padding: "13px 14px", borderRadius: 12,
+                                                    padding: "11px 14px", borderRadius: "var(--button-radius)",
                                                     border: selected ? "1px solid var(--accent-blue)" : "1px solid var(--border-color)",
                                                     background: selected ? "var(--accent-blue-muted)" : "var(--bg-tertiary)",
                                                     color: selected ? "var(--accent-blue)" : "var(--text-secondary)",
                                                     fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                                                    boxShadow: selected ? "var(--shadow-glow-blue)" : "none",
+                                                    boxShadow: "none",
                                                 }}
                                             >
                                                 <Icon size={16} /> {label}
@@ -919,10 +918,10 @@ export default function SettingsPage() {
                                                 onClick={() => setColorScheme(id)}
                                                 aria-pressed={selected}
                                                 style={{
-                                                    padding: 14, borderRadius: 14, textAlign: "left", cursor: "pointer",
+                                                    padding: 14, borderRadius: "var(--card-radius)", textAlign: "left", cursor: "pointer",
                                                     border: selected ? "1px solid var(--accent-blue)" : "1px solid var(--border-color)",
                                                     background: selected ? "var(--accent-blue-muted)" : "var(--bg-tertiary)",
-                                                    color: "var(--text-primary)", boxShadow: selected ? "var(--shadow-glow-blue)" : "none",
+                                                    color: "var(--text-primary)", boxShadow: "none",
                                                 }}
                                             >
                                                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
@@ -954,8 +953,8 @@ export default function SettingsPage() {
                                             onClick={() => setAccentColor(c.id)}
                                             style={{
                                                 padding: "10px 16px",
-                                                borderRadius: 12,
-                                                border: accentColor === c.id ? `2px solid ${c.hex}` : "1px solid var(--border-color)",
+                                                borderRadius: "var(--button-radius)",
+                                                border: accentColor === c.id ? `1px solid ${c.hex}` : "1px solid var(--border-color)",
                                                 background: "var(--bg-tertiary)",
                                                 color: "var(--text-primary)",
                                                 fontSize: "0.82rem",
@@ -964,7 +963,7 @@ export default function SettingsPage() {
                                                 display: "flex",
                                                 alignItems: "center",
                                                 gap: 8,
-                                                boxShadow: accentColor === c.id ? `0 0 14px ${c.hex}40` : "none",
+                                                boxShadow: "none",
                                             }}
                                         >
                                             <span style={{ width: 14, height: 14, borderRadius: "50%", background: c.hex }} />

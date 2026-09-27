@@ -128,8 +128,8 @@ function MegaPanel({ section, onClose }) {
             width:      520,
             background: "var(--bg-secondary)",
             border:     "1px solid var(--border-color)",
-            borderRadius: 14,
-            boxShadow:  "0 20px 60px rgba(0,0,0,0.35)",
+            borderRadius: "var(--card-radius)",
+            boxShadow:  "var(--shadow-dropdown)",
             zIndex:     1000,
             overflow:   "hidden",
             animation:  "dropIn 0.18s ease",
@@ -137,7 +137,7 @@ function MegaPanel({ section, onClose }) {
             {/* Top accent */}
             <div style={{
                 height: 2,
-                background: "linear-gradient(90deg, var(--accent-blue), var(--accent-up))",
+                background: "var(--accent-blue)",
             }} />
 
             {/* Section header */}
@@ -248,8 +248,7 @@ export default function Navbar({
             ref={navRef}
             style={{
                 height:         "var(--navbar-height)",
-                background:     "var(--surface-glass)",
-                backdropFilter: "blur(18px) saturate(135%)",
+                background:     "var(--bg-secondary)",
                 borderBottom:   "1px solid var(--border-color)",
                 display:        "flex",
                 alignItems:     "center",
@@ -262,11 +261,12 @@ export default function Navbar({
             {/* ── Logo ─────────────────────────────────── */}
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
                 <div style={{
-                    width: 32, height: 32, borderRadius: 8, flexShrink: 0,
-                    background: "linear-gradient(135deg, var(--accent-blue), var(--accent-up))",
+                    width: 30, height: 30, borderRadius: 4, flexShrink: 0,
+                    background: "var(--accent-blue-muted)",
+                    border: "1px solid var(--accent-blue)",
                     display: "flex", alignItems: "center", justifyContent: "center",
                 }}>
-                    <TrendingUp size={16} color="#fff" />
+                    <TrendingUp size={16} color="var(--accent-blue)" />
                 </div>
                 <div>
                     <div style={{
@@ -364,7 +364,7 @@ export default function Navbar({
                 {/* Live status pill */}
                 <div style={{
                     display:     "flex", alignItems: "center", gap: 6,
-                    padding:     "5px 11px", borderRadius: 999,
+                    padding:     "5px 10px", borderRadius: 3,
                     border:      "1px solid var(--border-color)",
                     background:  "var(--bg-tertiary)",
                 }}>
@@ -374,7 +374,7 @@ export default function Navbar({
                         color: "var(--accent-up)",
                         fontFamily: "var(--font-mono)",
                     }}>
-                        LIVE
+                        MARKET DATA
                     </span>
                 </div>
 
@@ -426,7 +426,7 @@ export default function Navbar({
                                         fontFamily: "var(--font-body)",
                                         color: isActive ? "var(--accent-contrast)" : "var(--text-secondary)",
                                         background: isActive ? "var(--accent-blue)" : "transparent",
-                                        boxShadow: isActive ? "var(--shadow-glow-blue)" : "none",
+                                        boxShadow: "none",
                                         transition: "all 0.15s ease",
                                     }}
                                 >
@@ -446,16 +446,16 @@ export default function Navbar({
                             fontFamily:  "var(--font-body)",
                             fontSize:    "0.85rem", fontWeight: 600,
                             textDecoration: "none",
-                            boxShadow:   "var(--shadow-glow-blue)",
+                            boxShadow:   "none",
                             transition:  "all 0.15s ease",
                         }}
                         onMouseEnter={e => {
                             e.currentTarget.style.background  = "var(--accent-blue-hover)";
-                            e.currentTarget.style.boxShadow   = "0 0 24px var(--glow)";
+                            e.currentTarget.style.boxShadow   = "none";
                         }}
                         onMouseLeave={e => {
                             e.currentTarget.style.background  = "var(--accent-blue)";
-                            e.currentTarget.style.boxShadow   = "var(--shadow-glow-blue)";
+                            e.currentTarget.style.boxShadow   = "none";
                         }}
                     >
                         Open Console

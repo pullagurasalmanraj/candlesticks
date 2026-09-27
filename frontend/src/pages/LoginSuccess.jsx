@@ -80,8 +80,9 @@ export default function LoginSuccess() {
             }}>
                 {/* Logo */}
                 <div style={{
-                    width: 44, height: 44, borderRadius: 12,
-                    background: "linear-gradient(135deg, var(--accent-blue), var(--accent-up))",
+                    width: 44, height: 44, borderRadius: "var(--card-radius)",
+                    background: "var(--accent-blue-muted)",
+                    border: "1px solid var(--accent-blue)",
                     display: "flex", alignItems: "center", justifyContent: "center",
                     fontSize: "1.2rem",
                 }}>
@@ -94,7 +95,7 @@ export default function LoginSuccess() {
                     border: "3px solid var(--bg-tertiary)",
                     borderTop: "3px solid var(--accent-blue)",
                     animation: "lsSpin 0.75s linear infinite",
-                    boxShadow: "var(--shadow-glow-blue)",
+                    boxShadow: "none",
                 }} />
 
                 {/* Status text */}
@@ -121,7 +122,7 @@ export default function LoginSuccess() {
                 }}>
                     <div style={{
                         height: "100%",
-                        background: "linear-gradient(90deg, var(--accent-blue), var(--accent-up))",
+                        background: "var(--accent-blue)",
                         animation: "lsProgress 1.5s ease-in-out infinite",
                         borderRadius: 999,
                     }} />

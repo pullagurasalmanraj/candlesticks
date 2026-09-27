@@ -120,7 +120,7 @@ const SearchBar = memo(function SearchBar({
                         setShowResults(search.trim().length > 0);
                         e.target.style.borderColor = "var(--accent-blue)";
                         e.target.style.background = "var(--bg-tertiary)";
-                        e.target.style.boxShadow = "0 0 14px var(--glow), inset 0 1px 2px rgba(0,0,0,0.05)";
+                        e.target.style.boxShadow = "none";
                     }}
                     onBlur={e   => {
                         e.target.style.borderColor = "var(--border-color)";

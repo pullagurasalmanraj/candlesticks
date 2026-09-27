@@ -16,39 +16,37 @@ const HeatmapTile = memo(function HeatmapTile({
     const hasPrice = typeof ltp === "number";
     const isUp = hasPrice && change >= 0;
 
-    // Calculate tile background gradient based on performance percentage
+    // Use restrained semantic tinting so price direction remains legible without neon surfaces.
     let bgStyle = "var(--bg-secondary)";
     let borderColor = "var(--border-color)";
     let shadowGlow = "none";
 
     if (hasPrice && isRunning) {
         if (pct >= 2.0) {
-            bgStyle = "linear-gradient(135deg, rgba(0, 230, 118, 0.25), rgba(0, 200, 83, 0.12))";
-            borderColor = "rgba(0, 230, 118, 0.6)";
-            shadowGlow = "0 0 16px rgba(0, 230, 118, 0.25)";
+            bgStyle = "var(--glow-green)";
+            borderColor = "var(--accent-up)";
         } else if (pct > 0) {
-            bgStyle = "linear-gradient(135deg, rgba(0, 230, 118, 0.15), rgba(0, 230, 118, 0.05))";
-            borderColor = "rgba(0, 230, 118, 0.35)";
+            bgStyle = "var(--glow-green)";
+            borderColor = "var(--accent-up)";
         } else if (pct <= -2.0) {
-            bgStyle = "linear-gradient(135deg, rgba(255, 82, 82, 0.25), rgba(213, 0, 0, 0.12))";
-            borderColor = "rgba(255, 82, 82, 0.6)";
-            shadowGlow = "0 0 16px rgba(255, 82, 82, 0.25)";
+            bgStyle = "var(--glow-red)";
+            borderColor = "var(--accent-down)";
         } else if (pct < 0) {
-            bgStyle = "linear-gradient(135deg, rgba(255, 82, 82, 0.15), rgba(255, 82, 82, 0.05))";
-            borderColor = "rgba(255, 82, 82, 0.35)";
+            bgStyle = "var(--glow-red)";
+            borderColor = "var(--accent-down)";
         }
     }
 
     if (isSelected) {
         borderColor = "var(--accent-blue)";
-        shadowGlow = "0 0 14px rgba(59,130,246,0.3)";
+        shadowGlow = "none";
     }
 
     return (
         <div
             onClick={onSelect}
             style={{
-                borderRadius: 12,
+                borderRadius: "var(--card-radius)",
                 border: `1px solid ${borderColor}`,
                 background: bgStyle,
                 boxShadow: shadowGlow,
@@ -62,8 +60,8 @@ const HeatmapTile = memo(function HeatmapTile({
                 overflow: "hidden",
                 transition: "all 0.2s ease",
             }}
-            onMouseEnter={(e) => e.currentTarget.style.transform = "translateY(-2px)"}
-            onMouseLeave={(e) => e.currentTarget.style.transform = "translateY(0)"}
+            onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--accent-blue)"}
+            onMouseLeave={(e) => e.currentTarget.style.borderColor = borderColor}
         >
             {/* Top row: Logo + Ticker + Stream dot */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -92,8 +90,8 @@ const HeatmapTile = memo(function HeatmapTile({
                             style={{
                                 width: 7, height: 7, borderRadius: "50%",
                                 background: "var(--accent-up)",
-                                boxShadow: "0 0 8px var(--accent-up)",
-                                animation: "ltsPulse 1.8s infinite ease-in-out",
+                                boxShadow: "none",
+                                animation: "none",
                             }}
                         />
                     )}

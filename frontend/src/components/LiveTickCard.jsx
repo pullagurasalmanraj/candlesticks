@@ -54,17 +54,13 @@ const LiveTickCard = memo(function LiveTickCard({
                 alignItems: "center",
                 justifyContent: "space-between",
                 padding: "12px 14px",
-                borderRadius: 12,
+                borderRadius: "var(--card-radius)",
                 cursor: "pointer",
                 position: "relative",
                 overflow: "hidden",
-                background: isSelected
-                    ? "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(59,130,246,0.06))"
-                    : "var(--bg-secondary)",
+                background: isSelected ? "var(--accent-blue-muted)" : "var(--bg-secondary)",
                 border: `1px solid ${isSelected ? "var(--accent-blue)" : "var(--border-color)"}`,
-                boxShadow: isSelected
-                    ? "0 0 12px rgba(59,130,246,0.25), var(--shadow-card)"
-                    : "var(--shadow-card)",
+                boxShadow: "var(--shadow-card)",
                 transition: "all 0.2s cubic-bezier(0.16, 1, 0.3, 1)",
                 gap: 12,
             }}
@@ -75,7 +71,7 @@ const LiveTickCard = memo(function LiveTickCard({
                 left: 0, top: 0, bottom: 0,
                 width: 4,
                 background: isRunning ? "var(--accent-up)" : "transparent",
-                boxShadow: isRunning ? "0 0 8px var(--accent-up)" : "none",
+                boxShadow: "none",
                 transition: "background 0.3s ease",
             }} />
 
@@ -106,8 +102,8 @@ const LiveTickCard = memo(function LiveTickCard({
                                     height: 6,
                                     borderRadius: "50%",
                                     background: "var(--accent-up)",
-                                    boxShadow: "0 0 6px var(--accent-up)",
-                                    animation: "ltsPulse 1.8s infinite ease-in-out",
+                                    boxShadow: "none",
+                                    animation: "none",
                                     display: "inline-block",
                                     flexShrink: 0,
                                 }}

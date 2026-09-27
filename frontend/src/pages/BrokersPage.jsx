@@ -155,9 +155,10 @@ export default function BrokersPage() {
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <div style={{
                             width: 34, height: 34, borderRadius: "50%",
-                            background: "linear-gradient(135deg, var(--accent-blue), var(--accent-up))",
+                            background: "var(--accent-blue-muted)",
+                            border: "1px solid var(--accent-blue)",
                             display: "flex", alignItems: "center", justifyContent: "center",
-                            fontSize: "0.75rem", fontWeight: 700, color: "#fff",
+                            fontSize: "0.75rem", fontWeight: 700, color: "var(--accent-blue)",
                             fontFamily: "var(--font-display)", flexShrink: 0,
                         }}>
                             {initials}
@@ -278,7 +279,7 @@ export default function BrokersPage() {
                 <div style={{
                     display:      "flex",
                     gap:          0,
-                    borderRadius: 12,
+                    borderRadius: "var(--card-radius)",
                     border:       "1px solid var(--border-color)",
                     background:   "var(--bg-secondary)",
                     overflow:     "hidden",
@@ -331,31 +332,29 @@ export default function BrokersPage() {
                                 onMouseLeave={() => setHoveredCard(null)}
                                 style={{
                                     background:    "var(--bg-secondary)",
-                                    border:        `1px solid ${isHovered && broker.available ? broker.accent + "55" : "var(--border-color)"}`,
-                                    borderRadius:  16,
+                                    border:        `1px solid ${isHovered && broker.available ? "var(--accent-blue)" : "var(--border-color)"}`,
+                                    borderRadius:  "var(--card-radius)",
                                     padding:       "28px 24px 24px",
                                     display:       "flex",
                                     flexDirection: "column",
                                     gap:           16,
                                     cursor:        broker.available ? "pointer" : "default",
-                                    transition:    "all 0.2s ease",
-                                    boxShadow:     isHovered && broker.available
-                                        ? `0 8px 32px rgba(0,0,0,0.2), 0 0 0 1px ${broker.accent}33`
-                                        : "0 1px 4px rgba(0,0,0,0.15)",
-                                    transform:     isHovered && broker.available ? "translateY(-3px)" : "none",
+                                    transition:    "border-color 0.16s ease, background-color 0.16s ease",
+                                    boxShadow:     "var(--shadow-card)",
+                                    transform:     "none",
                                     opacity:       broker.available ? 1 : 0.75,
                                     position:      "relative",
                                     overflow:      "hidden",
                                 }}
                             >
-                                {/* Subtle accent glow top edge */}
+                                {/* Institutional accent top edge */}
                                 {broker.available && (
                                     <div style={{
                                         position:    "absolute",
                                         top:         0, left: 0, right: 0,
                                         height:      2,
-                                        background:  `linear-gradient(90deg, transparent, ${broker.accent}, transparent)`,
-                                        opacity:     isHovered ? 1 : 0,
+                                        background:  "var(--accent-blue)",
+                                        opacity:     isHovered ? 1 : 0.55,
                                         transition:  "opacity 0.2s ease",
                                     }} />
                                 )}
@@ -363,7 +362,7 @@ export default function BrokersPage() {
                                 {/* ── Top row: logo + tag ────────────── */}
                                 <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
                                     <div style={{
-                                        width: 52, height: 52, borderRadius: 12,
+                                        width: 52, height: 52, borderRadius: "var(--card-radius)",
                                         background:  "var(--bg-tertiary)",
                                         border:      "1px solid var(--border-subtle)",
                                         display:     "flex",
@@ -386,7 +385,7 @@ export default function BrokersPage() {
                                     {/* Tag pill */}
                                     <div style={{
                                         padding:      "3px 10px",
-                                        borderRadius: 999,
+                                        borderRadius: 3,
                                         background:   tagStyle.bg,
                                         border:       `1px solid ${tagStyle.border}`,
                                         fontSize:     "0.65rem",
@@ -401,9 +400,9 @@ export default function BrokersPage() {
                                         {broker.tagType === "live" && (
                                             <span style={{
                                                 width: 6, height: 6, borderRadius: "50%",
-                                                background: "#00e676",
-                                                boxShadow:  "0 0 6px #00e676",
-                                                animation:  "livePulse 2s infinite",
+                                                background: "var(--accent-up)",
+                                                boxShadow:  "none",
+                                                animation:  "none",
                                                 display: "inline-block",
                                             }} />
                                         )}
@@ -457,12 +456,12 @@ export default function BrokersPage() {
                                         marginTop:      "auto",
                                         width:          "100%",
                                         height:         42,
-                                        borderRadius:   8,
+                                        borderRadius:   "var(--button-radius)",
                                         border:         broker.available
                                             ? "none"
                                             : "1px solid var(--border-color)",
                                         background:     broker.available
-                                            ? (isHovered ? broker.accent : "var(--accent-blue)")
+                                            ? (isHovered ? "var(--accent-blue-hover)" : "var(--accent-blue)")
                                             : "var(--bg-tertiary)",
                                         color:          broker.available ? "#fff" : "var(--text-secondary)",
                                         fontFamily:     "var(--font-body)",
@@ -474,9 +473,7 @@ export default function BrokersPage() {
                                         justifyContent: "center",
                                         gap:            8,
                                         transition:     "all 0.2s ease",
-                                        boxShadow:      broker.available && isHovered
-                                            ? `0 4px 16px ${broker.accent}55`
-                                            : "none",
+                                        boxShadow:      "none",
                                     }}
                                 >
                                     {isNotified ? (
@@ -500,7 +497,7 @@ export default function BrokersPage() {
                 <div style={{
                     marginTop:   32,
                     padding:     "16px 20px",
-                    borderRadius: 10,
+                    borderRadius: "var(--card-radius)",
                     background:  "var(--bg-secondary)",
                     border:      "1px solid var(--border-subtle)",
                     display:     "flex",

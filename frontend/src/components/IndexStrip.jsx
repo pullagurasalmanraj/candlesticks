@@ -54,7 +54,7 @@ export default function IndexStrip({ prices, indexData }) {
                 gap: 12,
                 padding: 12,
                 borderRadius: "var(--card-radius)",
-                background: "linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%)",
+                background: "var(--bg-secondary)",
                 border: "1px solid var(--border-color)",
                 boxShadow: "var(--shadow-card)",
                 marginBottom: 10,
@@ -77,7 +77,7 @@ export default function IndexStrip({ prices, indexData }) {
                     <div
                         key={idx.name}
                         style={{
-                            borderRadius: 10,
+                            borderRadius: "var(--card-radius)",
                             padding: "10px 14px",
                             display: "flex",
                             flexDirection: "column",
@@ -91,8 +91,8 @@ export default function IndexStrip({ prices, indexData }) {
                         }}
                         onMouseEnter={(e) => {
                             e.currentTarget.style.borderColor = up ? "var(--accent-up)" : "var(--accent-down)";
-                            e.currentTarget.style.transform = "translateY(-1.5px)";
-                            e.currentTarget.style.boxShadow = up ? "var(--shadow-glow-green)" : "var(--shadow-glow-red)";
+                            e.currentTarget.style.transform = "none";
+                            e.currentTarget.style.boxShadow = "none";
                             e.currentTarget.style.background = "var(--bg-hover)";
                         }}
                         onMouseLeave={(e) => {

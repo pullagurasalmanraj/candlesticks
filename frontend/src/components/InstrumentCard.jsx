@@ -36,16 +36,12 @@ const InstrumentCard = memo(function InstrumentCard({
                 alignItems: "center",
                 gap: 10,
                 padding: "9px 11px",
-                borderRadius: 10,
+                borderRadius: "var(--card-radius)",
                 cursor: "pointer",
                 transition: "all 0.15s ease",
-                background: isSelected
-                    ? "linear-gradient(135deg, rgba(59,130,246,0.18), rgba(59,130,246,0.08))"
-                    : "var(--bg-secondary)",
+                background: isSelected ? "var(--accent-blue-muted)" : "var(--bg-secondary)",
                 border: `1px solid ${isSelected ? "var(--accent-blue)" : "var(--border-color)"}`,
-                boxShadow: isSelected
-                    ? "0 0 0 1px rgba(59,130,246,0.2), var(--shadow-card)"
-                    : "var(--shadow-card)",
+                boxShadow: "var(--shadow-card)",
             }}
             onMouseEnter={e => {
                 if (!isSelected) {
@@ -67,7 +63,7 @@ const InstrumentCard = memo(function InstrumentCard({
                 borderRadius: "50%",
                 flexShrink: 0,
                 background: isRunning ? "var(--accent-up)" : "var(--border-color)",
-                boxShadow: isRunning ? "0 0 6px var(--accent-up)" : "none",
+                boxShadow: "none",
                 transition: "all 0.3s ease",
             }} />
 

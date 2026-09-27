@@ -136,26 +136,26 @@ function Sidebar({ collapsed, setCollapsed }) {
         gap:            collapsed ? 0 : 10,
         justifyContent: collapsed ? "center" : "flex-start",
         padding:        collapsed ? "10px" : "9px 12px",
-        borderRadius:   8,
-        fontSize:       "0.875rem",
+        borderRadius:   4,
+        fontSize:       "0.8125rem",
         fontFamily:     "var(--font-body)",
-        fontWeight:     isActive ? 700 : 600,
+        fontWeight:     isActive ? 650 : 500,
         textDecoration: "none",
         transition:     "all 0.15s ease",
-        background:     isActive ? "var(--accent-blue)"        : "transparent",
-        color:          isActive ? "var(--accent-contrast)"    : "var(--text-primary)",
-        boxShadow:      isActive ? "var(--shadow-glow-blue)"   : "none",
+        background:     isActive ? "var(--accent-blue-muted)" : "transparent",
+        color:          isActive ? "var(--accent-blue)"       : "var(--text-secondary)",
+        border:         `1px solid ${isActive ? "var(--accent-blue)" : "transparent"}`,
+        boxShadow:      "none",
     });
 
     return (
         <aside style={{
-            width:         collapsed ? "72px" : "240px",
+            width:         collapsed ? "var(--sidebar-collapsed)" : "var(--sidebar-width)",
             height:        "100vh",
             flexShrink:    0,
             display:       "flex",
             flexDirection: "column",
-            background:    "var(--surface-glass-strong)",
-            backdropFilter:"blur(18px) saturate(135%)",
+            background:    "var(--bg-secondary)",
             borderRight:   "1px solid var(--border-color)",
             transition:    "width 0.25s ease",
             overflow:      "hidden",
@@ -175,12 +175,13 @@ function Sidebar({ collapsed, setCollapsed }) {
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         {/* Logo mark */}
                         <div style={{
-                            width: 32, height: 32, borderRadius: 8,
-                            background: "linear-gradient(135deg, var(--accent-blue), var(--accent-up))",
+                            width: 30, height: 30, borderRadius: 4,
+                            background: "var(--accent-blue-muted)",
+                            border: "1px solid var(--accent-blue)",
                             display: "flex", alignItems: "center", justifyContent: "center",
                             flexShrink: 0,
                         }}>
-                            <TrendingUp size={16} color="#fff" />
+                            <TrendingUp size={16} color="var(--accent-blue)" />
                         </div>
                         <div>
                             <div style={{
@@ -191,7 +192,7 @@ function Sidebar({ collapsed, setCollapsed }) {
                                 Candlesticks
                             </div>
                             <div style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
-                                Internal console
+                                Institutional research
                             </div>
                         </div>
                     </div>
@@ -405,8 +406,7 @@ function AppShell() {
                     height:        "var(--navbar-height)",
                     flexShrink:    0,
                     borderBottom:  "1px solid var(--border-color)",
-                    background:    "var(--surface-glass)",
-                    backdropFilter:"blur(18px) saturate(135%)",
+                    background:    "var(--bg-secondary)",
                     display:       "flex",
                     alignItems:    "center",
                     justifyContent:"space-between",
@@ -425,13 +425,13 @@ function AppShell() {
                         {/* Live indicator */}
                         <div style={{
                             display: "flex", alignItems: "center", gap: 6,
-                            padding: "5px 12px", borderRadius: 999,
+                            padding: "5px 10px", borderRadius: 3,
                             border: "1px solid var(--border-color)",
                             background: "var(--bg-tertiary)",
                         }}>
                             <Wifi size={12} color="var(--accent-up)" />
                             <span style={{ fontSize: "0.7rem", color: "var(--accent-up)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>
-                                LIVE
+                                MARKET DATA
                             </span>
                         </div>
 

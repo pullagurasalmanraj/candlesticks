@@ -105,20 +105,13 @@ export default function NetworkStatusOverlay() {
             animation: "slideDown 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
         }}>
             <div style={{
-                background: isClientOffline
-                    ? "rgba(239, 68, 68, 0.95)"
-                    : "rgba(245, 158, 11, 0.95)",
-                backdropFilter: "blur(16px)",
-                WebkitBackdropFilter: "blur(16px)",
-                border: isClientOffline
-                    ? "1px solid rgba(255, 255, 255, 0.3)"
-                    : "1px solid rgba(255, 255, 255, 0.3)",
-                boxShadow: isClientOffline
-                    ? "0 12px 36px rgba(239, 68, 68, 0.35), 0 0 20px rgba(239, 68, 68, 0.2)"
-                    : "0 12px 36px rgba(245, 158, 11, 0.35), 0 0 20px rgba(245, 158, 11, 0.2)",
-                borderRadius: 14,
+                background: "var(--bg-secondary)",
+                border: `1px solid ${isClientOffline ? "var(--accent-down)" : "var(--accent-gold)"}`,
+                borderLeft: `4px solid ${isClientOffline ? "var(--accent-down)" : "var(--accent-gold)"}`,
+                boxShadow: "var(--shadow-dropdown)",
+                borderRadius: "var(--card-radius)",
                 padding: "14px 18px",
-                color: "#FFFFFF",
+                color: "var(--text-primary)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
@@ -156,9 +149,9 @@ export default function NetworkStatusOverlay() {
                         }} />
 
                         {isClientOffline ? (
-                            <WifiOff size={22} color="#FFFFFF" />
+                            <WifiOff size={22} color="var(--accent-down)" />
                         ) : (
-                            <ServerCrash size={22} color="#FFFFFF" />
+                            <ServerCrash size={22} color="var(--accent-gold)" />
                         )}
                     </div>
 
@@ -197,8 +190,8 @@ export default function NetworkStatusOverlay() {
                         disabled={isChecking}
                         style={{
                             background: "rgba(0, 0, 0, 0.25)",
-                            border: "1px solid rgba(255, 255, 255, 0.4)",
-                            color: "#FFFFFF",
+                            border: "1px solid var(--border-color)",
+                            color: "var(--text-primary)",
                             padding: "7px 14px",
                             borderRadius: 8,
                             fontSize: "0.78rem",

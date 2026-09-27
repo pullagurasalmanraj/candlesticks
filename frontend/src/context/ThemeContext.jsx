@@ -4,105 +4,99 @@ import CssBaseline from "@mui/material/CssBaseline";
 
 const ThemeContext = createContext(null);
 
-// Surface presets contain no brand colour. This keeps the accent selector useful
-// and lets every preset work in both light and dark modes.
+// Institutional surface presets: restrained contrast, opaque work surfaces and
+// low-saturation semantic colours suitable for long market-monitoring sessions.
 export const THEME_PRESETS = {
     midnight: {
-        label: "Midnight",
-        description: "Deep ink surfaces with cool blue depth",
-        preview: ["#080b14", "#171d2c", "#a78bfa"],
+        label: "Institutional Navy",
+        description: "Deep navy execution workspace",
+        preview: ["#08111d", "#111d2d", "#3c78a8"],
         dark: {
-            "--bg-primary": "#080b14", "--bg-secondary": "#0f1421", "--bg-elevated": "#131a29",
-            "--bg-tertiary": "#171d2c", "--bg-hover": "#20283a", "--border-color": "#29334a",
-            "--border-subtle": "#1b2335", "--text-primary": "#f3f6ff", "--text-secondary": "#a9b3c7",
-            "--text-muted": "#6f7b94", "--accent-up": "#32d583", "--accent-down": "#f97066",
-            "--accent-gold": "#fdb022", "--surface-glass": "rgba(15,20,33,0.82)",
-            "--surface-glass-strong": "rgba(15,20,33,0.94)", "--glow-green": "rgba(50,213,131,0.28)",
-            "--glow-red": "rgba(249,112,102,0.28)",
-            "--page-gradient": "radial-gradient(circle at 8% 0%, rgba(124,92,255,0.10), transparent 34%), radial-gradient(circle at 92% 8%, rgba(33,181,255,0.08), transparent 30%), #080b14",
+            "--bg-primary": "#08111d", "--bg-secondary": "#0d1724", "--bg-elevated": "#111d2d",
+            "--bg-tertiary": "#152234", "--bg-hover": "#19283c", "--border-color": "#26364b",
+            "--border-subtle": "#1b2a3d", "--text-primary": "#e6edf5", "--text-secondary": "#9aa9ba",
+            "--text-muted": "#65758a", "--accent-up": "#3a9b72", "--accent-down": "#c65d63",
+            "--accent-gold": "#ad8b47", "--surface-glass": "#0d1724",
+            "--surface-glass-strong": "#0b1521", "--glow-green": "rgba(58,155,114,0.12)",
+            "--glow-red": "rgba(198,93,99,0.12)", "--page-gradient": "#08111d",
         },
         light: {
-            "--bg-primary": "#f5f7fb", "--bg-secondary": "#ffffff", "--bg-elevated": "#fbfcff",
-            "--bg-tertiary": "#edf1f7", "--bg-hover": "#e4e9f2", "--border-color": "#d5dce8",
-            "--border-subtle": "#e8ecf3", "--text-primary": "#172033", "--text-secondary": "#526079",
-            "--text-muted": "#8994a8", "--accent-up": "#087f5b", "--accent-down": "#d92d20",
-            "--accent-gold": "#b54708", "--surface-glass": "rgba(255,255,255,0.78)",
-            "--surface-glass-strong": "rgba(255,255,255,0.94)", "--glow-green": "rgba(8,127,91,0.18)",
-            "--glow-red": "rgba(217,45,32,0.18)",
-            "--page-gradient": "radial-gradient(circle at 8% 0%, rgba(124,92,255,0.08), transparent 34%), radial-gradient(circle at 92% 8%, rgba(33,181,255,0.07), transparent 30%), #f5f7fb",
+            "--bg-primary": "#f1f4f7", "--bg-secondary": "#ffffff", "--bg-elevated": "#f8fafc",
+            "--bg-tertiary": "#e8edf3", "--bg-hover": "#e1e7ee", "--border-color": "#cbd4df",
+            "--border-subtle": "#dde3ea", "--text-primary": "#172334", "--text-secondary": "#566579",
+            "--text-muted": "#7b899a", "--accent-up": "#247753", "--accent-down": "#aa4d54",
+            "--accent-gold": "#876c35", "--surface-glass": "#ffffff",
+            "--surface-glass-strong": "#f8fafc", "--glow-green": "rgba(36,119,83,0.10)",
+            "--glow-red": "rgba(170,77,84,0.10)", "--page-gradient": "#f1f4f7",
         },
     },
     graphite: {
-        label: "Graphite",
-        description: "Quiet neutral surfaces for focused analysis",
-        preview: ["#0d0e11", "#1d2026", "#22c55e"],
+        label: "Execution Slate",
+        description: "Neutral low-glare trading surface",
+        preview: ["#0c1117", "#19212b", "#607d9a"],
         dark: {
-            "--bg-primary": "#0d0e11", "--bg-secondary": "#14161a", "--bg-elevated": "#181a1f",
-            "--bg-tertiary": "#1d2026", "--bg-hover": "#282c33", "--border-color": "#30343c",
-            "--border-subtle": "#22262c", "--text-primary": "#f5f5f4", "--text-secondary": "#b4b4ad",
-            "--text-muted": "#74756f", "--accent-up": "#3ddc97", "--accent-down": "#ff6b6b",
-            "--accent-gold": "#f4c95d", "--surface-glass": "rgba(20,22,26,0.84)",
-            "--surface-glass-strong": "rgba(20,22,26,0.95)", "--glow-green": "rgba(61,220,151,0.25)",
-            "--glow-red": "rgba(255,107,107,0.25)",
-            "--page-gradient": "radial-gradient(circle at 12% 0%, rgba(255,255,255,0.045), transparent 32%), #0d0e11",
+            "--bg-primary": "#0c1117", "--bg-secondary": "#121820", "--bg-elevated": "#161d26",
+            "--bg-tertiary": "#19212b", "--bg-hover": "#202a35", "--border-color": "#2b3744",
+            "--border-subtle": "#202a34", "--text-primary": "#e7ebef", "--text-secondary": "#a1abb6",
+            "--text-muted": "#6e7a87", "--accent-up": "#4a9572", "--accent-down": "#bd6267",
+            "--accent-gold": "#a58a55", "--surface-glass": "#121820",
+            "--surface-glass-strong": "#10161d", "--glow-green": "rgba(74,149,114,0.10)",
+            "--glow-red": "rgba(189,98,103,0.10)", "--page-gradient": "#0c1117",
         },
         light: {
-            "--bg-primary": "#f7f7f5", "--bg-secondary": "#fefefd", "--bg-elevated": "#ffffff",
-            "--bg-tertiary": "#eeeeeb", "--bg-hover": "#e5e5e1", "--border-color": "#d8d8d2",
-            "--border-subtle": "#e9e9e5", "--text-primary": "#252622", "--text-secondary": "#5f615a",
-            "--text-muted": "#92948b", "--accent-up": "#147d57", "--accent-down": "#c43232",
-            "--accent-gold": "#9a6700", "--surface-glass": "rgba(254,254,253,0.80)",
-            "--surface-glass-strong": "rgba(254,254,253,0.95)", "--glow-green": "rgba(20,125,87,0.16)",
-            "--glow-red": "rgba(196,50,50,0.16)",
-            "--page-gradient": "radial-gradient(circle at 12% 0%, rgba(15,23,42,0.035), transparent 32%), #f7f7f5",
+            "--bg-primary": "#f3f4f5", "--bg-secondary": "#ffffff", "--bg-elevated": "#fafbfc",
+            "--bg-tertiary": "#e9ecef", "--bg-hover": "#e2e6ea", "--border-color": "#cdd3da",
+            "--border-subtle": "#dfe3e7", "--text-primary": "#202832", "--text-secondary": "#58636f",
+            "--text-muted": "#818b96", "--accent-up": "#307554", "--accent-down": "#a94e53",
+            "--accent-gold": "#806b40", "--surface-glass": "#ffffff",
+            "--surface-glass-strong": "#fafbfc", "--glow-green": "rgba(48,117,84,0.08)",
+            "--glow-red": "rgba(169,78,83,0.08)", "--page-gradient": "#f3f4f5",
         },
     },
     ocean: {
-        label: "Ocean",
-        description: "Teal-tinted depth with a calm market feel",
-        preview: ["#061310", "#112a25", "#2dd4bf"],
+        label: "Research Teal",
+        description: "Measured teal for research workflows",
+        preview: ["#081516", "#142727", "#2e7d72"],
         dark: {
-            "--bg-primary": "#061310", "--bg-secondary": "#0b1c19", "--bg-elevated": "#0e2420",
-            "--bg-tertiary": "#112a25", "--bg-hover": "#183832", "--border-color": "#245047",
-            "--border-subtle": "#15352f", "--text-primary": "#ebfffa", "--text-secondary": "#9bc8bd",
-            "--text-muted": "#5f887e", "--accent-up": "#34d399", "--accent-down": "#fb7185",
-            "--accent-gold": "#fbbf24", "--surface-glass": "rgba(11,28,25,0.84)",
-            "--surface-glass-strong": "rgba(11,28,25,0.95)", "--glow-green": "rgba(52,211,153,0.28)",
-            "--glow-red": "rgba(251,113,133,0.26)",
-            "--page-gradient": "radial-gradient(circle at 10% 0%, rgba(45,212,191,0.11), transparent 34%), radial-gradient(circle at 90% 15%, rgba(14,116,144,0.10), transparent 30%), #061310",
+            "--bg-primary": "#081516", "--bg-secondary": "#0d1c1d", "--bg-elevated": "#112324",
+            "--bg-tertiary": "#142727", "--bg-hover": "#1a3131", "--border-color": "#294140",
+            "--border-subtle": "#1c3333", "--text-primary": "#e4eeec", "--text-secondary": "#96aaa6",
+            "--text-muted": "#667d79", "--accent-up": "#3b9470", "--accent-down": "#bd6269",
+            "--accent-gold": "#a78a50", "--surface-glass": "#0d1c1d",
+            "--surface-glass-strong": "#0b191a", "--glow-green": "rgba(59,148,112,0.10)",
+            "--glow-red": "rgba(189,98,105,0.10)", "--page-gradient": "#081516",
         },
         light: {
-            "--bg-primary": "#f1faf7", "--bg-secondary": "#ffffff", "--bg-elevated": "#fbfffd",
-            "--bg-tertiary": "#e4f2ee", "--bg-hover": "#d7ebe5", "--border-color": "#c5ddd6",
-            "--border-subtle": "#deeee9", "--text-primary": "#12332d", "--text-secondary": "#456c63",
-            "--text-muted": "#7fa097", "--accent-up": "#087f5b", "--accent-down": "#d6334c",
-            "--accent-gold": "#a15c00", "--surface-glass": "rgba(255,255,255,0.78)",
-            "--surface-glass-strong": "rgba(255,255,255,0.94)", "--glow-green": "rgba(8,127,91,0.18)",
-            "--glow-red": "rgba(214,51,76,0.18)",
-            "--page-gradient": "radial-gradient(circle at 10% 0%, rgba(45,212,191,0.10), transparent 34%), radial-gradient(circle at 90% 15%, rgba(14,116,144,0.07), transparent 30%), #f1faf7",
+            "--bg-primary": "#f0f5f4", "--bg-secondary": "#ffffff", "--bg-elevated": "#f8fbfa",
+            "--bg-tertiary": "#e5ecea", "--bg-hover": "#dce6e3", "--border-color": "#c5d3d0",
+            "--border-subtle": "#d8e2e0", "--text-primary": "#1b2d2c", "--text-secondary": "#566d69",
+            "--text-muted": "#7b918d", "--accent-up": "#2b7657", "--accent-down": "#a95057",
+            "--accent-gold": "#816d42", "--surface-glass": "#ffffff",
+            "--surface-glass-strong": "#f8fbfa", "--glow-green": "rgba(43,118,87,0.08)",
+            "--glow-red": "rgba(169,80,87,0.08)", "--page-gradient": "#f0f5f4",
         },
     },
 };
 
 export const ACCENT_PRESETS = {
-    cyan: { hex: "#22D3EE", muted: "rgba(34,211,238,0.14)", hover: "#67E8F9", glow: "rgba(34,211,238,0.32)", contrast: "#082f39" },
-    emerald: { hex: "#34D399", muted: "rgba(52,211,153,0.14)", hover: "#6EE7B7", glow: "rgba(52,211,153,0.30)", contrast: "#052e24" },
-    purple: { hex: "#A78BFA", muted: "rgba(167,139,250,0.14)", hover: "#C4B5FD", glow: "rgba(167,139,250,0.31)", contrast: "#1e1537" },
-    amber: { hex: "#FBBF24", muted: "rgba(251,191,36,0.14)", hover: "#FCD34D", glow: "rgba(251,191,36,0.28)", contrast: "#422006" },
-    rose: { hex: "#FB7185", muted: "rgba(251,113,133,0.14)", hover: "#FDA4AF", glow: "rgba(251,113,133,0.29)", contrast: "#4c0519" },
+    cyan: { hex: "#3C78A8", muted: "rgba(60,120,168,0.14)", hover: "#4B87B7", glow: "rgba(60,120,168,0.12)", contrast: "#ffffff" },
+    emerald: { hex: "#2E7D72", muted: "rgba(46,125,114,0.14)", hover: "#398B80", glow: "rgba(46,125,114,0.12)", contrast: "#ffffff" },
+    purple: { hex: "#5B6F8E", muted: "rgba(91,111,142,0.14)", hover: "#6A7E9D", glow: "rgba(91,111,142,0.12)", contrast: "#ffffff" },
+    amber: { hex: "#927640", muted: "rgba(146,118,64,0.14)", hover: "#A0844E", glow: "rgba(146,118,64,0.10)", contrast: "#ffffff" },
+    rose: { hex: "#9B5360", muted: "rgba(155,83,96,0.14)", hover: "#AA626E", glow: "rgba(155,83,96,0.10)", contrast: "#ffffff" },
 };
 
 export const LAYOUT = {
-    navbarHeight: "64px", sidebarWidth: "240px", sidebarCollapsed: "72px",
-    cardRadius: "16px", inputRadius: "10px", buttonRadius: "10px", chipRadius: "8px",
-    contentPadding: "1.5rem", maxWidth: "1440px",
+    navbarHeight: "56px", sidebarWidth: "232px", sidebarCollapsed: "64px",
+    cardRadius: "6px", inputRadius: "4px", buttonRadius: "4px", chipRadius: "3px",
+    contentPadding: "1.25rem", maxWidth: "1600px",
 };
 
 export const TYPOGRAPHY = {
-    fontBody: "'DM Sans', 'Segoe UI', sans-serif",
-    fontDisplay: "'Syne', 'Segoe UI', sans-serif",
-    fontMono: "'JetBrains Mono', 'Fira Code', monospace",
-    baseSize: "14px", weightNormal: 400, weightMedium: 500, weightSemiBold: 600, weightBold: 700,
+    fontBody: "'Inter', 'Segoe UI', sans-serif",
+    fontDisplay: "'Inter', 'Segoe UI', sans-serif",
+    fontMono: "'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace",
+    baseSize: "13px", weightNormal: 400, weightMedium: 500, weightSemiBold: 600, weightBold: 700,
 };
 
 function getPalette(mode, presetKey) {
@@ -116,8 +110,8 @@ function getSystemTheme() {
 
 function buildMuiTheme(mode, presetKey, accentKey) {
     const p = getPalette(mode, presetKey);
-    const accent = ACCENT_PRESETS[accentKey] || ACCENT_PRESETS.purple;
-    const cardShadow = mode === "dark" ? "0 18px 48px rgba(0,0,0,0.22)" : "0 14px 38px rgba(31,41,55,0.08)";
+    const accent = ACCENT_PRESETS[accentKey] || ACCENT_PRESETS.cyan;
+    const cardShadow = mode === "dark" ? "0 1px 2px rgba(0,0,0,0.28)" : "0 1px 2px rgba(15,23,42,0.06)";
 
     return createTheme({
         palette: {
@@ -130,9 +124,9 @@ function buildMuiTheme(mode, presetKey, accentKey) {
         },
         typography: {
             fontFamily: TYPOGRAPHY.fontBody, fontSize: 13,
-            h1: { fontFamily: TYPOGRAPHY.fontDisplay, fontWeight: 700, letterSpacing: "-0.025em" },
-            h2: { fontFamily: TYPOGRAPHY.fontDisplay, fontWeight: 700, letterSpacing: "-0.025em" },
-            h3: { fontFamily: TYPOGRAPHY.fontDisplay, fontWeight: 650, letterSpacing: "-0.015em" },
+            h1: { fontFamily: TYPOGRAPHY.fontDisplay, fontWeight: 650, letterSpacing: "-0.02em" },
+            h2: { fontFamily: TYPOGRAPHY.fontDisplay, fontWeight: 650, letterSpacing: "-0.02em" },
+            h3: { fontFamily: TYPOGRAPHY.fontDisplay, fontWeight: 600, letterSpacing: "-0.01em" },
             h4: { fontFamily: TYPOGRAPHY.fontDisplay, fontWeight: 650 },
             h5: { fontFamily: TYPOGRAPHY.fontDisplay, fontWeight: 600 },
             h6: { fontFamily: TYPOGRAPHY.fontDisplay, fontWeight: 600 },
@@ -140,45 +134,45 @@ function buildMuiTheme(mode, presetKey, accentKey) {
             body2: { fontFamily: TYPOGRAPHY.fontBody, fontSize: "0.8rem", color: p["--text-secondary"] },
             caption: { fontFamily: TYPOGRAPHY.fontMono, fontSize: "0.75rem" },
         },
-        shape: { borderRadius: 12 },
+        shape: { borderRadius: 4 },
         components: {
-            MuiCssBaseline: { styleOverrides: { body: { backgroundImage: p["--page-gradient"], backgroundAttachment: "fixed" } } },
+            MuiCssBaseline: { styleOverrides: { body: { background: p["--bg-primary"] } } },
             MuiCard: { styleOverrides: { root: {
-                background: `linear-gradient(145deg, ${p["--bg-secondary"]}, ${p["--bg-elevated"]})`,
+                background: p["--bg-secondary"],
                 border: `1px solid ${p["--border-color"]}`, borderRadius: LAYOUT.cardRadius,
-                boxShadow: cardShadow, transition: "transform .2s ease, border-color .2s ease, box-shadow .2s ease",
-                "&:hover": { transform: "translateY(-2px)", borderColor: accent.hex, boxShadow: `0 18px 48px ${accent.muted}` },
+                boxShadow: cardShadow, transition: "border-color .15s ease, background-color .15s ease",
+                "&:hover": { borderColor: accent.hex, background: p["--bg-elevated"] },
             } } },
             MuiTextField: { styleOverrides: { root: {
                 "& .MuiOutlinedInput-root": {
                     color: p["--text-primary"], background: p["--bg-tertiary"], borderRadius: LAYOUT.inputRadius,
                     fontSize: "0.875rem", "& fieldset": { borderColor: p["--border-color"] },
                     "&:hover fieldset": { borderColor: accent.hex },
-                    "&.Mui-focused fieldset": { borderColor: accent.hex, borderWidth: "1.5px" },
+                    "&.Mui-focused fieldset": { borderColor: accent.hex, borderWidth: "1px" },
                 },
                 "& .MuiInputLabel-root": { color: p["--text-secondary"], "&.Mui-focused": { color: accent.hex } },
             } } },
             MuiButton: { styleOverrides: {
-                root: { borderRadius: LAYOUT.buttonRadius, textTransform: "none", fontWeight: 650, fontSize: "0.875rem", transition: "all .18s ease" },
-                containedPrimary: { background: accent.hex, color: accent.contrast, boxShadow: `0 8px 24px ${accent.glow}`, "&:hover": { background: accent.hover, boxShadow: `0 10px 30px ${accent.glow}` } },
+                root: { borderRadius: LAYOUT.buttonRadius, textTransform: "none", fontWeight: 600, fontSize: "0.825rem", transition: "background-color .15s ease, border-color .15s ease" },
+                containedPrimary: { background: accent.hex, color: accent.contrast, boxShadow: "none", "&:hover": { background: accent.hover, boxShadow: "none" } },
                 outlinedPrimary: { borderColor: p["--border-color"], color: p["--text-primary"], "&:hover": { borderColor: accent.hex, backgroundColor: accent.muted } },
             } },
             MuiTabs: { styleOverrides: { root: { minHeight: 40 }, indicator: { backgroundColor: accent.hex, height: 2 } } },
             MuiTab: { styleOverrides: { root: { color: p["--text-secondary"], textTransform: "none", fontWeight: 600, minHeight: 40, "&.Mui-selected": { color: accent.hex } } } },
             MuiDivider: { styleOverrides: { root: { borderColor: p["--border-color"] } } },
-            MuiDialog: { styleOverrides: { paper: { background: p["--bg-secondary"], border: `1px solid ${p["--border-color"]}`, borderRadius: LAYOUT.cardRadius, boxShadow: cardShadow } } },
+            MuiDialog: { styleOverrides: { paper: { background: p["--bg-secondary"], border: `1px solid ${p["--border-color"]}`, borderRadius: LAYOUT.cardRadius, boxShadow: "0 12px 36px rgba(0,0,0,.24)" } } },
             MuiTableHead: { styleOverrides: { root: { background: p["--bg-tertiary"] } } },
             MuiTableCell: { styleOverrides: {
-                root: { borderColor: p["--border-color"], color: p["--text-primary"], fontSize: "0.8rem", padding: "10px 14px" },
+                root: { borderColor: p["--border-color"], color: p["--text-primary"], fontSize: "0.78rem", padding: "8px 12px", fontVariantNumeric: "tabular-nums" },
                 head: { color: p["--text-secondary"], fontWeight: 650, fontSize: "0.72rem", letterSpacing: ".06em", textTransform: "uppercase" },
             } },
             MuiTableRow: { styleOverrides: { root: { transition: "background .15s ease", "&:hover": { background: p["--bg-hover"] } } } },
             MuiChip: { styleOverrides: { root: { borderRadius: LAYOUT.chipRadius, fontSize: "0.75rem", fontWeight: 600, height: 26 } } },
             MuiTooltip: { styleOverrides: {
-                tooltip: { background: p["--bg-tertiary"], border: `1px solid ${p["--border-color"]}`, color: p["--text-primary"], fontSize: "0.75rem", borderRadius: 8 },
+                tooltip: { background: p["--bg-tertiary"], border: `1px solid ${p["--border-color"]}`, color: p["--text-primary"], fontSize: "0.75rem", borderRadius: 4 },
                 arrow: { color: p["--bg-tertiary"] },
             } },
-            MuiMenu: { styleOverrides: { paper: { background: p["--bg-secondary"], border: `1px solid ${p["--border-color"]}`, borderRadius: 12, boxShadow: cardShadow } } },
+            MuiMenu: { styleOverrides: { paper: { background: p["--bg-secondary"], border: `1px solid ${p["--border-color"]}`, borderRadius: 4, boxShadow: "0 8px 24px rgba(0,0,0,.18)" } } },
             MuiMenuItem: { styleOverrides: { root: {
                 fontSize: "0.875rem", color: p["--text-primary"], "&:hover": { background: p["--bg-hover"] },
                 "&.Mui-selected": { background: accent.muted, color: accent.hex },
@@ -190,7 +184,7 @@ function buildMuiTheme(mode, presetKey, accentKey) {
 function injectCSSVariables(mode, presetKey, accentKey) {
     const root = document.documentElement;
     const palette = getPalette(mode, presetKey);
-    const accent = ACCENT_PRESETS[accentKey] || ACCENT_PRESETS.purple;
+    const accent = ACCENT_PRESETS[accentKey] || ACCENT_PRESETS.cyan;
 
     Object.entries(palette).forEach(([key, value]) => root.style.setProperty(key, value));
     root.style.setProperty("--accent-blue", accent.hex);
@@ -198,7 +192,7 @@ function injectCSSVariables(mode, presetKey, accentKey) {
     root.style.setProperty("--accent-blue-muted", accent.muted);
     root.style.setProperty("--accent-contrast", accent.contrast);
     root.style.setProperty("--glow", accent.glow);
-    root.style.setProperty("--accent-gradient", `linear-gradient(135deg, ${accent.hex}, ${accent.hover})`);
+    root.style.setProperty("--accent-gradient", accent.hex);
 
     root.style.setProperty("--navbar-height", LAYOUT.navbarHeight);
     root.style.setProperty("--sidebar-width", LAYOUT.sidebarWidth);
@@ -211,11 +205,12 @@ function injectCSSVariables(mode, presetKey, accentKey) {
     root.style.setProperty("--font-body", TYPOGRAPHY.fontBody);
     root.style.setProperty("--font-display", TYPOGRAPHY.fontDisplay);
     root.style.setProperty("--font-mono", TYPOGRAPHY.fontMono);
-    root.style.setProperty("--shadow-card", mode === "dark" ? "0 18px 48px rgba(0,0,0,.22)" : "0 14px 38px rgba(31,41,55,.08)");
-    root.style.setProperty("--shadow-card-hover", `0 18px 48px ${accent.muted}`);
-    root.style.setProperty("--shadow-glow-blue", `0 8px 24px ${accent.glow}`);
-    root.style.setProperty("--shadow-glow-green", "0 8px 24px var(--glow-green)");
-    root.style.setProperty("--shadow-glow-red", "0 8px 24px var(--glow-red)");
+    root.style.setProperty("--shadow-card", mode === "dark" ? "0 1px 2px rgba(0,0,0,.28)" : "0 1px 2px rgba(15,23,42,.06)");
+    root.style.setProperty("--shadow-card-hover", mode === "dark" ? "0 2px 5px rgba(0,0,0,.24)" : "0 2px 5px rgba(15,23,42,.08)");
+    root.style.setProperty("--shadow-dropdown", mode === "dark" ? "0 10px 28px rgba(0,0,0,.32)" : "0 10px 28px rgba(15,23,42,.12)");
+    root.style.setProperty("--shadow-glow-blue", "none");
+    root.style.setProperty("--shadow-glow-green", "none");
+    root.style.setProperty("--shadow-glow-red", "none");
 }
 
 export const ThemeProvider = ({ children }) => {
@@ -232,7 +227,7 @@ export const ThemeProvider = ({ children }) => {
     });
     const [accentColor, setAccentColorState] = useState(() => {
         const saved = localStorage.getItem("app_accent_color");
-        return ACCENT_PRESETS[saved] ? saved : "purple";
+        return ACCENT_PRESETS[saved] ? saved : "cyan";
     });
 
     const theme = themePreference === "system" ? systemTheme : themePreference;
