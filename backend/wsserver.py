@@ -29,6 +29,21 @@ import traceback
 import threading
 from typing import Set
 
+
+def _configure_azure_monitor():
+    """Enable dependency, trace, and log export for the market-feed process."""
+    if not os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+        return
+
+    # Configure before importing requests/Redis/WebSockets so their supported
+    # OpenTelemetry integrations can be activated at import time.
+    from azure.monitor.opentelemetry import configure_azure_monitor
+
+    configure_azure_monitor(logger_name="candlesticks.wsserver")
+
+
+_configure_azure_monitor()
+
 import requests
 import redis
 import websockets

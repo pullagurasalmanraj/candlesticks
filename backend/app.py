@@ -19,6 +19,21 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 warnings.filterwarnings("ignore")
 
+
+def _configure_azure_monitor():
+    """Enable Azure telemetry only when production provides a connection string."""
+    if not os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
+        return
+
+    # Import lazily so local development still works before optional dependencies
+    # are installed. This must run before Flask is imported for auto-instrumentation.
+    from azure.monitor.opentelemetry import configure_azure_monitor
+
+    configure_azure_monitor(logger_name="candlesticks")
+
+
+_configure_azure_monitor()
+
 from flask import Flask, send_from_directory
 from werkzeug.middleware.proxy_fix import ProxyFix
 
