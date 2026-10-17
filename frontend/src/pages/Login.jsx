@@ -125,6 +125,61 @@ const PROJECT_STATS = [
     { value: "<12ms", label: "Cache response latency" },
 ];
 
+const SYSTEM_SIGNALS = [
+    { label: "Market data", value: "Live view", tone: "up" },
+    { label: "Execution", value: "Order ready", tone: "blue" },
+    { label: "Risk controls", value: "Guardrails", tone: "gold" },
+];
+
+function LiveSystemRail() {
+    const [time, setTime] = useState(() => new Date());
+    const [activeSignal, setActiveSignal] = useState(0);
+
+    useEffect(() => {
+        const clock = setInterval(() => setTime(new Date()), 1000);
+        const signal = setInterval(
+            () => setActiveSignal((current) => (current + 1) % SYSTEM_SIGNALS.length),
+            2400
+        );
+        return () => {
+            clearInterval(clock);
+            clearInterval(signal);
+        };
+    }, []);
+
+    const formattedTime = time.toLocaleTimeString("en-IN", {
+        timeZone: "Asia/Kolkata",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+    });
+
+    return (
+        <div className="login-system-rail" aria-label="Trading workspace preview">
+            <div className="login-system-clock">
+                <span className="login-live-dot" />
+                <div>
+                    <span>Workspace preview</span>
+                    <strong>{formattedTime} IST</strong>
+                </div>
+            </div>
+
+            <div className="login-system-signals">
+                {SYSTEM_SIGNALS.map((signal, index) => (
+                    <div
+                        key={signal.label}
+                        className={`login-system-signal ${index === activeSignal ? "is-active" : ""}`}
+                    >
+                        <span>{signal.label}</span>
+                        <strong data-tone={signal.tone}>{signal.value}</strong>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
 function InteractiveBriefMockup({ onGetStarted }) {
     const [activeSubTab, setActiveSubTab] = useState("ingestion");
     const { theme } = useTheme();
@@ -850,6 +905,7 @@ function AuthCard({
 
     return (
         <div
+            className="login-auth-card"
             style={{
                 background: "var(--bg-secondary)",
                 border: "1px solid var(--border-color)",
@@ -865,7 +921,12 @@ function AuthCard({
                 }}
             />
 
-            <div style={{ padding: "24px 26px 22px" }}>
+            <div style={{ padding: "26px 28px 24px", position: "relative", zIndex: 1 }}>
+                <div className="login-auth-meta">
+                    <span><Shield size={13} /> Protected workspace</span>
+                    <span className="login-auth-meta-status"><span /> Secure</span>
+                </div>
+
                 <div style={{ marginBottom: 16 }}>
                     <Typography
                         sx={{
@@ -1013,7 +1074,8 @@ function AuthCard({
                         onClick={tab === "login" ? handleLogin : handleSignup}
                         disabled={loading}
                         fullWidth
-                        sx={{ height: 42, mt: 0.2, fontWeight: 600, fontSize: "0.88rem" }}
+                        className="login-primary-action"
+                        sx={{ height: 44, mt: 0.2, fontWeight: 650, fontSize: "0.88rem", position: "relative", overflow: "hidden" }}
                     >
                         {loading
                             ? (tab === "login" ? "Signing in..." : "Creating account...")
@@ -1060,6 +1122,12 @@ function AuthCard({
                         Continue with Google
                     </button>
                 </Box>
+
+                <div className="login-trust-row">
+                    <span><Lock size={12} /> Encrypted session</span>
+                    <span>•</span>
+                    <span>Broker tokens stay isolated</span>
+                </div>
             </div>
         </div>
     );
@@ -1074,7 +1142,7 @@ export default function AuthPage() {
 
     if (isLoggedIn) return <Navigate to="/brokers" replace />;
 
-    const [tab, setTab] = useState(null);
+    const [tab, setTab] = useState(isReturningUser ? "login" : null);
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
     const [confirm, setConfirm] = useState("");
@@ -1189,10 +1257,14 @@ export default function AuthPage() {
 
     return (
         <div
-            className="relative w-full h-screen overflow-hidden"
+            className="login-page relative w-full h-screen overflow-hidden"
             style={{ background: "var(--bg-primary)", color: "var(--text-primary)" }}
         >
             <CandleBackground />
+
+            <div className="login-grid-overlay" />
+            <div className="login-ambient login-ambient-one" />
+            <div className="login-ambient login-ambient-two" />
 
             <div
                 style={{
@@ -1207,14 +1279,14 @@ export default function AuthPage() {
             <Navbar authMode authTab={tab} onAuthTabChange={handleTabChange} />
 
             <div
-                className={`relative z-10 grid grid-cols-1 ${tab === null ? 'lg:grid-cols-[1.1fr_1.2fr]' : 'lg:grid-cols-[1.15fr_0.85fr]'} gap-8 px-6 lg:px-14 xl:px-20 items-center`}
+                className={`login-main relative z-10 grid grid-cols-1 ${tab === null ? 'lg:grid-cols-[1.1fr_1.2fr]' : 'lg:grid-cols-[1.15fr_0.85fr]'} gap-8 px-6 lg:px-14 xl:px-20 items-center`}
                 style={{
                     height: "calc(100vh - var(--navbar-height))",
                     transition: "all 0.3s ease"
                 }}
             >
                 <div
-                    className="relative z-10 flex flex-col justify-center"
+                    className="login-hero relative z-10 flex flex-col justify-center"
                     style={{ color: "var(--text-primary)" }}
                 >
                     {tab === null ? (
@@ -1279,6 +1351,8 @@ export default function AuthPage() {
                             >
                                 Unified algorithmic research console for NSE/BSE. Ingest real-time tick feeds, run NumPy-vectorized indicators, tune machine learning thresholds, and simulate paper-trading in a single environment.
                             </p>
+
+                            <LiveSystemRail />
 
                             <div style={{
                                 display: "flex",
@@ -1460,6 +1534,8 @@ export default function AuthPage() {
                                 High-frequency market workflows with live ingestion, indicator analytics, strategy tooling, and broker execution from a single console.
                             </p>
 
+                            <LiveSystemRail />
+
                             <div
                                 style={{
                                     display: "grid",
@@ -1500,7 +1576,7 @@ export default function AuthPage() {
                     )}
                 </div>
 
-                <div className="relative z-10 flex items-center justify-center">
+                <div className="login-panel relative z-10 flex items-center justify-center">
                     <div style={{ width: "100%", maxWidth: tab === null ? 620 : 430, transition: "max-width 0.3s ease" }}>
                         {tab === null ? (
                             <InteractiveBriefMockup onGetStarted={() => handleTabChange("signup")} />
@@ -1536,9 +1612,252 @@ export default function AuthPage() {
             </div>
 
             <style>{`
+                .login-page {
+                    isolation: isolate;
+                }
+
+                .login-grid-overlay {
+                    position: absolute;
+                    inset: 0;
+                    z-index: 1;
+                    pointer-events: none;
+                    opacity: 0.24;
+                    background-image:
+                        linear-gradient(var(--border-subtle) 1px, transparent 1px),
+                        linear-gradient(90deg, var(--border-subtle) 1px, transparent 1px);
+                    background-size: 42px 42px;
+                    mask-image: linear-gradient(to bottom, transparent 0%, black 22%, black 72%, transparent 100%);
+                }
+
+                .login-ambient {
+                    position: absolute;
+                    z-index: 1;
+                    width: 360px;
+                    height: 360px;
+                    border-radius: 50%;
+                    pointer-events: none;
+                    filter: blur(1px);
+                    opacity: 0.16;
+                    border: 1px solid var(--accent-blue);
+                    background: radial-gradient(circle, var(--accent-blue-muted) 0%, transparent 68%);
+                    animation: loginAmbientFloat 12s ease-in-out infinite;
+                }
+
+                .login-ambient-one {
+                    top: 8%;
+                    right: 7%;
+                }
+
+                .login-ambient-two {
+                    width: 240px;
+                    height: 240px;
+                    left: 7%;
+                    bottom: 4%;
+                    opacity: 0.1;
+                    animation-delay: -5s;
+                }
+
+                .login-main {
+                    max-width: 1560px;
+                    margin: 0 auto;
+                    width: 100%;
+                }
+
+                .login-system-rail {
+                    width: 100%;
+                    max-width: 590px;
+                    display: grid;
+                    grid-template-columns: minmax(155px, 0.8fr) minmax(260px, 1.6fr);
+                    gap: 0;
+                    overflow: hidden;
+                    border: 1px solid var(--border-color);
+                    border-radius: var(--card-radius);
+                    background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+                    box-shadow: var(--shadow-card);
+                }
+
+                .login-system-clock {
+                    display: flex;
+                    align-items: center;
+                    gap: 9px;
+                    padding: 10px 12px;
+                    border-right: 1px solid var(--border-color);
+                }
+
+                .login-live-dot {
+                    width: 7px;
+                    height: 7px;
+                    flex: 0 0 auto;
+                    border-radius: 50%;
+                    background: var(--accent-up);
+                    box-shadow: 0 0 0 4px var(--glow-green);
+                    animation: loginStatusPulse 2s ease-in-out infinite;
+                }
+
+                .login-system-clock div,
+                .login-system-signal {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 2px;
+                }
+
+                .login-system-clock span,
+                .login-system-signal span {
+                    color: var(--text-muted);
+                    font-size: 0.61rem;
+                    font-weight: 650;
+                    letter-spacing: 0.055em;
+                    text-transform: uppercase;
+                }
+
+                .login-system-clock strong,
+                .login-system-signal strong {
+                    color: var(--text-primary);
+                    font-family: var(--font-mono);
+                    font-size: 0.72rem;
+                    font-weight: 650;
+                    white-space: nowrap;
+                }
+
+                .login-system-signals {
+                    display: grid;
+                    grid-template-columns: repeat(3, 1fr);
+                }
+
+                .login-system-signal {
+                    position: relative;
+                    justify-content: center;
+                    padding: 9px 11px;
+                    border-right: 1px solid var(--border-subtle);
+                    transition: background-color 0.25s ease;
+                }
+
+                .login-system-signal:last-child {
+                    border-right: 0;
+                }
+
+                .login-system-signal.is-active {
+                    background: var(--accent-blue-muted);
+                }
+
+                .login-system-signal.is-active::after {
+                    content: "";
+                    position: absolute;
+                    right: 0;
+                    bottom: 0;
+                    left: 0;
+                    height: 2px;
+                    background: var(--accent-blue);
+                    animation: loginSignalSweep 2.4s linear;
+                }
+
+                .login-system-signal strong[data-tone="up"] { color: var(--accent-up); }
+                .login-system-signal strong[data-tone="blue"] { color: var(--accent-blue); }
+                .login-system-signal strong[data-tone="gold"] { color: var(--accent-gold); }
+
+                .login-auth-card {
+                    position: relative;
+                    box-shadow: 0 20px 55px rgba(0, 0, 0, 0.18) !important;
+                    animation: loginCardEnter 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+                }
+
+                .login-auth-card::before {
+                    content: "";
+                    position: absolute;
+                    inset: 3px 0 auto;
+                    height: 120px;
+                    pointer-events: none;
+                    background:
+                        linear-gradient(90deg, transparent, var(--accent-blue-muted), transparent),
+                        repeating-linear-gradient(90deg, transparent 0 27px, var(--border-subtle) 28px);
+                    opacity: 0.35;
+                    mask-image: linear-gradient(to bottom, black, transparent);
+                }
+
+                .login-auth-meta {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    gap: 12px;
+                    margin-bottom: 22px;
+                    padding-bottom: 12px;
+                    border-bottom: 1px solid var(--border-subtle);
+                    color: var(--text-muted);
+                    font-size: 0.68rem;
+                    font-weight: 650;
+                    letter-spacing: 0.04em;
+                    text-transform: uppercase;
+                }
+
+                .login-auth-meta > span {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 6px;
+                }
+
+                .login-auth-meta-status {
+                    color: var(--accent-up);
+                }
+
+                .login-auth-meta-status > span {
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 50%;
+                    background: var(--accent-up);
+                }
+
+                .login-primary-action::after {
+                    content: "";
+                    position: absolute;
+                    top: 0;
+                    bottom: 0;
+                    left: -45%;
+                    width: 35%;
+                    transform: skewX(-18deg);
+                    background: rgba(255, 255, 255, 0.18);
+                    animation: loginActionSweep 4.8s ease-in-out infinite;
+                }
+
+                .login-trust-row {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 8px;
+                    margin-top: 18px;
+                    color: var(--text-muted);
+                    font-size: 0.65rem;
+                }
+
+                .login-trust-row span:first-child {
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 5px;
+                }
+
                 @keyframes pulse {
                     0%, 100% { opacity: 1; transform: scale(1); }
                     50% { opacity: 0.65; transform: scale(1.2); }
+                }
+                @keyframes loginAmbientFloat {
+                    0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+                    50% { transform: translate3d(-22px, 18px, 0) scale(1.05); }
+                }
+                @keyframes loginStatusPulse {
+                    0%, 100% { opacity: 1; transform: scale(1); }
+                    50% { opacity: 0.55; transform: scale(0.78); }
+                }
+                @keyframes loginSignalSweep {
+                    from { transform: scaleX(0); transform-origin: left; }
+                    to { transform: scaleX(1); transform-origin: left; }
+                }
+                @keyframes loginActionSweep {
+                    0%, 68% { left: -45%; opacity: 0; }
+                    76% { opacity: 1; }
+                    90%, 100% { left: 120%; opacity: 0; }
+                }
+                @keyframes loginCardEnter {
+                    from { opacity: 0; transform: translateY(14px) scale(0.985); }
+                    to { opacity: 1; transform: translateY(0) scale(1); }
                 }
                 @keyframes drawPath {
                     from { stroke-dasharray: 400; stroke-dashoffset: 400; }
@@ -1551,6 +1870,61 @@ export default function AuthPage() {
                 @keyframes slideInRsi {
                     from { transform: translateY(12px); opacity: 0; }
                     to { transform: translateY(0); opacity: 1; }
+                }
+
+                @media (max-width: 1023px) {
+                    .login-page {
+                        height: auto !important;
+                        min-height: 100dvh;
+                        overflow-x: hidden !important;
+                        overflow-y: auto !important;
+                    }
+
+                    .login-main {
+                        height: auto !important;
+                        min-height: calc(100dvh - var(--navbar-height));
+                        padding-top: 40px;
+                        padding-bottom: 48px;
+                    }
+
+                    .login-panel {
+                        padding-top: 8px;
+                    }
+                }
+
+                @media (max-width: 680px) {
+                    .login-main {
+                        gap: 28px;
+                        padding-right: 18px !important;
+                        padding-left: 18px !important;
+                    }
+
+                    .login-system-rail {
+                        grid-template-columns: 1fr;
+                    }
+
+                    .login-system-clock {
+                        border-right: 0;
+                        border-bottom: 1px solid var(--border-color);
+                    }
+
+                    .login-auth-card > div:last-child {
+                        padding: 22px 20px 20px !important;
+                    }
+
+                    .login-trust-row {
+                        flex-wrap: wrap;
+                    }
+                }
+
+                @media (prefers-reduced-motion: reduce) {
+                    .login-ambient,
+                    .login-live-dot,
+                    .login-system-signal.is-active::after,
+                    .login-primary-action::after,
+                    .login-auth-card {
+                        animation: none !important;
+                    }
                 }
             `}</style>
         </div>
