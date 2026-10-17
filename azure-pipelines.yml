@@ -1,73 +1,186 @@
 trigger:
-  - master
-  - develop
+  batch: true
+  branches:
+    include:
+      - master
+      - develop
+
+pr:
+  branches:
+    include:
+      - master
+      - develop
 
 pool:
-  vmImage: 'ubuntu-latest'
+  vmImage: ubuntu-latest
 
 variables:
-  # The name of your Azure Service Connection for the container registry
-  registryServiceConnection: 'candlesticks'
-  containerRegistry: 'candlesticks.azurecr.io'
+  registryServiceConnection: candlesticks
+  nodeVersion: 20.x
+  pythonVersion: '3.11'
+  backendImageRepository: candlesticks-python
+  frontendImageRepository: candlesticks-frontend
+  nginxImageRepository: candlesticks-nginx
+  postgresImageRepository: candlesticks-postgres
+  PIP_CACHE_DIR: $(Pipeline.Workspace)/.pip
 
-steps:
-  # ─── FRONTEND SECURITY AUDIT ──────────────────────────────────────────
-  - task: NodeTool@0
-    displayName: 'Install Node.js'
-    inputs:
-      versionSpec: '20.x'
+stages:
+  - stage: Validate
+    displayName: Validate application
+    jobs:
+      - job: Frontend
+        displayName: Frontend checks
+        steps:
+          - checkout: self
+            clean: true
 
-  - script: |
-      cd frontend
-      npm audit --audit-level=high
-    displayName: 'Audit Frontend Dependencies (Security Scan)'
-    continueOnError: true # Set to false to break the build on high/critical security issues
+          - task: NodeTool@0
+            displayName: Use Node.js $(nodeVersion)
+            inputs:
+              versionSpec: $(nodeVersion)
 
-  # ─── PYTHON TESTING, SYNTAX CHECK & SECURITY SCAN ────────────────────
-  - task: UsePythonVersion@0
-    displayName: 'Set up Python 3.10'
-    inputs:
-      versionSpec: '3.10'
+          - task: Cache@2
+            displayName: Cache npm packages
+            inputs:
+              key: 'npm | "$(Agent.OS)" | frontend/package-lock.json'
+              restoreKeys: |
+                npm | "$(Agent.OS)"
+              path: $(Pipeline.Workspace)/.npm
 
-  - script: |
-      python -m pip install --upgrade pip
-      pip install flake8 bandit
-    displayName: 'Install Code Quality & Security Tools'
+          - script: npm ci --cache $(Pipeline.Workspace)/.npm --prefer-offline
+            workingDirectory: frontend
+            displayName: Install frontend dependencies
 
-  - script: |
-      # Stop the build if there are critical Python syntax errors or undefined names
-      flake8 backend/ --exclude=backend/MarketDataFeedV3_pb2.py --count --select=E9,F63,F7,F82 --show-source --statistics
-    displayName: 'Run Syntax Check (Flake8)'
+          - script: npm run build
+            workingDirectory: frontend
+            displayName: Build React application
 
-  - script: |
-      # Run Python security scan using bandit (ignores generated Protobuf files)
-      bandit -r backend/ -x backend/MarketDataFeedV3_pb2.py -ll
-    displayName: 'Run Python Security Audit (Bandit)'
+          - script: npm audit --audit-level=high
+            workingDirectory: frontend
+            displayName: Audit frontend dependencies
+            continueOnError: true
 
-  - script: |
-      # Execute Python unit tests
-      python -m unittest discover -s backend/tests -p "test_*.py"
-    displayName: 'Run Backend Unit Tests'
+          - task: PublishPipelineArtifact@1
+            displayName: Publish frontend build
+            inputs:
+              targetPath: frontend/dist
+              artifact: frontend-dist
 
-  # ─── DOCKER BUILD & PUSH ──────────────────────────────────────────────
-  # Build the images defined in docker-compose.yml using Docker Compose v2
-  - task: DockerCompose@1
-    displayName: 'Build services'
-    inputs:
-      containerregistrytype: 'Container Registry'
-      dockerRegistryEndpoint: '$(registryServiceConnection)'
-      dockerComposeFile: 'docker-compose.yml'
-      action: 'Build services'
-      qualifyImageNames: true
-      additionalImageTags: '$(Build.BuildId)'
+      - job: Backend
+        displayName: Backend checks
+        steps:
+          - checkout: self
+            clean: true
 
-  # Push the images to Azure Container Registry (ACR) using Docker Compose v2
-  - task: DockerCompose@1
-    displayName: 'Push services'
-    inputs:
-      containerregistrytype: 'Container Registry'
-      dockerRegistryEndpoint: '$(registryServiceConnection)'
-      dockerComposeFile: 'docker-compose.yml'
-      action: 'Push services'
-      qualifyImageNames: true
-      additionalImageTags: '$(Build.BuildId)'
+          - task: UsePythonVersion@0
+            displayName: Use Python $(pythonVersion)
+            inputs:
+              versionSpec: $(pythonVersion)
+
+          - task: Cache@2
+            displayName: Cache Python packages
+            inputs:
+              key: 'pip | "$(Agent.OS)" | requirements.txt'
+              restoreKeys: |
+                pip | "$(Agent.OS)"
+              path: $(PIP_CACHE_DIR)
+
+          - script: |
+              python -m pip install --upgrade pip
+              python -m pip install -r requirements.txt
+              python -m pip install flake8 bandit
+            displayName: Install backend and quality dependencies
+
+          - script: python -m compileall -q backend
+            displayName: Compile Python sources
+
+          - script: >-
+              flake8 backend
+              --exclude=backend/MarketDataFeedV3_pb2.py
+              --count
+              --select=E9,F63,F7,F82
+              --show-source
+              --statistics
+            displayName: Check Python syntax and undefined names
+
+          - script: python -m unittest discover -s backend/tests -p "test_*.py"
+            displayName: Run backend unit tests
+
+          - script: bandit -r backend -x backend/MarketDataFeedV3_pb2.py -lll
+            displayName: Scan backend for high-severity security issues
+
+      - job: Compose
+        displayName: Docker Compose validation
+        steps:
+          - checkout: self
+            clean: true
+
+          - script: docker compose version
+            displayName: Show Docker Compose version
+
+          - script: docker compose config --quiet
+            displayName: Validate Docker Compose configuration
+
+  - stage: BuildAndPush
+    displayName: Build and publish container images
+    dependsOn: Validate
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: Containers
+        displayName: Publish images to Azure Container Registry
+        steps:
+          - checkout: self
+            clean: true
+
+          # backend and wsserver intentionally share this Python image.
+          - task: Docker@2
+            displayName: Build and push backend/WebSocket image
+            inputs:
+              command: buildAndPush
+              containerRegistry: $(registryServiceConnection)
+              repository: $(backendImageRepository)
+              Dockerfile: backend/Dockerfile
+              buildContext: .
+              tags: |
+                $(Build.BuildId)
+                $(Build.SourceVersion)
+                $(Build.SourceBranchName)
+
+          - task: Docker@2
+            displayName: Build and push frontend image
+            inputs:
+              command: buildAndPush
+              containerRegistry: $(registryServiceConnection)
+              repository: $(frontendImageRepository)
+              Dockerfile: frontend/Dockerfile
+              buildContext: .
+              tags: |
+                $(Build.BuildId)
+                $(Build.SourceVersion)
+                $(Build.SourceBranchName)
+
+          - task: Docker@2
+            displayName: Build and push Nginx image
+            inputs:
+              command: buildAndPush
+              containerRegistry: $(registryServiceConnection)
+              repository: $(nginxImageRepository)
+              Dockerfile: nginx/Dockerfile
+              buildContext: .
+              tags: |
+                $(Build.BuildId)
+                $(Build.SourceVersion)
+                $(Build.SourceBranchName)
+
+          - task: Docker@2
+            displayName: Build and push PostgreSQL image
+            inputs:
+              command: buildAndPush
+              containerRegistry: $(registryServiceConnection)
+              repository: $(postgresImageRepository)
+              Dockerfile: backend/postgres.Dockerfile
+              buildContext: .
+              tags: |
+                $(Build.BuildId)
+                $(Build.SourceVersion)
+                $(Build.SourceBranchName)
