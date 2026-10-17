@@ -1,0 +1,1 @@
+function e(){let{protocol:e,hostname:t,host:n}=window.location;return`${e===`https:`?`wss:`:`ws:`}//${n}/ws/`}export{e as t};
