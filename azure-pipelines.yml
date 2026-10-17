@@ -15,7 +15,7 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
-  registryServiceConnection: candlesticks
+  registryServiceConnection: containerimages
   nodeVersion: 20.x
   pythonVersion: '3.11'
   backendImageRepository: candlesticks-python
