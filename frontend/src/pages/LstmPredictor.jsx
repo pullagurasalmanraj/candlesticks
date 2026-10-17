@@ -519,6 +519,10 @@ export default function QuantMLStrategyEngine() {
                 .ml-drop-item:hover { background: var(--bg-tertiary); }
                 .ml-row-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
                 .ml-ph-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border-subtle); font-size: 0.78rem; }
+                .ml-timeframe-result { width: 100%; border: 0; border-bottom: 1px solid var(--border-subtle); background: transparent; color: var(--text-primary); font-family: inherit; text-align: left; cursor: pointer; padding: 10px 8px; border-radius: 4px; }
+                .ml-timeframe-result:hover { background: var(--bg-tertiary); }
+                .ml-timeframe-result[aria-pressed="true"] { background: var(--bg-tertiary); box-shadow: inset 3px 0 var(--accent-up); }
+                .ml-timeframe-result:focus-visible { outline: 2px solid var(--accent-up); outline-offset: 2px; }
                 .ml-prog-track { height: 6px; background: var(--bg-tertiary); border-radius: 3px; overflow: hidden; flex: 1; }
                 .ml-prog-fill { height: 100%; border-radius: 3px; background: var(--accent-blue,#3b82f6); transition: width .5s ease; }
                 .ml-sig-box { padding: 16px; border-radius: var(--card-radius); border: 1.5px solid; text-align: center; }
@@ -663,13 +667,17 @@ export default function QuantMLStrategyEngine() {
                                         const r = labelResults[tf];
                                         const ok = r?.market_rows > 0 || r?.status === "SUCCESS";
                                         return (
-                                            <div key={tf} className="ml-ph-row">
-                                                <span style={{ fontWeight: 700 }}>{tf}</span>
+                                            <button key={tf} type="button"
+                                                className="ml-ph-row ml-timeframe-result"
+                                                aria-pressed={timeframe === tf}
+                                                aria-label={`Select ${tf} pipeline timeframe`}
+                                                onClick={() => handleGlobalTimeframeChange(tf)}>
+                                                <span style={{ fontWeight: 700 }}>{tf}{timeframe === tf ? " · Selected" : ""}</span>
                                                 {r._running ? <Badge tone="amber">RUNNING</Badge>
                                                     : r.error ? <Badge tone="down">ERROR</Badge>
                                                         : ok ? <Badge tone="up">{r.market_rows?.toLocaleString()} rows</Badge>
                                                             : <Badge tone="neutral">—</Badge>}
-                                            </div>
+                                            </button>
                                         );
                                     })}
                                 </div>
