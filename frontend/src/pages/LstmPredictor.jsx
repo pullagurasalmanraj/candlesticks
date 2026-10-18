@@ -192,6 +192,8 @@ export default function QuantMLStrategyEngine() {
     const [labelTf, setLabelTf] = usePersistedState("labelTf", "15m");
     const [labelLoading, setLabelLoading] = useState(false);
     const [labelResults, setLabelResults] = usePersistedState("labelResults", {});
+    const [labelResultTf, setLabelResultTf] = useState(null);
+    const viewedLabelTf = labelResultTf || (labelResults[timeframe] ? timeframe : TF_ALL.find(tf => labelResults[tf]));
 
     // Step 2 — Raw Baseline Strategy Outcomes — Persisted across page refresh
     const [rawOutcomeLoading, setRawOutcomeLoading] = useState(false);
@@ -306,6 +308,7 @@ export default function QuantMLStrategyEngine() {
     const handleLabel = async () => {
         if (!symbol) return alert("Select a symbol first");
         const tf = timeframe;
+        setLabelResultTf(tf);
         setLabelLoading(true);
         setLabelResults(p => ({ ...p, [tf]: { _running: true } }));
         try {
@@ -654,11 +657,11 @@ export default function QuantMLStrategyEngine() {
                                 )}
                             </div>
 
-                            {labelResults[timeframe] && (() => {
-                                const r = labelResults[timeframe];
+                            {labelResults[viewedLabelTf] && (() => {
+                                const r = labelResults[viewedLabelTf];
                                 if (r._running) return <Alert type="info">Running state machine… 2–5 min for large datasets.</Alert>;
                                 if (r.error) return <Alert type="error">{r.error}</Alert>;
-                                return <Alert type="success"><strong>{r.market_rows?.toLocaleString()}</strong> market rows labeled · <strong>{r.rule_rows?.toLocaleString()}</strong> rule rows · {r.elapsed_sec}s</Alert>;
+                                return <Alert type="success"><strong>{viewedLabelTf}</strong> · <strong>{r.market_rows?.toLocaleString()}</strong> market rows labeled · <strong>{r.rule_rows?.toLocaleString()}</strong> rule rows · {r.elapsed_sec}s</Alert>;
                             })()}
 
                             {Object.keys(labelResults).length > 0 && (
@@ -669,10 +672,10 @@ export default function QuantMLStrategyEngine() {
                                         return (
                                             <button key={tf} type="button"
                                                 className="ml-ph-row ml-timeframe-result"
-                                                aria-pressed={timeframe === tf}
-                                                aria-label={`Select ${tf} pipeline timeframe`}
-                                                onClick={() => handleGlobalTimeframeChange(tf)}>
-                                                <span style={{ fontWeight: 700 }}>{tf}{timeframe === tf ? " · Selected" : ""}</span>
+                                                aria-pressed={viewedLabelTf === tf}
+                                                aria-label={`View saved ${tf} labeling results`}
+                                                onClick={() => setLabelResultTf(tf)}>
+                                                <span style={{ fontWeight: 700 }}>{tf}{viewedLabelTf === tf ? " · Selected" : ""}</span>
                                                 {r._running ? <Badge tone="amber">RUNNING</Badge>
                                                     : r.error ? <Badge tone="down">ERROR</Badge>
                                                         : ok ? <Badge tone="up">{r.market_rows?.toLocaleString()} rows</Badge>
