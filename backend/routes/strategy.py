@@ -28,7 +28,9 @@ from routes.strategy_logic import (
     invalidate_phase_params_cache
 )
 
+from routes.strategy_counterfactual import CounterfactualResearch, _simulate_counterfactual_trade
 from routes.strategy_diagnostics import SafetyWaterfallAudit
+from routes.strategy_dates import _research_date_window, _research_window_metadata
 
 strategy_bp = Blueprint("strategy", __name__)
 
@@ -1199,16 +1201,16 @@ def offline_label_market_context():
 def calibrate_phase_params():
     """
     Compute optimal TP, SL, and lookahead for every phase from historical
-    MFE/MAE outcomes already stored in strategy_outcomes.
+    configured-horizon MFE/MAE outcomes stored in strategy_outcomes.
 
     HOW IT WORKS
     ---------------------------------------
     For each market_phase with >= MIN_SAMPLES rows:
 
-      optimal_tp = p40(full-horizon MFE / ATR)
+      optimal_tp = p40(configured-horizon MFE / ATR)
         Roughly 60% of historical samples reached this favourable excursion.
 
-      optimal_sl = p75(abs(full-horizon MAE) / ATR)
+      optimal_sl = p75(abs(configured-horizon MAE) / ATR)
         Roughly 75% of historical samples stayed within this adverse excursion.
 
       Candidate win rate is recomputed for the proposed barriers. A sample is a
@@ -1254,10 +1256,16 @@ def calibrate_phase_params():
                 "Specify from_date and to_date for out-of-sample walk-forward calibration."
             )
 
-        from_dt = pd.to_datetime(raw_from or "2000-01-01", utc=True)
-        to_dt = pd.to_datetime(raw_to or datetime.now(timezone.utc), utc=True)
-        if from_dt > to_dt:
-            return jsonify({"error": "from_date must be before to_date"}), 400
+        try:
+            from_dt, to_dt = _research_date_window(raw_from, raw_to)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        date_window = _research_window_metadata(from_dt, to_dt)
+        # Keep calibrated_to's existing INCLUSIVE metadata convention. The
+        # query bound is exclusive; its preceding microsecond is the last
+        # covered PostgreSQL timestamp. The existing <= overlap guard remains
+        # safe for legacy rows and permits adjacent half-open day windows.
+        calibrated_to_inclusive = to_dt - pd.Timedelta(microseconds=1)
 
         MIN_SAMPLES = int(data.get("min_samples", 30))
         # p40 MFE is reached by roughly 60% of samples. p75 MAE means roughly
@@ -1291,12 +1299,14 @@ def calibrate_phase_params():
             total_df = read_sql_safe(
                 """
                 SELECT COUNT(*) AS total_rows,
-                       COUNT(mfe) AS has_mfe,
-                       COUNT(mae) AS has_mae,
+                       COUNT(horizon_mfe) AS has_horizon_mfe,
+                       COUNT(horizon_mae) AS has_horizon_mae,
+                       COUNT(horizon_mfe_r) AS has_horizon_mfe_r,
+                       COUNT(horizon_mae_r) AS has_horizon_mae_r,
                        COUNT(exit_after_candles) AS has_exit_after
                 FROM strategy_outcomes
                 WHERE symbol=%s AND exchange=%s AND timeframe=%s
-                  AND ts BETWEEN %s AND %s
+                  AND ts >= %s AND ts < %s
             """,
                 conn,
                 params=[symbol, exchange, timeframe, from_dt, to_dt],
@@ -1305,13 +1315,13 @@ def calibrate_phase_params():
             total_rows = (
                 int(total_df.iloc[0]["total_rows"]) if not total_df.empty else 0
             )
-            has_mfe = int(total_df.iloc[0]["has_mfe"]) if not total_df.empty else 0
+            has_horizon_mfe = int(total_df.iloc[0]["has_horizon_mfe"]) if not total_df.empty else 0
 
             df = read_sql_safe(
                 """
                 SELECT so.market_phase,
-                       so.mfe, so.mae,
-                       so.mfe_r, so.mae_r,
+                       so.horizon_mfe, so.horizon_mae,
+                       so.horizon_mfe_r, so.horizon_mae_r,
                        so.exit_after_candles,
                        so.realized_r,
                        COALESCE(so.atr_14, 0) AS atr_14,
@@ -1321,9 +1331,11 @@ def calibrate_phase_params():
                   ON i.symbol=so.symbol AND i.exchange=so.exchange
                  AND i.timeframe=so.timeframe AND i.ts=so.ts
                 WHERE so.symbol=%s AND so.exchange=%s AND so.timeframe=%s
-                  AND so.ts BETWEEN %s AND %s
-                  AND so.mfe IS NOT NULL
-                  AND so.mae IS NOT NULL
+                  AND so.ts >= %s AND so.ts < %s
+                  AND so.horizon_mfe IS NOT NULL
+                  AND so.horizon_mae IS NOT NULL
+                  AND so.horizon_mfe_r IS NOT NULL
+                  AND so.horizon_mae_r IS NOT NULL
                   AND so.exit_after_candles IS NOT NULL
             """,
                 conn,
@@ -1334,26 +1346,26 @@ def calibrate_phase_params():
             if total_rows == 0:
                 msg = (
                     f"No rows in strategy_outcomes for {symbol}/{timeframe}. "
-                    "Most likely cause: calc-strategy-outcomes crashed before "
-                    "inserting rows (e.g. missing DB column). "
-                    "Run migration.sql, then re-run calc-strategy-outcomes."
+                    "Regenerate clean outcomes for the requested window before calibration."
                 )
-            elif has_mfe == 0:
+            elif has_horizon_mfe == 0:
                 msg = (
-                    f"{total_rows} rows exist but raw MFE is NULL in all of them. "
-                    "Re-run calc-strategy-outcomes to populate outcome columns."
+                    f"{total_rows} rows exist but configured-horizon MFE is NULL in all of them. "
+                    "Regenerate clean outcomes before explicitly running calibration."
                 )
             else:
                 msg = (
-                    f"{total_rows} total rows, {has_mfe} have raw MFE populated, "
-                    "but none passed the NOT NULL filter. Re-run calc-strategy-outcomes."
+                    f"{total_rows} total rows, {has_horizon_mfe} have horizon MFE populated, "
+                    "but none have complete horizon excursions and exit timing. Regenerate clean outcomes."
                 )
             return jsonify(
                 {
                     "status": "NO_DATA",
                     "message": msg,
                     "total_rows": total_rows,
+                    "date_window": date_window,
                     "phases": {},
+                    "excursion_source": "horizon",
                 }
             )
 
@@ -1372,23 +1384,27 @@ def calibrate_phase_params():
                 }
                 continue
 
-            # Excursions are converted to ATR multiples. PHASE_MODEL stores
-            # TP and SL in ATR multiples; the old code calibrated them from
-            # R-multiples tied to the previous stop, mixing incompatible units.
-            valid = grp["atr_14"].notna() & (grp["atr_14"] > 0)
+            # trade_* measures actual trade life; horizon_* is the ONLY TP/SL
+            # calibration source; session_* and legacy mfe/mae remain research
+            # features. Never fall back to session metrics for older rows.
+            # Risk parameters are ATR multiples, so derive them from raw horizon
+            # excursions / ATR. Descriptive *_r statistics use source horizon R.
+            horizon_columns = ("horizon_mfe", "horizon_mae", "horizon_mfe_r", "horizon_mae_r")
+            valid = (np.isfinite(grp["atr_14"]) & (grp["atr_14"] > 0)
+                     & np.isfinite(grp[list(horizon_columns)]).all(axis=1))
             grp = grp.loc[valid].copy()
             n = len(grp)
             if n < MIN_SAMPLES:
                 results[phase] = {
-                    "status": "INSUFFICIENT_VALID_ATR_DATA",
+                    "status": "INSUFFICIENT_VALID_HORIZON_DATA",
                     "samples": n,
                     "min_required": MIN_SAMPLES,
                     "fallback": "using PHASE_MODEL defaults",
                 }
                 continue
 
-            mfe_atr_vals = (grp["mfe"].clip(lower=0) / grp["atr_14"]).dropna()
-            mae_atr_vals = (grp["mae"].abs() / grp["atr_14"]).dropna()
+            mfe_atr_vals = (grp["horizon_mfe"].clip(lower=0) / grp["atr_14"]).dropna()
+            mae_atr_vals = (grp["horizon_mae"].abs() / grp["atr_14"]).dropna()
             exit_vals = grp["exit_after_candles"].dropna()
 
             p25_mfe = float(np.percentile(mfe_atr_vals, 25))
@@ -1466,7 +1482,7 @@ def calibrate_phase_params():
             gross_reward_r = tp / sl
             net_tp = gross_reward_r - avg_cost_r - slip_r
 
-            # Estimate candidate hit rate from full-horizon, uncensored
+            # Estimate candidate hit rate from configured-horizon, uncensored
             # excursions. Bars touching both barriers are counted as losses,
             # matching the conservative same-bar convention used by simulation.
             tp_reached = mfe_atr_vals >= tp
@@ -1544,19 +1560,19 @@ def calibrate_phase_params():
                     int(la_min),
                     int(n),
                     float(win_rate),
-                    float(mfe_atr_vals.mean() / sl),
-                    float(-mae_atr_vals.mean() / sl),
-                    float(p25_mfe / sl),
-                    float(p50_mfe / sl),
-                    float(p75_mfe / sl),
-                    float(-selected_mae / sl),
+                    float(grp["horizon_mfe_r"].mean()),
+                    float(grp["horizon_mae_r"].mean()),
+                    float(np.percentile(grp["horizon_mfe_r"], 25)),
+                    float(np.percentile(grp["horizon_mfe_r"], 50)),
+                    float(np.percentile(grp["horizon_mfe_r"], 75)),
+                    float(np.percentile(grp["horizon_mae_r"], 25)),
                     int(p75_exit),
                     bool(
                         viable
                     ),  # Constraint 2: written to DB so _load_phase_params can filter
                     now,
                     from_dt,
-                    to_dt,
+                    calibrated_to_inclusive,
                 )
             )
 
@@ -1628,8 +1644,10 @@ def calibrate_phase_params():
             "sl_percentile": SL_PERCENTILE,
             "la_percentile": LA_PERCENTILE,
             "calibrated_from": from_dt.isoformat(),
-            "calibrated_to": to_dt.isoformat(),
+            "calibrated_to": calibrated_to_inclusive.isoformat(),
+            "date_window": date_window,
             "phases": results,
+            "excursion_source": "horizon",
         }
         if date_warning:
             res_payload["calibration_warning"] = date_warning
@@ -1650,21 +1668,24 @@ def calc_strategy_outcomes():
         diagnostic_mode = data.get("diagnostic_mode", False)
         if not isinstance(diagnostic_mode, bool):
             return jsonify({"error": "diagnostic_mode must be a JSON boolean"}), 400
+        counterfactual_mode = data.get("counterfactual_mode", False)
+        if not isinstance(counterfactual_mode, bool):
+            return jsonify({"error": "counterfactual_mode must be a JSON boolean"}), 400
         symbol = (data.get("symbol") or "").upper().strip()
         timeframe = (data.get("timeframe") or "").lower().strip()
         exchange = (data.get("exchange") or "NSE").upper().strip()
-        to_dt = pd.to_datetime(
-            data.get("to_date") or datetime.now(timezone.utc), utc=True
-        )
-        # Default from_date: all available data --- NOT hardcoded 180 days.
-        # The 180-day default silently dropped older labelled bars from outcome
-        # simulation whenever label-market-context had been run on > 6 months.
-        # Use from_date explicitly in the request to restrict the window.
-        # For ML training you want ALL outcomes, not just the last 6 months.
-        from_dt = pd.to_datetime(data.get("from_date") or "2000-01-01", utc=True)
+        # Date-only bounds cover complete IST calendar days. All SELECTs and
+        # replacement cleanup share exactly the same UTC [from_dt, to_dt) range.
+        # An omitted start still includes all available history, not 180 days.
+        try:
+            from_dt, to_dt = _research_date_window(data.get("from_date"), data.get("to_date"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        date_window = _research_window_metadata(from_dt, to_dt)
 
         # cost_r_gate: skip trades where round-trip costs exceed this fraction of R.
-        # Default 0.70 --- costs must not exceed 70% of 1R. Pass 1.0 to disable.
+        # Default 0.70 --- costs must not exceed 70% of 1R. A value of 1.0
+        # remains an active 100%-of-R threshold; disabling is not implemented.
         cost_r_gate = float(data.get("cost_r_gate", COST_R_MAX_GATE))
 
         try:
@@ -1676,8 +1697,6 @@ def calc_strategy_outcomes():
             return jsonify({"error": "symbol and timeframe required"}), 400
         if timeframe not in {"1m", "3m", "5m", "15m"}:
             return jsonify({"error": f"Unsupported timeframe {timeframe}"}), 400
-        if from_dt > to_dt:
-            return jsonify({"error": "from_date must be before to_date"}), 400
 
         with get_db_conn() as conn:
             schema_columns = _outcome_schema_columns(conn)
@@ -1712,7 +1731,7 @@ def calc_strategy_outcomes():
                   ON i.symbol=mc.symbol AND i.exchange=mc.exchange
                  AND i.timeframe=mc.timeframe AND i.ts=mc.ts
                 WHERE i.symbol=%s AND i.exchange=%s AND i.timeframe=%s
-                  AND i.ts BETWEEN %s AND %s
+                  AND i.ts >= %s AND i.ts < %s
                 ORDER BY i.ts
             """,
                 conn,
@@ -1738,7 +1757,7 @@ def calc_strategy_outcomes():
                 SELECT ts, strategy_id, rule_eligibility
                 FROM rule_evaluations
                 WHERE symbol=%s AND exchange=%s AND timeframe=%s
-                  AND ts BETWEEN %s AND %s
+                  AND ts >= %s AND ts < %s
             """,
                 conn,
                 params=[symbol, exchange, timeframe, from_dt, to_dt],
@@ -1755,7 +1774,7 @@ def calc_strategy_outcomes():
                        COALESCE((condition_snapshot->>'orb_location')::int, 0) AS orb_location
                 FROM rule_evaluations
                 WHERE symbol=%s AND exchange=%s AND timeframe=%s
-                  AND ts BETWEEN %s AND %s
+                  AND ts >= %s AND ts < %s
                   AND strategy_id = 'ORB'
                   AND condition_snapshot IS NOT NULL
             """,
@@ -1968,6 +1987,7 @@ def calc_strategy_outcomes():
         safety_skip_counts = Counter()
         story_eligible_bars = 0
         safety_audit = SafetyWaterfallAudit(retain_rows=diagnostic_mode)
+        counterfactual_candidates = []
         story_arrays = {name: df[name].to_numpy() for name in STORY_INPUT_COLUMNS}
 
         for i in range(N):
@@ -2003,6 +2023,8 @@ def calc_strategy_outcomes():
                 eod_bar_threshold=_EOD_BOD_THRESHOLD, eod_lookahead_threshold=_EOD_LA_MIN_GATE,
                 min_rules=min_rules_fired, rule_count=audit_rule_count,
             )
+            if counterfactual_mode:
+                counterfactual_candidates.append((i, audit))
             if not cfg:
                 safety_skip_counts["MISSING_PHASE_CONFIG"] += 1
                 safety_audit.finish(audit, "MISSING_PHASE_CONFIG")
@@ -2260,8 +2282,8 @@ def calc_strategy_outcomes():
                 entry, session_highs, session_lows,
                 exit_after, la_capped, R, is_short,
             )
-            # Legacy mfe/mae remain full-session research metrics for consumers
-            # such as calibrate-phase-params; explicit columns remove ambiguity.
+            # Legacy mfe/mae remain full-session research metrics for existing
+            # consumers. TP/SL calibration uses only the explicit horizon_* fields.
             mfe = excursions["session_mfe"]
             mae = excursions["session_mae"]
             mfe_r = mfe / R
@@ -2393,6 +2415,38 @@ def calc_strategy_outcomes():
         if N != len(rows) + diagnostics["total_skipped"]:
             raise RuntimeError("Outcome rejection counts do not reconcile")
 
+        if counterfactual_mode:
+            # The real waterfall above has finalized production eligibility.
+            # Research simulation never changes those decisions or appends to
+            # `rows`, the production-only writer/training population.
+            research = CounterfactualResearch()
+            for i, audit in counterfactual_candidates:
+                cfg = _cfg_cache.get(phases[i])
+                entry_idx = i + 1
+                unavailable = None
+                if not cfg:
+                    unavailable = "MISSING_PHASE_CONFIG"
+                elif entry_idx >= N:
+                    unavailable = "NO_NEXT_BAR"
+                elif session_dates[entry_idx] != session_dates[i]:
+                    unavailable = "NEXT_BAR_OUTSIDE_SESSION"
+                if unavailable:
+                    simulation = {"simulation_status": "UNAVAILABLE", "simulation_skip_reason": unavailable}
+                else:
+                    session_stop = int(session_end_idx[entry_idx]) + 1
+                    simulation = _simulate_counterfactual_trade(
+                        raw_entry=opens[entry_idx], atr=atrs[i], cfg=cfg,
+                        highs=highs[entry_idx:session_stop], lows=lows[entry_idx:session_stop],
+                        closes=closes[entry_idx:session_stop], timestamps=ts_arr[entry_idx:session_stop],
+                        horizon_n=min(_la_cache.get(phases[i], 2), session_stop - entry_idx),
+                        is_short=audit["trade_direction"] == "SHORT",
+                    )
+                research.add(audit, simulation, atr=atrs[i])
+            counterfactual_summary = research.summary()
+            if (counterfactual_summary["total_story_eligible"] != story_eligible_bars
+                    or counterfactual_summary["production_eligible"] != len(rows)):
+                raise RuntimeError("Counterfactual research does not reconcile with production audit")
+
         extra_columns_sql = ", ".join(OUTCOME_STORY_COLUMNS)
         extra_updates_sql = ", ".join(f"{name}=EXCLUDED.{name}" for name in OUTCOME_STORY_COLUMNS)
         OUTCOME_SQL = f"""
@@ -2444,7 +2498,7 @@ def calc_strategy_outcomes():
                 {extra_updates_sql}
         """
 
-        if not diagnostic_mode:
+        if not diagnostic_mode and not counterfactual_mode:
             with get_db_conn() as conn:
                 with conn.cursor() as cur:
                     # A rerun is a replacement for the requested window. Without
@@ -2454,7 +2508,7 @@ def calc_strategy_outcomes():
                         """
                         DELETE FROM strategy_outcomes
                         WHERE symbol=%s AND exchange=%s AND timeframe=%s
-                          AND ts BETWEEN %s AND %s
+                          AND ts >= %s AND ts < %s
                         """,
                         (symbol, exchange, timeframe, from_dt, to_dt),
                     )
@@ -2464,9 +2518,10 @@ def calc_strategy_outcomes():
         elapsed = round(time.time() - t0, 1)
         res_payload = {
             "status": "SUCCESS",
-            "rows_written": 0 if diagnostic_mode else len(rows),
+            "rows_written": 0 if diagnostic_mode or counterfactual_mode else len(rows),
             "outcomes_generated": len(rows),
             "diagnostic_mode": diagnostic_mode,
+            "date_window": date_window,
             "elapsed_sec": elapsed,
             "phases_calibrated": n_calibrated,
             "phases_default": len(_cfg_cache) - n_calibrated - n_unviable_fallback,
@@ -2490,6 +2545,15 @@ def calc_strategy_outcomes():
                 "Calibrated parameters were ignored and PHASE_MODEL defaults were used. "
                 "Use a request window starting after calibration for out-of-sample evaluation."
             )
+        if counterfactual_mode:
+            res_payload.update(
+                status="COUNTERFACTUAL", counterfactual_mode=True, production_rules_unchanged=True,
+                counterfactual_rows=research.rows, counterfactual_summary=counterfactual_summary,
+                counterfactual_outcomes_generated=counterfactual_summary["simulated"],
+            )
+            if diagnostic_mode:
+                res_payload["audit_rows"] = safety_audit.rows
+            return jsonify(res_payload)
         if diagnostic_mode:
             res_payload.update(status="DIAGNOSTIC", audit_rows=safety_audit.rows)
             return jsonify(res_payload)

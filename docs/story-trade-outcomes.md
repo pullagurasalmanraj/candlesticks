@@ -13,8 +13,9 @@ Writes replaced the requested evaluation window in one transaction, using
 
 Changes are limited to `backend/routes/strategy.py`, reusable helpers in
 `backend/routes/strategy_logic.py`, an additive migration, and tests. State-machine
-labels, `PHASE_MODEL` values, calibration code, timestamp conversions, routes and
-live execution are unchanged. No recalibration is performed.
+labels, `PHASE_MODEL` values, timestamp conversions, routes and live execution
+are unchanged. Calibration now reads horizon excursions as documented below;
+no recalibration is performed automatically.
 
 ## New research flow
 
@@ -115,9 +116,9 @@ window and returns HTTP 400 `NO_OUTCOMES` with diagnostics. Archive previous run
 before regeneration if historical comparisons are needed. Unrequested windows
 are unchanged.
 
-Existing calibration/ML consumers still read legacy excursion columns and phase
-features. Those semantics are preserved, but the selected research population is
-intentionally different. Live/ML direction resolution is outside this change;
+Existing ML consumers still read legacy excursion columns and phase features.
+Those semantics are preserved. Calibration uses explicit horizon fields only;
+the selected research population is intentionally different. Live/ML direction resolution is outside this change;
 consumers that derive execution direction from legacy phase must be aligned with
 `trade_direction` before using these story-directed outcomes for execution.
 
@@ -262,3 +263,153 @@ case matching the 47 bull, 44 bear, 14 gap counts and the 71 cost, 17 structure,
 13 signal, 2 macro, 1 exhaustion rejections. It separately verifies cost overlap,
 percentiles and grouping, read-only behavior, early prerequisite failures,
 unknown data, and agreement between normal and diagnostic simulation.
+
+## Research date windows
+
+Outcome generation, diagnostic mode and phase calibration use the same window
+parser. Date-only `YYYY-MM-DD` values describe **IST calendar days**, including
+the entire requested end date. All three outcome/rule reads, outcome replacement
+cleanup, and both calibration reads use half-open UTC parameters:
+
+```sql
+ts >= from_inclusive AND ts < to_exclusive
+```
+
+For `from_date: 2025-11-20` and `to_date: 2025-12-10`, the bounds are:
+
+```text
+IST: 2025-11-20 00:00:00 inclusive -> 2025-12-11 00:00:00 exclusive
+UTC: 2025-11-19 18:30:00 inclusive -> 2025-12-10 18:30:00 exclusive
+```
+
+The Dec 10 trading session is included. A row at the following IST midnight is
+excluded from both reads and cleanup. The same date for both fields is a valid
+one-day window, including leap days and year boundaries.
+
+Explicit ISO timestamps retain their exact instant; their end is also exclusive,
+with no extra day added. Supply `Z` or an explicit offset such as `+05:30` to make
+timestamp intent clear. Timezone-naive timestamps retain the previous UTC
+interpretation. Timestamp precision must fit PostgreSQL's microsecond resolution.
+Invalid or reversed/empty windows return HTTP 400 before database access.
+
+An omitted start still means all available history (default Jan 1, 2000 IST).
+An omitted end is the current UTC instant, not the end of the current day. The
+response's `date_window` reports `calendar_timezone`, `from_inclusive` and
+`to_exclusive` so the exact selected range is visible during diagnostics.
+
+`phase_params.calibrated_to` and the existing calibration overlap guard retain
+their **inclusive** metadata convention for compatibility with historical rows.
+New calibrations store `to_exclusive - 1 microsecond` in that column and return
+the exact half-open bounds separately in `date_window`. Thus a calibration ending
+at Dec 11 IST midnight excludes that instant, and evaluation starting exactly
+there is safely out-of-sample. A legacy inclusive calibration timestamp equal to
+the evaluation start still triggers the unchanged overlap protection. No schema
+migration, threshold changes or automatic recalibration are needed for this fix.
+
+`test_strategy_date_windows.py` covers complete end-day inclusion, exact midnight
+boundaries, matching read/delete parameters, date-only and explicit timestamps,
+single-day/leap-day windows, invalid requests, calibration metadata, and adjacent
+out-of-sample windows. Database operations in these tests are mocked.
+
+## Horizon-only calibration
+
+`calibrate_phase_params()` reads `horizon_mfe`, `horizon_mae`, `horizon_mfe_r`, and
+`horizon_mae_r` exclusively. Counts, sample filters, percentile inputs and stored
+descriptive statistics all refer to these configured-horizon excursions. There
+is no fallback to legacy/session fields. Old rows with null horizon fields are
+excluded; regenerate clean outcomes before explicitly calling calibration.
+
+- `trade_*` describes actual trade life through the exit candle.
+- `horizon_*` supplies TP/SL calibration evidence within the configured lookahead.
+- `session_*` and the legacy excursion columns remain broader research/ML data.
+
+TP/SL parameters remain ATR multiples, derived from raw horizon excursions divided
+by ATR. Descriptive `phase_params` R-statistic columns (`avg_mfe_r`, `avg_mae_r`,
+`p25_mfe_r`, etc.) summarize the source `horizon_*_r` observations using their
+original initial risk, rather than mixing session metrics or the newly proposed
+stop distance into those statistics. Constraints, percentile defaults and the
+lookahead calculation are unchanged. The response reports `excursion_source:
+"horizon"`. No parameter values are changed until calibration is explicitly run.
+
+## Response-only counterfactual mode
+
+Add `"counterfactual_mode": true` to the existing outcome-generation request.
+Use a bounded research window for response-sized runs. All date-range handling
+is unchanged. No additional schema migration or research-table creation is needed.
+
+```json
+{
+  "symbol": "ITC",
+  "timeframe": "5m",
+  "counterfactual_mode": true
+}
+```
+
+The endpoint first runs the existing production waterfall without changing any
+threshold or gate. After all production decisions are final, a separate research
+pass simulates every story-eligible setup, including those rejected by any safety
+gate. Both paths use the existing next-bar open, effective phase TP/SL/lookahead,
+session boundary cap, slippage, transaction costs, SHORT-aware exit simulator,
+SL-first same-bar handling, and three excursion helpers. Research simulation
+cannot influence the already finalized eligibility decision.
+
+Counterfactual requests never delete, insert or update database rows, including
+the otherwise production-eligible subset. They never append rejected setups to
+the production writer's rows. No counterfactual dataset can enter normal SQL
+statistics or ML training through this endpoint. No calibration is triggered.
+Normal requests and standalone `diagnostic_mode` keep their previous behavior.
+Both flags may be combined to return the unchanged `audit_rows` alongside the
+separate research results.
+
+Responses include:
+
+- `status: COUNTERFACTUAL`, `counterfactual_mode: true`, and
+  `production_rules_unchanged: true`.
+- `rows_written: 0`. Existing `outcomes_generated` / `eligible_trades` still count
+  the production-eligible population, not the hypothetical executed population.
+- `counterfactual_outcomes_generated`: successfully simulated research setups.
+- `counterfactual_rows`: one row for every story-eligible setup, including context,
+  independent safety flags/applicability, failed gates, actual production
+  eligibility/first skip reason, entry/risk/cost data, exit, gross/net R, and all
+  three excursion windows.
+- `counterfactual_summary`: production eligible/rejected counts, simulated and
+  unavailable counts, overall statistics, fixed cost buckets, independent gate
+  comparisons, and statistics by setup key, direction and production eligibility.
+
+Missing phase config, invalid ATR/R, absent same-session next entry, or unusable
+future prices make simulation impossible. Such a setup still has a response row
+with `simulation_status: UNAVAILABLE`, a `simulation_skip_reason`, and null outcome
+metrics. It is counted in `total_story_eligible` and the relevant group population,
+but never treated as a zero-return trade or included in outcome percentages.
+
+`cost_r` on a counterfactual row is the slippage-adjusted round-trip cost divided
+by actual initial R, exactly the cost deducted from `realized_r_gross` to obtain
+`realized_r_net`. `gate_cost_r` separately retains the raw-entry preview used by
+the unchanged cost gate. `cost_r_gate` records the active request threshold.
+Near a threshold boundary, these two cost measures can differ slightly.
+
+Research cost buckets use actual `cost_r`: `<=0.70`, `(0.70,1.00]`, `(1.00,1.25]`,
+and `>1.25`. These are reporting bins, not production threshold changes. A cost
+gate threshold of `1.0` still rejects costs above `1.0R`; it does not disable the gate.
+
+Every outcome statistics group reports:
+
+- `N`: successfully simulated observations; `story_eligible_N`: all members;
+  `unavailable_N`: members without a valid simulated outcome.
+- TP/SL/time-exit percentages using `N` as denominator.
+- Mean and median gross/net R.
+- Trade-life MFE-R and MAE-R p25/p50/p75.
+
+Gate comparisons have mutually exclusive `pass`, `fail`, `not_applicable`, and
+`unavailable` cohorts, preserving opening-gap and other bypass semantics. Each
+cohort has the same outcome statistics, so an inactive gate is not silently
+counted as a successfully evaluated filter. Empty groups return null percentages
+and metrics. Research results measure hypothetical outcomes; they do not loosen
+production eligibility or authorize execution.
+
+`test_horizon_calibration.py` verifies horizon-only SQL/statistics, resistance to
+large changes in legacy/session excursions, and no legacy fallback.
+`test_counterfactual_research.py` covers all safety rejections, parity with real
+production outcomes, independent eligibility, SHORT and same-bar semantics,
+session boundaries, unavailable data, exact bucket edges/group statistics, and
+the absence of research database writes.
