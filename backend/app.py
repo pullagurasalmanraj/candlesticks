@@ -71,6 +71,7 @@ from routes.candles import candles_bp
 from routes.instruments import instruments_bp
 from routes.indicators import indicators_bp
 from routes.strategy import strategy_bp
+from routes.strategy_comparison import comparison_bp
 from routes.ml import ml_bp
 from routes.live import live_bp
 from routes.logos import logos_bp
@@ -82,6 +83,7 @@ app.register_blueprint(candles_bp)
 app.register_blueprint(instruments_bp)
 app.register_blueprint(indicators_bp)
 app.register_blueprint(strategy_bp)
+app.register_blueprint(comparison_bp)
 app.register_blueprint(ml_bp)
 app.register_blueprint(live_bp)
 app.register_blueprint(logos_bp)

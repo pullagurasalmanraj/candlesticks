@@ -1,5 +1,9 @@
 # Story-aware strategy outcomes
 
+For separate read-only entry-delay and TP/SL comparisons, see
+[entry/geometry research](entry-geometry-research.md). That runner never changes
+this production flow or writes outcome/ML tables.
+
 ## Previous flow and scope
 
 `calc_strategy_outcomes()` joined `indicators` and `market_context` by symbol,
