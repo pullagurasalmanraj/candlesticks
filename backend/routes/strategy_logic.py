@@ -204,7 +204,7 @@ def json_safe(v):
 # execution prices, configurable brokerage, sell-side STT, NSE/IPFT, SEBI,
 # buy-side stamp duty and GST on taxable fees only. Slippage is separate:
 # one tick at entry and one at TP exit; SL/TIME have no additional exit tick.
-# The legacy eligibility proxy below stays frozen pending research review.
+# COST_GATE previews these same fees at a flat exit price, without future data.
 
 
 # ------ Swing detection --- price structure ------------------------------------------------------------------------------------
@@ -320,15 +320,14 @@ def _compute_macro_regime(close: float, ema_200: float, atr_pct: float = 0.01) -
 
 SLIPPAGE_PTS = 0.05  # 1 tick slippage --- applied on entry AND TP exit
 
-# Compatibility alias for the unchanged production gate and calibration proxy.
+# Compatibility alias for calibration and legacy comparison only.
 # This is not the itemized fee model and must not be subtracted from net returns.
 TOTAL_COST_PCT = LEGACY_GATE_COST_PCT
 
 # FIX 4: Maximum cost_r before a trade is skipped as unviable.
-# cost_r = (entry -- TOTAL_COST_PCT) / R.  At cost_r > 0.7, the round-trip cost
-# consumes over 70% of 1R --- no realistic accuracy makes this positive EV.
-# This threshold naturally eliminates most 1m setups (cost_r --- 1.3---1.5R)
-# while leaving 15m setups (cost_r --- 0.25---0.45R) fully untouched.
+# Compare componentized fee_cost_r_preview with this unchanged threshold.
+# Preview exit turnover equals the adjusted entry price; actual post-trade fees
+# are measured separately. The legacy TOTAL_COST_PCT is not gate authority.
 # Can be overridden per request via the "cost_r_gate" body parameter.
 COST_R_MAX_GATE = 0.70
 

@@ -11,8 +11,8 @@ import math
 
 
 COST_MODEL_VERSION = "EQUITY_INTRADAY_COMPONENT_V1"
-# Frozen compatibility estimate used ONLY for existing eligibility/calibration.
-# It must not become the new fee model or respond to brokerage configuration.
+COST_GATE_MODEL_VERSION = "EQUITY_INTRADAY_COMPONENT_V1_FLAT_EXIT"
+# Comparison/calibration compatibility only; never an eligibility authority.
 LEGACY_GATE_COST_PCT = 0.00150
 
 COST_BREAKDOWN_FIELDS = (
@@ -167,3 +167,72 @@ def net_r_after_fees(realized_r_gross, costs):
     assert math.isclose(costs["total_friction_r"], costs["fee_cost_r"] + costs["slippage_r"],
                         rel_tol=1e-12, abs_tol=1e-12), "Friction decomposition mismatch"
     return float(realized_r_gross) - costs["fee_cost_r"]
+
+
+def pretrade_cost_gate_preview(*, cost_model, cfg, atr, raw_entry,
+                              same_session, is_short, entry_slippage_pts, threshold):
+    """Componentized round-trip fee preview, using no post-entry market data.
+
+    Estimate exit at the slippage-adjusted entry price (flat-price turnover).
+    This neutral estimate does not assume a TP/SL hit or use the realized exit.
+    Brokerage/caps/sizing and all statutory components use the same calculator
+    as actual outcomes. Slippage is never added to the fee-only gate metric.
+    """
+    preview = {
+        "cost_gate_model_version": COST_GATE_MODEL_VERSION,
+        "cost_gate_metric_name": "fee_cost_r_preview",
+        "cost_gate_exit_price_basis": "FLAT_EXIT_AT_ENTRY",
+        "legacy_gate_cost_r": None, "fee_cost_r_preview": None,
+        "cost_gate_metric": None, "cost_gate_threshold": threshold,
+        "cost_gate_pass": None, "cost_r_unavailable_reason": None,
+        "cost_gate_estimated_entry_price": None, "cost_gate_estimated_exit_price": None,
+        "fee_cost_pts_preview": None, "brokerage_mode_preview": None,
+        "risk_points": None,
+    }
+
+    def unavailable(reason):
+        preview["cost_r_unavailable_reason"] = reason
+        return preview
+
+    def number(value):
+        try:
+            result = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return result if math.isfinite(result) else None
+
+    if not cfg:
+        return unavailable("MISSING_PHASE_CONFIG")
+    if not same_session:
+        return unavailable("NO_SAME_SESSION_ENTRY")
+    atr, raw_entry = number(atr), number(raw_entry)
+    if atr is None or atr <= 0:
+        return unavailable("INVALID_ATR")
+    if raw_entry is None or raw_entry <= 0:
+        return unavailable("INVALID_ENTRY")
+    sl_multiple = number(cfg.get("sl"))
+    risk = number(sl_multiple * atr) if sl_multiple is not None else None
+    preview["risk_points"] = risk
+    if risk is None or risk <= 0:
+        return unavailable("INVALID_RISK")
+    preview["legacy_gate_cost_r"] = number(raw_entry * LEGACY_GATE_COST_PCT / risk)
+    entry = raw_entry - entry_slippage_pts if is_short else raw_entry + entry_slippage_pts
+    if not math.isfinite(entry) or entry <= 0:
+        return unavailable("INVALID_ENTRY")
+    preview["cost_gate_estimated_entry_price"] = entry
+    preview["cost_gate_estimated_exit_price"] = entry
+    try:
+        costs = cost_model.calculate(
+            entry_price=entry, exit_price=entry, risk_points=risk, is_short=is_short,
+            entry_slippage_pts=entry_slippage_pts, exit_slippage_pts=0.0,
+        )
+    except (ValueError, OverflowError):
+        return unavailable("INVALID_COST_PREVIEW")
+    metric = costs["fee_cost_r"]
+    preview.update(
+        fee_cost_r_preview=metric, cost_gate_metric=metric,
+        cost_gate_pass=metric <= threshold,
+        fee_cost_pts_preview=costs["total_fee_cost_pts"],
+        brokerage_mode_preview=costs["brokerage_mode"],
+    )
+    return preview

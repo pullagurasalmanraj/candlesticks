@@ -1,4 +1,4 @@
-"""Fee accounting and frozen eligibility contracts for component cost V1."""
+"""Fee accounting and componentized pre-trade gate contracts for cost V1."""
 import os
 import sys
 import unittest
@@ -141,13 +141,15 @@ class TestCostRouteAndResearch(unittest.TestCase):
                 self.assertEqual(cf["realized_r_net"], cf["realized_r_gross"] - cf["fee_cost_r"])
                 self.assertEqual(normal["cost_model_version"], COST_MODEL_VERSION)
                 self.assertEqual(cf["cost_r"], cf["fee_cost_r"])
-                self.assertAlmostEqual(audit["cost_r"], .15)  # still legacy gate preview
-                self.assertAlmostEqual(cf["gate_cost_r"], .15)
+                self.assertAlmostEqual(audit["legacy_gate_cost_r"], .15)
+                self.assertAlmostEqual(cf["legacy_gate_cost_r"], .15)
+                self.assertEqual(audit["cost_r"], cf["fee_cost_r_preview"])
+                self.assertEqual(cf["gate_cost_r"], cf["fee_cost_r_preview"])
                 self.assertEqual(research["rows_written"], 0)
                 self.assertEqual(len(self.route.written), 1)
                 self.assertEqual(cf["fee_breakdown_status"], "CALCULATED")
 
-    def test_brokerage_changes_net_only_never_eligibility_gross_or_excursions(self):
+    def test_brokerage_changes_fee_gate_and_net_but_not_gross_or_excursions(self):
         self.assertEqual(COST_R_MAX_GATE, .70)
         self.assertEqual(TOTAL_COST_PCT, .00150)
         self.assertEqual(LEGACY_GATE_COST_PCT, .00150)
@@ -159,13 +161,17 @@ class TestCostRouteAndResearch(unittest.TestCase):
                 }).json)
             low, high = (r["counterfactual_rows"][0] for r in responses)
             self.assertGreater(low["realized_r_net"], high["realized_r_net"])
-            for key in ("production_eligible", "production_skip_reason", "independent_failed_gates",
-                        "cost_gate_pass", "cost_r_gate", "gate_cost_r", "exit_reason", "exit_ts",
+            for key in ("cost_r_gate", "legacy_gate_cost_r", "exit_reason", "exit_ts",
                         "exit_after_candles", "entry_price", "risk_points", "realized_r_gross",
                         "trade_mfe_r", "trade_mae_r", "horizon_mfe_r", "horizon_mae_r"):
                 self.assertEqual(low[key], high[key], key)
-            self.assertEqual(responses[0]["skipped_by_safety"], responses[1]["skipped_by_safety"])
-            self.assertEqual(low["production_eligible"], atr == 1.)
+            self.assertTrue(low["cost_gate_pass"])
+            self.assertTrue(low["production_eligible"])
+            self.assertFalse(high["cost_gate_pass"])
+            self.assertEqual(high["production_skip_reason"], "COST_GATE")
+            for key in ("macro_gate_pass", "price_structure_gate_pass", "signal_direction_gate_pass",
+                        "trend_exhaustion_gate_pass", "eod_gate_pass", "min_rules_gate_pass"):
+                self.assertEqual(low[key], high[key], key)
 
     def test_tp_sl_and_time_gross_slippage_contract_both_directions(self):
         import pandas as pd

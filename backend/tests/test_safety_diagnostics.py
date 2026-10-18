@@ -37,7 +37,9 @@ class TestSafetyDiagnostics(unittest.TestCase):
             "trend_exhaustion", "trend_exhaustion_gate_pass", "final_eligible", "final_skip_reason",
         }
         self.assertTrue(required <= audit.keys())
-        self.assertAlmostEqual(audit["cost_r"], .15)
+        self.assertAlmostEqual(audit["legacy_gate_cost_r"], .15)
+        self.assertAlmostEqual(audit["cost_r"], .1063343406)
+        self.assertEqual(audit["cost_r"], audit["fee_cost_r_preview"])
         self.assertEqual(audit["cost_gate_threshold"], .70)
         self.assertTrue(audit["final_eligible"])
         self.assertIsNone(audit["final_skip_reason"])

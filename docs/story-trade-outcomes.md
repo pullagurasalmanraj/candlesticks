@@ -211,16 +211,21 @@ data produces null pass values and null costs rather than zeros or assumed passe
 `cost_r` in the audit is the **gate preview**:
 
 ```text
-raw next-bar open * TOTAL_COST_PCT / (SL multiple * signal-bar ATR)
+componentized round-trip fees(entry execution price, estimated flat exit price)
+    / (SL multiple * signal-bar ATR)
 ```
 
-It uses the actual effective phase parameters, including calibrated parameters
-when permitted. `TOTAL_COST_PCT` here is the frozen legacy `0.00150` gate proxy,
-not the componentized fees now stored as `cost_r` on successful
-`strategy_outcomes` rows. The audit includes `entry_price_raw`,
-`risk_points`, `cost_gate_threshold` and `cost_r_unavailable_reason` to make that
-distinction explicit. No same-session next entry, invalid ATR/risk, or nonfinite
-costs are not silently included as zero-cost observations.
+It uses the effective stop parameters, including calibrated parameters when
+permitted. Estimated exit equals slippage-adjusted next-bar entry: a neutral
+flat-price round trip using no future highs/lows/closes or realized exit price.
+The same component calculator and request brokerage/cap/sizing configuration
+are used for the preview and actual outcomes. `cost_r` in an audit aliases
+`fee_cost_r_preview` / `cost_gate_metric`. `legacy_gate_cost_r` keeps the old
+`raw_entry * 0.00150 / risk` value for comparison only. Audit rows also expose
+`cost_gate_threshold`, `cost_gate_pass`, `cost_gate_estimated_entry_price`,
+`cost_gate_estimated_exit_price`, `cost_gate_exit_price_basis` and
+`cost_r_unavailable_reason`. Unavailable inputs are never a zero-cost estimate
+or a fallback to legacy gate authority.
 
 Summary fields:
 
@@ -346,8 +351,8 @@ is unchanged. No additional schema migration or research-table creation is neede
 }
 ```
 
-The endpoint first runs the existing production waterfall without changing any
-threshold or gate. After all production decisions are final, a separate research
+The endpoint first runs the production waterfall, including its componentized
+pre-trade cost gate. After all production decisions are final, a separate research
 pass simulates every story-eligible setup, including those rejected by any safety
 gate. Both paths use the existing next-bar open, effective phase TP/SL/lookahead,
 session boundary cap, slippage, transaction costs, SHORT-aware exit simulator,
@@ -385,10 +390,12 @@ but never treated as a zero-return trade or included in outcome percentages.
 
 `cost_r` on a counterfactual row aliases `fee_cost_r`: itemized statutory/broker
 fees on actual executed turnover divided by initial R. It is exactly the cost
-deducted from `realized_r_gross` to obtain `realized_r_net`. `gate_cost_r` retains
-the legacy raw-entry preview used by the unchanged cost gate. `cost_r_gate`
-records the active request threshold. The two models can differ substantially;
-the production gate intentionally continues using the old proxy during research.
+deducted from `realized_r_gross` to obtain `realized_r_net`. `gate_cost_r` aliases
+the componentized `fee_cost_r_preview` / `cost_gate_metric` used before entry.
+`legacy_gate_cost_r` separately retains the old raw-entry approximation, which
+has no authority over eligibility. `cost_r_gate` records the active threshold.
+Preview fees can differ slightly from realized fees because the latter use the
+actual simulated exit turnover; eligibility never reads those realized fees.
 
 Research cost buckets use actual `cost_r`: `<=0.70`, `(0.70,1.00]`, `(1.00,1.25]`,
 and `>1.25`. These are reporting bins, not production threshold changes. A cost
@@ -521,14 +528,46 @@ Every counterfactual summary group additionally reports mean and p10/p25/p50/
 p75/p90 for fee R, slippage R and total friction R. Separate fee/friction buckets
 carry the same trade outcome statistics as existing cost buckets.
 
-The production cost gate remains `raw_entry * 0.00150 / (SL * ATR)` compared with
-the existing request/default threshold; `COST_R_MAX_GATE` remains `0.70`.
-Responses identify this as `cost_gate_model_version: LEGACY_FIXED_0_00150` and
-`cost_gate_estimate_pct: 0.00150`. Neither fee configuration nor realized exit
-turnover feeds the gate. The compatibility `TOTAL_COST_PCT` alias and explicit
-calibration calculations also retain the legacy proxy pending research review.
-No story, TP/SL, lookahead, safety predicates, date logic or phase parameters are
-changed, and no calibration is triggered.
+The production COST_GATE uses the shared componentized fee calculator with an
+estimated exit at the adjusted entry price. This preserves the fee model's
+buy/sell tax sides and sizing/cap logic, without assuming either barrier will
+be hit. TP, SL, lookahead and all realized future prices are excluded from the
+exit-price estimate; the configured stop still sets the initial risk denominator.
+Entry slippage affects the execution turnover estimate, but slippage R is never
+added to this fee-only gate metric.
+
+Responses report `cost_gate_model_version: EQUITY_INTRADAY_COMPONENT_V1_FLAT_EXIT`,
+`cost_gate_metric_name: fee_cost_r_preview`, and `cost_gate_exit_price_basis:
+FLAT_EXIT_AT_ENTRY`. Each audit/counterfactual row reports:
+
+```text
+legacy_gate_cost_r       = raw_entry * 0.00150 / initial risk (comparison only)
+fee_cost_r_preview       = componentized fees(entry, estimated flat exit) / risk
+cost_gate_metric        = fee_cost_r_preview
+cost_gate_threshold     = existing request/default threshold (default 0.70)
+cost_gate_pass          = cost_gate_metric <= cost_gate_threshold
+```
+
+Only a strictly greater metric produces a COST_GATE rejection. A runtime sanity
+assertion prevents COST_GATE from rejecting a passing preview. Invalid previews
+remain unknown and stop with their prerequisite/data reason; they do not use
+legacy costs or silently pass. Actual `fee_cost_r`, `slippage_r` and
+`total_friction_r` remain post-simulation diagnostics and cannot influence the
+earlier decision. For example, actual fees can cross above 0.70R after a TP exit
+even though the pre-trade flat-price preview passed: that does not retroactively
+reject an entry.
+
+`COST_R_MAX_GATE` remains `0.70`; no story eligibility, TP/SL, lookahead, macro,
+price structure, signal direction, exhaustion, EOD or minimum-rules conditions
+are changed. The legacy `TOTAL_COST_PCT` compatibility alias remains only for
+unchanged explicit calibration calculations and comparison. No calibration is
+triggered and no date logic or phase parameters are changed.
+
+`test_component_cost_gate.py` covers the reported legacy-versus-component
+rejections in both directions, threshold equality/adjacent values, brokerage
+caps and missing-size fallback, no future exit influence, invalid previews,
+and the runtime sanity assertion. Post-trade accounting tests still verify that
+fees/slippage are not deducted twice.
 
 No new database migration is required. Normal generation stores the corrected
 fee-only `cost_r` and net `realized_r` in existing columns. Existing historical

@@ -30,8 +30,8 @@ from routes.strategy_logic import (
 
 from routes.strategy_counterfactual import CounterfactualResearch, _simulate_counterfactual_trade
 from routes.strategy_costs import (
-    COST_BREAKDOWN_FIELDS, COST_MODEL_VERSION, LEGACY_GATE_COST_PCT,
-    EquityIntradayCostModel, net_r_after_fees,
+    COST_BREAKDOWN_FIELDS, COST_MODEL_VERSION, COST_GATE_MODEL_VERSION, LEGACY_GATE_COST_PCT,
+    EquityIntradayCostModel, net_r_after_fees, pretrade_cost_gate_preview,
 )
 from routes.strategy_diagnostics import SafetyWaterfallAudit
 from routes.strategy_dates import _research_date_window, _research_window_metadata
@@ -1694,7 +1694,12 @@ def calc_strategy_outcomes():
         # cost_r_gate: skip trades where round-trip costs exceed this fraction of R.
         # Default 0.70 --- costs must not exceed 70% of 1R. A value of 1.0
         # remains an active 100%-of-R threshold; disabling is not implemented.
-        cost_r_gate = float(data.get("cost_r_gate", COST_R_MAX_GATE))
+        try:
+            cost_r_gate = float(data.get("cost_r_gate", COST_R_MAX_GATE))
+        except (TypeError, ValueError, OverflowError):
+            return jsonify({"error": "cost_r_gate must be finite"}), 400
+        if not math.isfinite(cost_r_gate):
+            return jsonify({"error": "cost_r_gate must be finite"}), 400
 
         try:
             story_policy = _story_policy_from_request(data.get("story_policy"))
@@ -2022,12 +2027,20 @@ def calc_strategy_outcomes():
             audit_rule_count = _ts_rule_count.get(
                 audit_ts.to_pydatetime(), _ts_rule_count.get(audit_ts, 0)
             ) if min_rules_fired > 0 else 0
+            # Shared pre-trade inputs only: next-bar entry quote, signal ATR,
+            # configured stop and request fee schedule. No future exit prices.
+            cost_preview = pretrade_cost_gate_preview(
+                cost_model=cost_model, cfg=cfg, atr=atrs[i],
+                raw_entry=opens[audit_entry_idx] if audit_entry_idx < N else None,
+                same_session=audit_same_session, is_short=decision["trade_direction"] == "SHORT",
+                entry_slippage_pts=SLIPPAGE_PTS, threshold=cost_r_gate,
+            )
             audit = safety_audit.begin(
                 ts=audit_ts.isoformat() + "Z", phase=phases[i], story=story, decision=decision,
-                cfg=cfg, atr=atrs[i], raw_entry=opens[audit_entry_idx] if audit_entry_idx < N else None,
-                same_session=audit_same_session, macro=macro_arr[i], price_structure=ps_arr[i],
+                cfg=cfg, raw_entry=opens[audit_entry_idx] if audit_entry_idx < N else None,
+                macro=macro_arr[i], price_structure=ps_arr[i],
                 exhaustion=exhaust_arr[i], signal_open=opens[i], signal_close=closes[i],
-                bar_of_day=bar_of_day_arr[i], cost_threshold=cost_r_gate, total_cost_pct=LEGACY_GATE_COST_PCT,
+                bar_of_day=bar_of_day_arr[i], cost_preview=cost_preview,
                 eod_bar_threshold=_EOD_BOD_THRESHOLD, eod_lookahead_threshold=_EOD_LA_MIN_GATE,
                 min_rules=min_rules_fired, rule_count=audit_rule_count,
             )
@@ -2179,23 +2192,27 @@ def calc_strategy_outcomes():
                     continue  # signal bar closed bearish --- adverse for long
 
             # ------ FIX 4: Cost viability gate ------------------------------------------------------------------------------------
-            # Keep the existing gate estimate and comparison frozen pending
-            # research review: raw_entry * LEGACY_GATE_COST_PCT / (sl * ATR).
-            # Itemized fees and slippage are measured after simulation and do
-            # not feed eligibility. The default threshold remains 0.70.
+            # Componentized fees using a flat-price exit estimate at entry.
+            # The shared preview excludes future exit prices and slippage R.
+            # Legacy costs are comparison-only; threshold remains 0.70.
             safety_audit.reached(audit, "COST_GATE")
             _R_preview = cfg["sl"] * atr
             if not math.isfinite(_R_preview) or _R_preview <= 0:
                 safety_skip_counts["INVALID_RISK"] += 1
                 safety_audit.finish(audit, "INVALID_RISK")
                 continue
-            if _R_preview > 0:
-                _cost_r_preview = (raw_entry * LEGACY_GATE_COST_PCT) / _R_preview
-                if _cost_r_preview > cost_r_gate:
-                    n_cost_skipped += 1
-                    safety_skip_counts["COST_GATE"] += 1
-                    safety_audit.finish(audit, "COST_GATE")
-                    continue
+            _cost_r_preview = cost_preview["cost_gate_metric"]
+            if _cost_r_preview is None:
+                preview_reason = cost_preview["cost_r_unavailable_reason"] or "INVALID_COST_PREVIEW"
+                safety_skip_counts[preview_reason] += 1
+                safety_audit.finish(audit, preview_reason)
+                continue
+            if _cost_r_preview > cost_r_gate:
+                n_cost_skipped += 1
+                safety_skip_counts["COST_GATE"] += 1
+                safety_audit.finish(audit, "COST_GATE")
+                continue
+            assert cost_preview["cost_gate_pass"], "COST_GATE preview/decision mismatch"
 
             # ------ v28: EOD gate ---------------------------------------------------------------------------------------------------------------
             # Skip entries for slow phases (lookahead_min >= _EOD_LA_MIN_GATE)
@@ -2533,8 +2550,10 @@ def calc_strategy_outcomes():
             "diagnostic_mode": diagnostic_mode,
             "cost_model_version": COST_MODEL_VERSION,
             "cost_model": cost_model.metadata(),
-            "cost_gate_model_version": "LEGACY_FIXED_0_00150",
-            "cost_gate_estimate_pct": LEGACY_GATE_COST_PCT,
+            "cost_gate_model_version": COST_GATE_MODEL_VERSION,
+            "cost_gate_metric_name": "fee_cost_r_preview",
+            "cost_gate_exit_price_basis": "FLAT_EXIT_AT_ENTRY",
+            "legacy_gate_estimate_pct": LEGACY_GATE_COST_PCT,
             "date_window": date_window,
             "elapsed_sec": elapsed,
             "phases_calibrated": n_calibrated,

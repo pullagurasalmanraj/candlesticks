@@ -71,7 +71,8 @@ class TestCounterfactualRoute(unittest.TestCase):
         self.assertEqual(row["realized_r_net"], production["realized_r"])
         self.assertEqual(pd.Timestamp(row["exit_ts"]).tz_localize(None), production["exit_ts"])
         self.assertAlmostEqual(row["entry_price"], 100.05)
-        self.assertAlmostEqual(row["gate_cost_r"], .15)
+        self.assertAlmostEqual(row["legacy_gate_cost_r"], .15)
+        self.assertEqual(row["gate_cost_r"], row["fee_cost_r_preview"])
         self.assertNotEqual(row["gate_cost_r"], row["cost_r"])
         self.route.cur.execute.assert_not_called()
         self.assertEqual(len(self.route.written), 1)  # only the earlier normal request wrote

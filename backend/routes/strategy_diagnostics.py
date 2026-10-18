@@ -80,14 +80,14 @@ class SafetyWaterfallAudit:
         self.independent = {gate: Counter() for gate in SAFETY_AUDIT_GATES}
         self.waterfall = {gate: Counter() for gate in SAFETY_AUDIT_GATES}
 
-    def begin(self, *, ts, phase, story, decision, cfg, atr, raw_entry,
-              same_session, macro, price_structure, exhaustion, signal_open,
-              signal_close, bar_of_day, cost_threshold, total_cost_pct,
+    def begin(self, *, ts, phase, story, decision, cfg, raw_entry,
+              macro, price_structure, exhaustion, signal_open,
+              signal_close, bar_of_day, cost_preview,
               eod_bar_threshold, eod_lookahead_threshold, min_rules, rule_count):
         """Evaluate diagnostic predicates without changing execution decisions.
 
-        cost_r is the frozen legacy raw-entry preview used by COST_GATE, not
-        the componentized fee_cost_r stored on successful outcome rows.
+        cost_r aliases the shared componentized pre-trade fee preview. The
+        production loop receives that preview independently of this observer.
         Missing inputs remain unknown, never a zero cost or an assumed pass.
         """
         short = decision["trade_direction"] == "SHORT"
@@ -105,28 +105,8 @@ class SafetyWaterfallAudit:
             signal_pass = (None if op is None or close is None else
                            not (close >= op if short else close <= op))
 
-        risk, preview, cost_pass, unavailable = None, None, None, None
-        atr_value, entry_value = _number(atr), _number(raw_entry)
-        if not cfg:
-            unavailable = "MISSING_PHASE_CONFIG"
-        elif not same_session:
-            unavailable = "NO_SAME_SESSION_ENTRY"
-        elif atr_value is None or atr_value <= 0:
-            unavailable = "INVALID_ATR"
-        elif entry_value is None or entry_value <= 0:
-            unavailable = "INVALID_ENTRY"
-        else:
-            sl = _number(cfg.get("sl"))
-            risk = _number(sl * atr_value) if sl is not None else None
-            if risk is None or risk <= 0:
-                unavailable = "INVALID_RISK"
-            else:
-                raw_preview = (entry_value * total_cost_pct) / risk
-                preview = _number(raw_preview)
-                # Match the existing `if preview > threshold: reject` exactly.
-                cost_pass = not raw_preview > cost_threshold
-                if preview is None:
-                    unavailable = "NONFINITE_COST_R"
+        preview = cost_preview["cost_gate_metric"]
+        cost_pass = cost_preview["cost_gate_pass"]
 
         eod_applicable = bool(cfg and eod_lookahead_threshold > 0
                               and cfg.get("lookahead_min", 0) >= eod_lookahead_threshold)
@@ -137,9 +117,8 @@ class SafetyWaterfallAudit:
                 "directional_edge", "regime_age_bars", "candidate_regime",
             )},
             "setup_key": decision["setup_key"], "trade_direction": decision["trade_direction"],
-            "cost_r": preview, "cost_gate_threshold": _number(cost_threshold),
-            "cost_r_unavailable_reason": unavailable,
-            "entry_price_raw": entry_value, "risk_points": risk,
+            **cost_preview, "cost_r": preview,
+            "entry_price_raw": _number(raw_entry),
             "macro_regime": _plain(macro), "price_structure": _plain(price_structure),
             "trend_exhaustion": _plain(exhaustion),
             "final_eligible": False, "final_skip_reason": None, "gates_reached": [],
@@ -181,6 +160,10 @@ class SafetyWaterfallAudit:
     def finish(self, row, reason=None):
         if row["final_eligible"] or row["final_skip_reason"] is not None:
             raise RuntimeError("Safety audit row was finalized twice")
+        if reason == "COST_GATE":
+            assert (row["cost_gate_metric"] is not None
+                    and row["cost_gate_metric"] > row["cost_gate_threshold"]
+                    and row["cost_gate_pass"] is False), "COST_GATE rejected a passing fee preview"
         self.finished += 1
         row["final_skip_reason"] = reason
         row["final_eligible"] = reason is None
@@ -235,5 +218,5 @@ class SafetyWaterfallAudit:
             "cost_gate_rejection_fraction_of_story_eligible": (
                 self.rejections["COST_GATE"] / self.population if self.population else None
             ),
-            "cost_r_basis": "raw_next_bar_open * TOTAL_COST_PCT / (sl_multiple * signal_ATR)",
+            "cost_r_basis": "componentized fee_cost_r_preview; flat exit at slippage-adjusted next-bar entry; no future exit data",
         }
