@@ -17,6 +17,14 @@ the split before inspecting holdout results:
 ```
 
 These dates illustrate the request format, not a recommended training window.
+In Postman choose **Body → raw → JSON**. Only `from_date`, `to_date`,
+`holdout_from_date`, `cost_model`, `symbols`, `timeframe`, and `exchange` are
+accepted. Use `symbols: ["ITC", "TATASTEEL"]`, not the singular `symbol` field
+from the outcome-generation endpoint. Omit `diagnostic_mode`,
+`counterfactual_mode`, story/safety overrides, and TP/SL settings here: the
+research-only comparisons are predefined. Unsupported fields are listed by name
+in validation errors.
+
 Date-only bounds cover complete IST days. An omitted end means the current
 instant, so the current session may be incomplete. Missing/incomplete sessions
 are flagged. The default split uses the first `floor(0.70 * trading_days)` days

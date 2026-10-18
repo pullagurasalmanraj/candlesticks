@@ -332,8 +332,16 @@ def compare_symbol(frame, *, split_at, from_dt, params, cost_model):
 
 def _request_options(data):
     allowed = {"from_date", "to_date", "holdout_from_date", "cost_model", "symbols", "timeframe", "exchange"}
-    if not isinstance(data, dict) or set(data)-allowed:
-        raise ValueError("Only dates, fixed symbols/timeframe/exchange, and cost_model are supported; no parameter search")
+    if not isinstance(data, dict):
+        raise ValueError("Request body must be a JSON object")
+    unknown = sorted(set(data)-allowed)
+    if unknown:
+        raise ValueError(
+            f"Unsupported fields: {', '.join(unknown)}. "
+            f"Allowed fields: {', '.join(sorted(allowed))}. "
+            "Use symbols: [ITC, TATASTEEL], not symbol; diagnostic_mode, counterfactual_mode "
+            "and TP/SL overrides belong to other requests, not this fixed research comparison."
+        )
     if data.get("symbols", list(SYMBOLS)) != list(SYMBOLS) or data.get("timeframe", "5m") != "5m" or data.get("exchange", "NSE") != "NSE":
         raise ValueError("This predefined comparison is for symbols [ITC, TATASTEEL], NSE, 5m")
     for key in ("from_date", "to_date", "holdout_from_date"):
