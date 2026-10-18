@@ -5,8 +5,11 @@ import numpy as np
 import pandas as pd
 
 from routes.strategy_diagnostics import SAFETY_AUDIT_GATES, _gate_status, _number, _pct
+from routes.strategy_costs import (
+    COST_BREAKDOWN_FIELDS, COST_MODEL_VERSION, EquityIntradayCostModel, net_r_after_fees,
+)
 from routes.strategy_logic import (
-    SLIPPAGE_PTS, TOTAL_COST_PCT, _outcome_excursions, _simulate_exit_vectorized,
+    SLIPPAGE_PTS, _outcome_excursions, _simulate_exit_vectorized,
 )
 
 
@@ -16,6 +19,7 @@ _OUTCOME_FIELDS = (
     "exit_after_candles", "exit_ts", "realized_r_gross", "realized_r_net",
     "trade_mfe_r", "trade_mae_r", "horizon_mfe_r", "horizon_mae_r",
     "session_mfe_r", "session_mae_r",
+    *COST_BREAKDOWN_FIELDS,
 )
 
 
@@ -24,7 +28,7 @@ def _unavailable(reason):
 
 
 def _simulate_counterfactual_trade(*, raw_entry, atr, cfg, highs, lows, closes,
-                                  timestamps, horizon_n, is_short):
+                                  timestamps, horizon_n, is_short, cost_model=None):
     """Use the production barrier simulator/cost conventions on a session slice.
 
     The caller supplies the same effective phase configuration and capped
@@ -79,8 +83,16 @@ def _simulate_counterfactual_trade(*, raw_entry, atr, cfg, highs, lows, closes,
         gross = -1.0
     else:
         gross = (entry - exit_price if is_short else exit_price - entry) / risk
-    cost_r = (entry * TOTAL_COST_PCT) / risk
-    net = gross - cost_r
+    try:
+        costs = (cost_model or EquityIntradayCostModel()).calculate(
+            entry_price=entry, exit_price=exit_price, risk_points=risk, is_short=is_short,
+            entry_slippage_pts=abs(entry - raw_entry),
+            exit_slippage_pts=SLIPPAGE_PTS if exit_reason == "TP_HIT" else 0.0,
+        )
+    except ValueError:
+        return _unavailable("INVALID_COST_INPUT")
+    cost_r = costs["fee_cost_r"]  # compatibility alias; never includes slippage
+    net = net_r_after_fees(gross, costs)
     if not all(np.isfinite(value) for value in (gross, cost_r, net, *excursions.values())):
         return _unavailable("NONFINITE_OUTCOME")
     exit_ts = pd.Timestamp(timestamps[int(exit_after) - 1])
@@ -92,6 +104,7 @@ def _simulate_counterfactual_trade(*, raw_entry, atr, cfg, highs, lows, closes,
         "exit_after_candles": int(exit_after), "exit_ts": exit_ts.isoformat().replace("+00:00", "Z"),
         "lookahead_candles": int(horizon_n),
         "realized_r_gross": float(gross), "realized_r_net": float(net),
+        **costs,
         **{key: float(value) for key, value in excursions.items()},
     }
 
@@ -110,6 +123,13 @@ def _research_statistics(rows):
         values = np.asarray([r[metric] for r in completed], dtype=float)
         result[f"avg_{metric}"] = _number(np.sum(values / n)) if n else None
         result[f"median_{metric}"] = _number(np.median(values)) if n else None
+    for metric in ("fee_cost_r", "slippage_r", "total_friction_r"):
+        values = [r[metric] for r in completed]
+        result[metric] = {
+            "mean": _number(np.mean(values)) if n else None,
+            **dict(zip(("p10", "p25", "p50", "p75", "p90"),
+                [_number(v) for v in np.percentile(values, (10, 25, 50, 75, 90))] if n else [None]*5)),
+        }
     for metric in ("trade_mfe_r", "trade_mae_r"):
         values = [r[metric] for r in completed]
         result[metric] = dict(zip(("p25", "p50", "p75"),
@@ -142,18 +162,22 @@ class CounterfactualResearch:
             "production_eligible": audit["final_eligible"],
             "production_skip_reason": audit["final_skip_reason"],
             "is_counterfactual": True,
+            "cost_model_version": COST_MODEL_VERSION,
+            "fee_breakdown_status": "CALCULATED" if simulation["simulation_status"] == "SIMULATED" else "UNAVAILABLE",
             **simulation,
         }
         self.rows.append(row)
 
     def summary(self):
         by_setup, by_direction = defaultdict(list), defaultdict(list)
-        buckets = {name: [] for name in RESEARCH_COST_BUCKETS}
+        buckets = {metric: {name: [] for name in RESEARCH_COST_BUCKETS}
+                   for metric in ("fee_cost_r", "total_friction_r")}
         for row in self.rows:
             by_setup[row["setup_key"]].append(row)
             by_direction[row["trade_direction"]].append(row)
             if row["simulation_status"] == "SIMULATED":
-                buckets[_cost_bucket(row["cost_r"])].append(row)
+                for metric, groups in buckets.items():
+                    groups[_cost_bucket(row[metric])].append(row)
         gates = {}
         labels = {"passed": "pass", "failed": "fail",
                   "not_applicable": "not_applicable", "unavailable": "unavailable"}
@@ -172,8 +196,11 @@ class CounterfactualResearch:
                 row["simulation_skip_reason"] for row in self.rows if row["simulation_status"] != "SIMULATED"
             )),
             "overall": _research_statistics(self.rows),
-            "cost_bucket_basis": "cost_r: slippage-adjusted round-trip costs / actual initial risk",
-            "cost_buckets": {key: _research_statistics(group) for key, group in buckets.items()},
+            "cost_model_version": COST_MODEL_VERSION,
+            "cost_bucket_basis": "cost_r aliases fee_cost_r; total_friction_r includes separately reported execution slippage",
+            "cost_buckets": {key: _research_statistics(group) for key, group in buckets["fee_cost_r"].items()},
+            "fee_cost_r_buckets": {key: _research_statistics(group) for key, group in buckets["fee_cost_r"].items()},
+            "total_friction_r_buckets": {key: _research_statistics(group) for key, group in buckets["total_friction_r"].items()},
             "gate_comparisons": gates,
             "by_setup_key": {key: _research_statistics(group) for key, group in by_setup.items()},
             "by_trade_direction": {key: _research_statistics(group) for key, group in by_direction.items()},

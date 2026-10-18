@@ -190,6 +190,7 @@ from flask import Blueprint, request, jsonify
 from psycopg2.extras import execute_values
 
 from db import get_db_conn, read_sql_safe, chunk_execute as _chunk_execute
+from routes.strategy_costs import LEGACY_GATE_COST_PCT
 
 
 def json_safe(v):
@@ -199,28 +200,11 @@ def json_safe(v):
     except Exception:
         return None
 
-# Transaction cost model (NSE intraday) -------------------------------------
-# All percentage rates apply to trade value (entry price -- qty).
-# Slippage is in absolute points --- applied on entry AND exit separately.
-#
-# Round-trip cost breakdown:
-#   Brokerage     : 0.03% -- 2 sides          = 0.0600%
-#   STT           : 0.025% on sell side only  = 0.0250%
-#   Exchange fees : ~0.00335% -- 2 sides       = 0.0067%  ------
-#   SEBI turnover : ~0.0001%  -- 2 sides       = 0.0002%   --- combined as
-#   Stamp duty    : ~0.003%   buy side only   = 0.0030%   --- TAX_CHARGES_PCT
-#   GST on fees   : ~0.018%   on brokerage    = 0.0108%  ------
-#   ---------------------------------------------------------------------------------------------------------------------------------------------------------------
-#   TOTAL_COST_PCT                            --- 0.1507% --- 0.00150 per trade
-#
-# Slippage: 1 tick (---0.05) on entry, 1 tick on TP exit.
-# SL exits are assumed to fill exactly at SL (market order, worst case).
-#
-# cost_r = how many R the round-trip costs consume, regardless of outcome.
-# Example: entry=---130, ATR=---0.35, SL=0.6 ATR --- R=---0.21
-#   cost_pts = 130 -- 0.00150 = ---0.195
-#   cost_r   = 0.195 / 0.21  = 0.93R   --- nearly 1R just in costs
-# This correctly penalises tight-stop trades on low-ATR stocks.
+# Itemized transaction fees live in strategy_costs. They use actual buy/sell
+# execution prices, configurable brokerage, sell-side STT, NSE/IPFT, SEBI,
+# buy-side stamp duty and GST on taxable fees only. Slippage is separate:
+# one tick at entry and one at TP exit; SL/TIME have no additional exit tick.
+# The legacy eligibility proxy below stays frozen pending research review.
 
 
 # ------ Swing detection --- price structure ------------------------------------------------------------------------------------
@@ -334,16 +318,11 @@ def _compute_macro_regime(close: float, ema_200: float, atr_pct: float = 0.01) -
     return "NEUTRAL_MACRO"
 
 
-BROKERAGE_PCT = 0.0003  # 0.03% per side -- 2 = 0.06% round trip
-STT_PCT = 0.00025  # Securities Transaction Tax --- sell side only
-TAX_CHARGES_PCT = (
-    0.00065  # Exchange fees + SEBI turnover + Stamp Duty + GST (both sides)
-)
 SLIPPAGE_PTS = 0.05  # 1 tick slippage --- applied on entry AND TP exit
 
-# Total percentage cost per round trip (slippage handled separately in points)
-TOTAL_COST_PCT = (BROKERAGE_PCT * 2) + STT_PCT + TAX_CHARGES_PCT
-# = 0.0006 + 0.00025 + 0.00065 = 0.00150  ---  0.150% per round trip
+# Compatibility alias for the unchanged production gate and calibration proxy.
+# This is not the itemized fee model and must not be subtracted from net returns.
+TOTAL_COST_PCT = LEGACY_GATE_COST_PCT
 
 # FIX 4: Maximum cost_r before a trade is skipped as unviable.
 # cost_r = (entry -- TOTAL_COST_PCT) / R.  At cost_r > 0.7, the round-trip cost

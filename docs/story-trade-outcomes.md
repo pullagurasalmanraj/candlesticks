@@ -215,8 +215,9 @@ raw next-bar open * TOTAL_COST_PCT / (SL multiple * signal-bar ATR)
 ```
 
 It uses the actual effective phase parameters, including calibrated parameters
-when permitted. This differs slightly from the slippage-adjusted `cost_r` on
-successful `strategy_outcomes` rows. The audit includes `entry_price_raw`,
+when permitted. `TOTAL_COST_PCT` here is the frozen legacy `0.00150` gate proxy,
+not the componentized fees now stored as `cost_r` on successful
+`strategy_outcomes` rows. The audit includes `entry_price_raw`,
 `risk_points`, `cost_gate_threshold` and `cost_r_unavailable_reason` to make that
 distinction explicit. No same-session next entry, invalid ATR/risk, or nonfinite
 costs are not silently included as zero-cost observations.
@@ -382,15 +383,18 @@ with `simulation_status: UNAVAILABLE`, a `simulation_skip_reason`, and null outc
 metrics. It is counted in `total_story_eligible` and the relevant group population,
 but never treated as a zero-return trade or included in outcome percentages.
 
-`cost_r` on a counterfactual row is the slippage-adjusted round-trip cost divided
-by actual initial R, exactly the cost deducted from `realized_r_gross` to obtain
-`realized_r_net`. `gate_cost_r` separately retains the raw-entry preview used by
-the unchanged cost gate. `cost_r_gate` records the active request threshold.
-Near a threshold boundary, these two cost measures can differ slightly.
+`cost_r` on a counterfactual row aliases `fee_cost_r`: itemized statutory/broker
+fees on actual executed turnover divided by initial R. It is exactly the cost
+deducted from `realized_r_gross` to obtain `realized_r_net`. `gate_cost_r` retains
+the legacy raw-entry preview used by the unchanged cost gate. `cost_r_gate`
+records the active request threshold. The two models can differ substantially;
+the production gate intentionally continues using the old proxy during research.
 
 Research cost buckets use actual `cost_r`: `<=0.70`, `(0.70,1.00]`, `(1.00,1.25]`,
 and `>1.25`. These are reporting bins, not production threshold changes. A cost
 gate threshold of `1.0` still rejects costs above `1.0R`; it does not disable the gate.
+`fee_cost_r_buckets` and `total_friction_r_buckets` additionally report each
+measure separately in these same bins; `cost_buckets` aliases the fee buckets.
 
 Every outcome statistics group reports:
 
@@ -413,3 +417,122 @@ large changes in legacy/session excursions, and no legacy fallback.
 production outcomes, independent eligibility, SHORT and same-bar semantics,
 session boundaries, unavailable data, exact bucket edges/group statistics, and
 the absence of research database writes.
+
+## Componentized equity-intraday fees (V1)
+
+The outcome endpoint returns `cost_model_version: EQUITY_INTRADAY_COMPONENT_V1`
+and `cost_model` containing every applied rate, sizing input, GST base and
+assumption. The shared implementation is `routes/strategy_costs.py`; both
+production outcomes and counterfactual simulations use it after the unchanged
+production eligibility decision. Existing `diagnostic_mode` still simulates
+only accepted trades. Their `audit_rows` now include actual fee breakdowns;
+rejected diagnostic rows have null fee fields and `fee_breakdown_status:
+NOT_SIMULATED`. Use counterfactual mode to measure rejected trades' exit fees.
+
+The fixed default schedule is NSE cash equity intraday, using the published
+March 2026 exchange schedule and statutory cash-intraday rates:
+
+| Component | Rate (percentage of executed turnover) | Leg |
+| --- | --- | --- |
+| Brokerage, configurable | 0.03% | Buy and sell separately |
+| STT | 0.025% | Sell only |
+| NSE transaction | 0.0030699% | Buy and sell separately |
+| NSE IPFT | 0.0000001% | Buy and sell separately |
+| SEBI turnover | 0.0001% (Rs10/crore) | Buy and sell separately |
+| Stamp duty | 0.003% | Buy only |
+| GST | 18% of brokerage + NSE transaction/IPFT + SEBI charges | Taxable fees only |
+
+NSE transaction + IPFT total 0.00307% per side (Rs307/crore). The tiny IPFT
+component is explicit and included once in `exchange_cost_pts`. GST excludes
+STT, stamp duty and slippage. Sources: [NSE levies](https://www.nseindia.com/static/invest/first-time-investor-sebi-turnover-fees-stt-other-levies),
+[NSE circular effective March 1, 2026](https://nsearchives.nseindia.com/content/circulars/FA73061.pdf),
+and [broker's published GST base and fees](https://zerodha.com/charges).
+
+This is a fixed research schedule, not automatic historical tariff selection.
+For an older or different broker schedule, override individual rates explicitly.
+All API rates are **fractions**, e.g. `0.0003` means `0.03%`, and `0.18` means
+18% GST. These are unrounded per-share estimates, not contract-note tax rounding
+or daily aggregation. Special dealer/auto-square-off fees are not assumed.
+
+Example request (add your normal symbol, timeframe and bounded research dates):
+
+```json
+{
+  "symbol": "ITC",
+  "timeframe": "5m",
+  "counterfactual_mode": true,
+  "cost_model": {
+    "brokerage_rate": 0.0003,
+    "brokerage_cap_per_order": 20,
+    "quantity": 1000
+  }
+}
+```
+
+All `cost_model` options are optional. Defaults never assume a brokerage cap.
+If an explicit cap is provided, apply `min(rate * leg_turnover, cap)` to each
+of the two orders only when size is known. The same quantity is bought and sold.
+`quantity` fixes shares per setup. Alternatively, `order_notional` is the executed
+**entry** order notional; quantity is derived as `order_notional / entry_price`
+for that setup (a fractional sizing estimate, without share rounding). These
+two sizing options are mutually exclusive; the other leg's turnover uses that
+same derived quantity and its own execution price.
+
+Without either sizing input, brokerage stays percentage based even if a cap was
+specified. The row reports `brokerage_mode: PERCENTAGE_FALLBACK_NO_SIZE`; it
+does not assume one share for cap purposes or silently apply Rs20. Known-size
+results report `CAPPED_PER_ORDER` and separate buy/sell `brokerage_cap_applied_*`
+flags, including when one leg reaches the cap but the other does not.
+
+The supported configuration keys are `brokerage_rate`, `brokerage_cap_per_order`,
+`nse_transaction_rate`, `nse_ipft_rate`, `stt_sell_rate`, `sebi_turnover_rate`,
+`stamp_duty_buy_rate`, `gst_rate`, `quantity`, and `order_notional`. Invalid,
+nonfinite or unknown options return HTTP 400 before database access.
+
+Counterfactual rows and simulated diagnostic audit rows expose costs in points
+(rupees per share), including buy/sell brokerage, STT sell, NSE transaction/IPFT
+buy/sell, SEBI buy/sell, stamp buy and GST taxable base. Requested totals are:
+
+```text
+brokerage_cost_pts, stt_cost_pts, exchange_cost_pts, sebi_cost_pts,
+stamp_cost_pts, gst_cost_pts, total_fee_cost_pts,
+entry_slippage_pts, exit_slippage_pts, total_friction_pts,
+fee_cost_r, slippage_r, total_friction_r
+```
+
+Accounting identities, asserted and tested:
+
+```text
+fee_cost_r       = total_fee_cost_pts / initial R
+slippage_r       = (entry_slippage_pts + exit_slippage_pts) / initial R
+total_friction_r = fee_cost_r + slippage_r
+realized_r_net   = realized_r_gross - fee_cost_r
+```
+
+`realized_r_gross` preserves the existing executed-price simulation: adverse
+entry tick and TP-exit tick, exact SL fill, and time-exit close. The slippage
+diagnostics report these existing adjustments; they do not rerun a hypothetical
+no-slippage exit path. SL/TIME have zero extra exit slippage under the current
+simulator. **Do not subtract `total_friction_r` from gross:** its slippage is
+already reflected in execution prices. Fees are charged on those execution
+prices, and slippage is never an extra percentage fee or GST taxable component.
+
+Every counterfactual summary group additionally reports mean and p10/p25/p50/
+p75/p90 for fee R, slippage R and total friction R. Separate fee/friction buckets
+carry the same trade outcome statistics as existing cost buckets.
+
+The production cost gate remains `raw_entry * 0.00150 / (SL * ATR)` compared with
+the existing request/default threshold; `COST_R_MAX_GATE` remains `0.70`.
+Responses identify this as `cost_gate_model_version: LEGACY_FIXED_0_00150` and
+`cost_gate_estimate_pct: 0.00150`. Neither fee configuration nor realized exit
+turnover feeds the gate. The compatibility `TOTAL_COST_PCT` alias and explicit
+calibration calculations also retain the legacy proxy pending research review.
+No story, TP/SL, lookahead, safety predicates, date logic or phase parameters are
+changed, and no calibration is triggered.
+
+No new database migration is required. Normal generation stores the corrected
+fee-only `cost_r` and net `realized_r` in existing columns. Existing historical
+rows are not rewritten automatically; the response identifies the applied V1
+configuration, so keep it with research exports and compare regenerated windows
+consistently. Counterfactual/diagnostic requests remain response-only and cannot
+write research rows into normal outcomes or ML datasets.

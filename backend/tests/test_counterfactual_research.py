@@ -209,6 +209,7 @@ class TestCounterfactualSimulatorAndStatistics(unittest.TestCase):
             research.add(source, {
                 "simulation_status": "SIMULATED", "simulation_skip_reason": None,
                 "cost_r": cost, "exit_reason": ("TP_HIT", "SL_HIT", "TIME_EXIT")[i % 3],
+                "fee_cost_r": cost, "slippage_r": .1, "total_friction_r": cost + .1,
                 "realized_r_net": net[i], "realized_r_gross": net[i]+cost,
                 "trade_mfe_r": i+1., "trade_mae_r": -(i+1)/10,
             })

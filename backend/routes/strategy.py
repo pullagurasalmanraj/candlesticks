@@ -29,6 +29,10 @@ from routes.strategy_logic import (
 )
 
 from routes.strategy_counterfactual import CounterfactualResearch, _simulate_counterfactual_trade
+from routes.strategy_costs import (
+    COST_BREAKDOWN_FIELDS, COST_MODEL_VERSION, LEGACY_GATE_COST_PCT,
+    EquityIntradayCostModel, net_r_after_fees,
+)
 from routes.strategy_diagnostics import SafetyWaterfallAudit
 from routes.strategy_dates import _research_date_window, _research_window_metadata
 
@@ -1671,6 +1675,10 @@ def calc_strategy_outcomes():
         counterfactual_mode = data.get("counterfactual_mode", False)
         if not isinstance(counterfactual_mode, bool):
             return jsonify({"error": "counterfactual_mode must be a JSON boolean"}), 400
+        try:
+            cost_model = EquityIntradayCostModel.from_request(data.get("cost_model", {}))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
         symbol = (data.get("symbol") or "").upper().strip()
         timeframe = (data.get("timeframe") or "").lower().strip()
         exchange = (data.get("exchange") or "NSE").upper().strip()
@@ -2019,12 +2027,17 @@ def calc_strategy_outcomes():
                 cfg=cfg, atr=atrs[i], raw_entry=opens[audit_entry_idx] if audit_entry_idx < N else None,
                 same_session=audit_same_session, macro=macro_arr[i], price_structure=ps_arr[i],
                 exhaustion=exhaust_arr[i], signal_open=opens[i], signal_close=closes[i],
-                bar_of_day=bar_of_day_arr[i], cost_threshold=cost_r_gate, total_cost_pct=TOTAL_COST_PCT,
+                bar_of_day=bar_of_day_arr[i], cost_threshold=cost_r_gate, total_cost_pct=LEGACY_GATE_COST_PCT,
                 eod_bar_threshold=_EOD_BOD_THRESHOLD, eod_lookahead_threshold=_EOD_LA_MIN_GATE,
                 min_rules=min_rules_fired, rule_count=audit_rule_count,
             )
             if counterfactual_mode:
                 counterfactual_candidates.append((i, audit))
+            if diagnostic_mode:
+                # Rejected diagnostic rows are not simulated. Actual exit fees
+                # stay unknown; counterfactual_mode supplies those measurements.
+                audit.update(dict.fromkeys(COST_BREAKDOWN_FIELDS))
+                audit.update(cost_model_version=COST_MODEL_VERSION, fee_breakdown_status="NOT_SIMULATED")
             if not cfg:
                 safety_skip_counts["MISSING_PHASE_CONFIG"] += 1
                 safety_audit.finish(audit, "MISSING_PHASE_CONFIG")
@@ -2166,16 +2179,10 @@ def calc_strategy_outcomes():
                     continue  # signal bar closed bearish --- adverse for long
 
             # ------ FIX 4: Cost viability gate ------------------------------------------------------------------------------------
-            # Compute cost_r at the raw_entry price before spending time on
-            # full exit simulation. If costs consume more than 70% of 1R,
-            # the trade has no realistic positive-expectancy path regardless
-            # of accuracy. Skip it immediately.
-            #
-            # cost_r = (entry -- TOTAL_COST_PCT) / R
-            # R = sl_multiple -- ATR
-            # Threshold 0.7 means: net TP must be at least 0.3R above entry.
-            # This naturally eliminates most 1m trades (cost_r --- 1.3---1.5R)
-            # while keeping 15m trades (cost_r --- 0.2---0.4R) intact.
+            # Keep the existing gate estimate and comparison frozen pending
+            # research review: raw_entry * LEGACY_GATE_COST_PCT / (sl * ATR).
+            # Itemized fees and slippage are measured after simulation and do
+            # not feed eligibility. The default threshold remains 0.70.
             safety_audit.reached(audit, "COST_GATE")
             _R_preview = cfg["sl"] * atr
             if not math.isfinite(_R_preview) or _R_preview <= 0:
@@ -2183,7 +2190,7 @@ def calc_strategy_outcomes():
                 safety_audit.finish(audit, "INVALID_RISK")
                 continue
             if _R_preview > 0:
-                _cost_r_preview = (raw_entry * TOTAL_COST_PCT) / _R_preview
+                _cost_r_preview = (raw_entry * LEGACY_GATE_COST_PCT) / _R_preview
                 if _cost_r_preview > cost_r_gate:
                     n_cost_skipped += 1
                     safety_skip_counts["COST_GATE"] += 1
@@ -2305,15 +2312,17 @@ def calc_strategy_outcomes():
                     raw_pnl = exit_price - entry  # profit when price rises
                 realized_r_gross = raw_pnl / R
 
-            # ------ Transaction cost in R-units ---------------------------------------------------------------------
-            # Percentage costs scale with entry price (per share).
-            # Slippage is already embedded in entry and tp above.
-            # cost_r tells ML exactly how much edge is consumed by friction.
-            cost_pts = entry * TOTAL_COST_PCT  # --- cost per share, round trip
-            cost_r = cost_pts / R  # expressed as fraction of 1R
-
-            # ------ Net R (what lands in your account after all costs) ---
-            realized_r_net = realized_r_gross - cost_r
+            # Fees use actual buy/sell execution turnover. Gross already embeds
+            # slippage, so net subtracts fee_cost_r exactly once, never friction R.
+            costs = cost_model.calculate(
+                entry_price=entry, exit_price=exit_price, risk_points=R, is_short=is_short,
+                entry_slippage_pts=abs(entry - raw_entry),
+                exit_slippage_pts=SLIPPAGE_PTS if exit_reason == "TP_HIT" else 0.0,
+            )
+            cost_r = costs["fee_cost_r"]  # stored cost_r is the fee-only alias
+            realized_r_net = net_r_after_fees(realized_r_gross, costs)
+            if diagnostic_mode:
+                audit.update(costs, fee_breakdown_status="CALCULATED")
 
             exit_speed = exit_after / la_capped
             timing = (
@@ -2440,6 +2449,7 @@ def calc_strategy_outcomes():
                         closes=closes[entry_idx:session_stop], timestamps=ts_arr[entry_idx:session_stop],
                         horizon_n=min(_la_cache.get(phases[i], 2), session_stop - entry_idx),
                         is_short=audit["trade_direction"] == "SHORT",
+                        cost_model=cost_model,
                     )
                 research.add(audit, simulation, atr=atrs[i])
             counterfactual_summary = research.summary()
@@ -2521,6 +2531,10 @@ def calc_strategy_outcomes():
             "rows_written": 0 if diagnostic_mode or counterfactual_mode else len(rows),
             "outcomes_generated": len(rows),
             "diagnostic_mode": diagnostic_mode,
+            "cost_model_version": COST_MODEL_VERSION,
+            "cost_model": cost_model.metadata(),
+            "cost_gate_model_version": "LEGACY_FIXED_0_00150",
+            "cost_gate_estimate_pct": LEGACY_GATE_COST_PCT,
             "date_window": date_window,
             "elapsed_sec": elapsed,
             "phases_calibrated": n_calibrated,

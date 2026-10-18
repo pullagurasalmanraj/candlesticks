@@ -86,8 +86,8 @@ class SafetyWaterfallAudit:
               eod_bar_threshold, eod_lookahead_threshold, min_rules, rule_count):
         """Evaluate diagnostic predicates without changing execution decisions.
 
-        cost_r is the raw-entry preview used by COST_GATE, not the slightly
-        different slippage-adjusted cost_r stored on successful outcome rows.
+        cost_r is the frozen legacy raw-entry preview used by COST_GATE, not
+        the componentized fee_cost_r stored on successful outcome rows.
         Missing inputs remain unknown, never a zero cost or an assumed pass.
         """
         short = decision["trade_direction"] == "SHORT"
