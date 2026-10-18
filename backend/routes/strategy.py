@@ -28,6 +28,8 @@ from routes.strategy_logic import (
     invalidate_phase_params_cache
 )
 
+from routes.strategy_diagnostics import SafetyWaterfallAudit
+
 strategy_bp = Blueprint("strategy", __name__)
 
 
@@ -1645,6 +1647,9 @@ def calc_strategy_outcomes():
     try:
         t0 = time.time()
         data = request.get_json() or {}
+        diagnostic_mode = data.get("diagnostic_mode", False)
+        if not isinstance(diagnostic_mode, bool):
+            return jsonify({"error": "diagnostic_mode must be a JSON boolean"}), 400
         symbol = (data.get("symbol") or "").upper().strip()
         timeframe = (data.get("timeframe") or "").lower().strip()
         exchange = (data.get("exchange") or "NSE").upper().strip()
@@ -1962,6 +1967,7 @@ def calc_strategy_outcomes():
         eligibility_counts = Counter()
         safety_skip_counts = Counter()
         story_eligible_bars = 0
+        safety_audit = SafetyWaterfallAudit(retain_rows=diagnostic_mode)
         story_arrays = {name: df[name].to_numpy() for name in STORY_INPUT_COLUMNS}
 
         for i in range(N):
@@ -1978,16 +1984,38 @@ def calc_strategy_outcomes():
             if not decision["eligible"]:
                 continue
             story_eligible_bars += 1
+            # Observation only: assess every named gate even if execution will
+            # short-circuit earlier. Never use audit flags to authorize a trade.
+            audit_entry_idx = i + 1
+            audit_same_session = (
+                audit_entry_idx < N and session_dates[audit_entry_idx] == session_dates[i]
+            )
+            audit_ts = pd.Timestamp(ts_arr[i])
+            audit_rule_count = _ts_rule_count.get(
+                audit_ts.to_pydatetime(), _ts_rule_count.get(audit_ts, 0)
+            ) if min_rules_fired > 0 else 0
+            audit = safety_audit.begin(
+                ts=audit_ts.isoformat() + "Z", phase=phases[i], story=story, decision=decision,
+                cfg=cfg, atr=atrs[i], raw_entry=opens[audit_entry_idx] if audit_entry_idx < N else None,
+                same_session=audit_same_session, macro=macro_arr[i], price_structure=ps_arr[i],
+                exhaustion=exhaust_arr[i], signal_open=opens[i], signal_close=closes[i],
+                bar_of_day=bar_of_day_arr[i], cost_threshold=cost_r_gate, total_cost_pct=TOTAL_COST_PCT,
+                eod_bar_threshold=_EOD_BOD_THRESHOLD, eod_lookahead_threshold=_EOD_LA_MIN_GATE,
+                min_rules=min_rules_fired, rule_count=audit_rule_count,
+            )
             if not cfg:
                 safety_skip_counts["MISSING_PHASE_CONFIG"] += 1
+                safety_audit.finish(audit, "MISSING_PHASE_CONFIG")
                 continue
             la = _la_cache.get(phases[i], 2)
             entry_idx = i + 1
             if entry_idx >= N:
                 safety_skip_counts["NO_NEXT_BAR"] += 1
+                safety_audit.finish(audit, "NO_NEXT_BAR")
                 continue
             if session_dates[entry_idx] != session_dates[i]:
                 safety_skip_counts["NEXT_BAR_OUTSIDE_SESSION"] += 1
+                safety_audit.finish(audit, "NEXT_BAR_OUTSIDE_SESSION")
                 continue
 
             # Issue 2: Session boundary capping relative to entry bar (entry_idx = i + 1)
@@ -1995,6 +2023,7 @@ def calc_strategy_outcomes():
             max_bars_in_session = session_end - entry_idx + 1  # count of bars in session from entry_idx to session_end
             if max_bars_in_session < 1:
                 safety_skip_counts["NO_SESSION_RUNWAY"] += 1
+                safety_audit.finish(audit, "NO_SESSION_RUNWAY")
                 continue  # Skip trade if no bars remain in the current session
 
             la_capped = min(la, max_bars_in_session)
@@ -2002,6 +2031,7 @@ def calc_strategy_outcomes():
             atr = atrs[i]
             if not math.isfinite(atr) or atr <= 0:
                 safety_skip_counts["INVALID_ATR"] += 1
+                safety_audit.finish(audit, "INVALID_ATR")
                 continue
 
             # FIX 3: Use open of next bar as entry --- not close of signal bar.
@@ -2012,6 +2042,7 @@ def calc_strategy_outcomes():
 
             if not math.isfinite(raw_entry) or raw_entry <= 0:
                 safety_skip_counts["INVALID_ENTRY"] += 1
+                safety_audit.finish(audit, "INVALID_ENTRY")
                 continue
             # Story owns trend direction, including when the legacy phase disagrees.
             # Gap-only token resolution above preserves continuation/fade semantics.
@@ -2022,12 +2053,15 @@ def calc_strategy_outcomes():
             # Do not take LONG trades in a structural BEAR_MACRO market,
             # and do not take SHORT trades in a structural BULL_MACRO market.
             # Dynamic direction tokens have already resolved to a concrete side.
+            safety_audit.reached(audit, "MACRO_GATE")
             macro = macro_arr[i]
             if is_short and macro == "BULL_MACRO":
                 safety_skip_counts["MACRO_MISMATCH"] += 1
+                safety_audit.finish(audit, "MACRO_MISMATCH")
                 continue
             if not is_short and macro == "BEAR_MACRO":
                 safety_skip_counts["MACRO_MISMATCH"] += 1
+                safety_audit.finish(audit, "MACRO_MISMATCH")
                 continue
 
             # ------ FIX 19: Price structure alignment gate ------------------------------------------------
@@ -2035,6 +2069,7 @@ def calc_strategy_outcomes():
             # swing structure must agree with the trade direction.
             # A bull trend entry in BEAR or TRANSITION structure means
             # the higher-timeframe swing series disagrees --- skip it.
+            safety_audit.reached(audit, "PRICE_STRUCTURE_GATE")
             ps = ps_arr[i]
             phase_name_i = phases[i]
             trend_continuation = (
@@ -2046,23 +2081,27 @@ def calc_strategy_outcomes():
             )
             if continuation_gate and not is_short and ps in ("BEAR", "TRANSITION"):
                 safety_skip_counts["PRICE_STRUCTURE_MISMATCH"] += 1
+                safety_audit.finish(audit, "PRICE_STRUCTURE_MISMATCH")
                 continue
             if continuation_gate and is_short and ps in (
                 "BULL",
                 "TRANSITION",
             ):
                 safety_skip_counts["PRICE_STRUCTURE_MISMATCH"] += 1
+                safety_audit.finish(audit, "PRICE_STRUCTURE_MISMATCH")
                 continue
 
             # ------ FIX 20: Trend exhaustion gate ---------------------------------------------------------------------------
             # Skip TREND_CONTINUATION / BEAR_TREND_CONTINUATION when trend is
             # exhausted: MACD histogram shrinking for 2+ bars AND RSI extreme.
             # Prevents entering at the tail of an already-tired move.
+            safety_audit.reached(audit, "TREND_EXHAUSTION_GATE")
             if exhaust_arr[i] == 1 and (trend_continuation or phase_name_i in (
                 "TREND_CONTINUATION",
                 "BEAR_TREND_CONTINUATION",
             )):
                 safety_skip_counts["TREND_EXHAUSTED"] += 1
+                safety_audit.finish(audit, "TREND_EXHAUSTED")
                 continue
 
             # ------ FIX 1: Directional confirmation gate ------------------------------------------------------
@@ -2084,6 +2123,7 @@ def calc_strategy_outcomes():
             # BUG 6 FIX: skip gate on bar_of_day==0 (gap opening bars)
             # Gap bars often open against direction before resolving ---
             # filtering them here would eliminate the entire gap auction edge.
+            safety_audit.reached(audit, "SIGNAL_DIRECTION_GATE")
             if (
                 raw_dir in ("LONG", "SHORT", "FOLLOW", "FADE")
                 and bar_of_day_arr[i] != 0
@@ -2092,12 +2132,15 @@ def calc_strategy_outcomes():
                 bar_open = opens[i]
                 if not (math.isfinite(bar_close) and math.isfinite(bar_open)):
                     safety_skip_counts["INVALID_SIGNAL_BAR"] += 1
+                    safety_audit.finish(audit, "INVALID_SIGNAL_BAR")
                     continue
                 if is_short and bar_close >= bar_open:
                     safety_skip_counts["SIGNAL_DIRECTION_MISMATCH"] += 1
+                    safety_audit.finish(audit, "SIGNAL_DIRECTION_MISMATCH")
                     continue  # signal bar closed bullish --- adverse for short
                 if not is_short and bar_close <= bar_open:
                     safety_skip_counts["SIGNAL_DIRECTION_MISMATCH"] += 1
+                    safety_audit.finish(audit, "SIGNAL_DIRECTION_MISMATCH")
                     continue  # signal bar closed bearish --- adverse for long
 
             # ------ FIX 4: Cost viability gate ------------------------------------------------------------------------------------
@@ -2111,20 +2154,24 @@ def calc_strategy_outcomes():
             # Threshold 0.7 means: net TP must be at least 0.3R above entry.
             # This naturally eliminates most 1m trades (cost_r --- 1.3---1.5R)
             # while keeping 15m trades (cost_r --- 0.2---0.4R) intact.
+            safety_audit.reached(audit, "COST_GATE")
             _R_preview = cfg["sl"] * atr
             if not math.isfinite(_R_preview) or _R_preview <= 0:
                 safety_skip_counts["INVALID_RISK"] += 1
+                safety_audit.finish(audit, "INVALID_RISK")
                 continue
             if _R_preview > 0:
                 _cost_r_preview = (raw_entry * TOTAL_COST_PCT) / _R_preview
                 if _cost_r_preview > cost_r_gate:
                     n_cost_skipped += 1
                     safety_skip_counts["COST_GATE"] += 1
+                    safety_audit.finish(audit, "COST_GATE")
                     continue
 
             # ------ v28: EOD gate ---------------------------------------------------------------------------------------------------------------
             # Skip entries for slow phases (lookahead_min >= _EOD_LA_MIN_GATE)
             # when we are in the last 60 min of the session.
+            safety_audit.reached(audit, "EOD_GATE")
             if (
                 _EOD_LA_MIN_GATE > 0
                 and bar_of_day_arr[i] >= _EOD_BOD_THRESHOLD
@@ -2132,9 +2179,11 @@ def calc_strategy_outcomes():
             ):
                 n_eod_skipped += 1
                 safety_skip_counts["EOD_GATE"] += 1
+                safety_audit.finish(audit, "EOD_GATE")
                 continue
 
             # ------ v28: Minimum rules fired gate ---------------------------------------------------------------
+            safety_audit.reached(audit, "MIN_RULES_GATE")
             if min_rules_fired > 0:
                 ts_obj_check = pd.Timestamp(ts_arr[i])
                 if ts_obj_check.tz is not None:
@@ -2145,6 +2194,7 @@ def calc_strategy_outcomes():
                 if _rc < min_rules_fired:
                     n_rules_skipped += 1
                     safety_skip_counts["MIN_RULES_GATE"] += 1
+                    safety_audit.finish(audit, "MIN_RULES_GATE")
                     continue
 
             # ------ Slippage-adjusted entry ---------------------------------------------------------------------------------
@@ -2155,6 +2205,7 @@ def calc_strategy_outcomes():
             )
             if not math.isfinite(entry) or entry <= 0:
                 safety_skip_counts["INVALID_ENTRY"] += 1
+                safety_audit.finish(audit, "INVALID_ENTRY")
                 continue
 
             # ------ TP and SL from slippage-adjusted entry ------------------------------------
@@ -2180,6 +2231,7 @@ def calc_strategy_outcomes():
                 session_highs, session_lows, session_closes
             )):
                 safety_skip_counts["INVALID_FUTURE_PRICES"] += 1
+                safety_audit.finish(audit, "INVALID_FUTURE_PRICES")
                 continue
             # Issue 3: Exit simulation includes bar i+1 (the entry bar itself), capped at la_capped (Issue 2)
             exit_reason, exit_price, exit_after, mfe, mae = _simulate_exit_vectorized(
@@ -2198,9 +2250,11 @@ def calc_strategy_outcomes():
             R = abs(entry - sl)  # risk in price points
             if not math.isfinite(R) or R <= 0:
                 safety_skip_counts["INVALID_RISK"] += 1
+                safety_audit.finish(audit, "INVALID_RISK")
                 continue
             if exit_after <= 0:
                 safety_skip_counts["NO_EXIT_BARS"] += 1
+                safety_audit.finish(audit, "NO_EXIT_BARS")
                 continue
             excursions = _outcome_excursions(
                 entry, session_highs, session_lows,
@@ -2310,11 +2364,17 @@ def calc_strategy_outcomes():
                     float(cost_r),  # cost drag in R-units
                 ) + tuple(extra_values[name] for name in OUTCOME_STORY_COLUMNS)
             )
+            safety_audit.finish(audit)
 
         rejected_by_story = {
             reason: count for reason, count in eligibility_counts.items()
             if not reason.startswith("VALID_")
         }
+        safety_summary = safety_audit.summary()
+        if (safety_audit.population != story_eligible_bars
+                or safety_audit.accepted != len(rows)
+                or safety_audit.rejections != safety_skip_counts):
+            raise RuntimeError("Safety audit does not reconcile with execution")
         diagnostics = {
             "input_rows": N,  # indicator/context inner join in the requested window
             "story_eligible_bars": story_eligible_bars,
@@ -2327,6 +2387,7 @@ def calc_strategy_outcomes():
             "skipped_transition": eligibility_counts["REGIME_TRANSITION"],
             "skipped_range": eligibility_counts["REGIME_RANGE"],
             "skipped_context_only_event": eligibility_counts["EVENT_CONTEXT_ONLY"],
+            **safety_summary,
         }
         # Every joined input bar has one final disposition; no fake outcome rows.
         if N != len(rows) + diagnostics["total_skipped"]:
@@ -2383,26 +2444,29 @@ def calc_strategy_outcomes():
                 {extra_updates_sql}
         """
 
-        with get_db_conn() as conn:
-            with conn.cursor() as cur:
-                # A rerun is a replacement for the requested window. Without
-                # this cleanup, trades rejected by newer gates remain as stale
-                # training labels indefinitely.
-                cur.execute(
-                    """
-                    DELETE FROM strategy_outcomes
-                    WHERE symbol=%s AND exchange=%s AND timeframe=%s
-                      AND ts BETWEEN %s AND %s
-                    """,
-                    (symbol, exchange, timeframe, from_dt, to_dt),
-                )
-                if rows:
-                    _chunk_execute(cur, OUTCOME_SQL, rows)
+        if not diagnostic_mode:
+            with get_db_conn() as conn:
+                with conn.cursor() as cur:
+                    # A rerun is a replacement for the requested window. Without
+                    # this cleanup, trades rejected by newer gates remain as stale
+                    # training labels indefinitely.
+                    cur.execute(
+                        """
+                        DELETE FROM strategy_outcomes
+                        WHERE symbol=%s AND exchange=%s AND timeframe=%s
+                          AND ts BETWEEN %s AND %s
+                        """,
+                        (symbol, exchange, timeframe, from_dt, to_dt),
+                    )
+                    if rows:
+                        _chunk_execute(cur, OUTCOME_SQL, rows)
 
         elapsed = round(time.time() - t0, 1)
         res_payload = {
             "status": "SUCCESS",
-            "rows_written": len(rows),
+            "rows_written": 0 if diagnostic_mode else len(rows),
+            "outcomes_generated": len(rows),
+            "diagnostic_mode": diagnostic_mode,
             "elapsed_sec": elapsed,
             "phases_calibrated": n_calibrated,
             "phases_default": len(_cfg_cache) - n_calibrated - n_unviable_fallback,
@@ -2426,6 +2490,9 @@ def calc_strategy_outcomes():
                 "Calibrated parameters were ignored and PHASE_MODEL defaults were used. "
                 "Use a request window starting after calibration for out-of-sample evaluation."
             )
+        if diagnostic_mode:
+            res_payload.update(status="DIAGNOSTIC", audit_rows=safety_audit.rows)
+            return jsonify(res_payload)
         if not rows:
             # Preserve the existing 400 contract, now with actionable diagnostics.
             res_payload.update(status="NO_OUTCOMES", error="No eligible outcomes generated; inspect rejection counts.")

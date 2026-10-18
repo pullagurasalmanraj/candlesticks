@@ -160,3 +160,105 @@ cases, both-direction same-bar SL priority, separate excursion windows, next-bar
 and session boundaries, legacy direction conflicts, unchanged safety gates,
 calibration overlap, batched write tuple alignment, and zero-output diagnostics.
 Route tests use mocked database reads/writes; no production database is changed.
+
+## Safety waterfall audit (diagnostics only)
+
+Add `"diagnostic_mode": true` to the **same request** used for the research run,
+including the same symbol, timeframe, date range and parameter overrides:
+
+```json
+{
+  "symbol": "ITC",
+  "exchange": "NSE",
+  "timeframe": "5m",
+  "diagnostic_mode": true
+}
+```
+
+This is a read-only simulation: it does not delete, insert, or update any database
+rows. It uses the same story policy, parameters, safety gates, order and simulator.
+The response has `status: DIAGNOSTIC`, `rows_written: 0`, and `outcomes_generated`
+equal to the simulated final trade count. Even zero-trade diagnostic runs return
+HTTP 200 with the audit. Normal requests retain their existing write behavior
+and HTTP 400 `NO_OUTCOMES` contract. No additional schema migration is required.
+
+`audit_rows` contains **every story-eligible bar**, including rejected setups.
+Each row has the current-bar story fields, setup key, intended direction, all
+requested safety inputs and pass flags, `final_eligible`, and the actual
+`final_skip_reason`. Accepted rows have a null skip reason. `ts` is an ISO UTC
+timestamp; stored timestamps and session handling have not changed.
+
+Two views of safety checks are deliberately separate:
+
+- `safety_pass_fail_counts` evaluates each named gate independently for every
+  story-eligible bar, even when an earlier gate stopped execution. This exposes
+  overlapping failures. Counts are divided into `passed`, `failed`,
+  `not_applicable`, and `unavailable`, summing to `story_eligible_bars` per gate.
+- `safety_waterfall_counts` records actual visits in the unchanged short-circuit
+  loop. Each gate reports those same categories, `reached`, and `not_reached`.
+  Entry/session/data prerequisites can stop execution before any named gate.
+  The per-row `gates_reached` list records the actual visit order; prerequisite
+  and later validation failures remain visible in `final_skip_reason`.
+
+The named order is macro, price structure, exhaustion, signal direction, cost,
+EOD, then minimum rules. `independent_failed_gates` on each row shows overlapping
+failures; it never controls execution. A bypassed gate (such as signal confirmation
+on the opening gap bar) has its `*_applicable` flag false and its `*_pass` flag
+true, but is counted as `not_applicable`, not as an evaluated pass. Unavailable
+data produces null pass values and null costs rather than zeros or assumed passes.
+
+`cost_r` in the audit is the **gate preview**:
+
+```text
+raw next-bar open * TOTAL_COST_PCT / (SL multiple * signal-bar ATR)
+```
+
+It uses the actual effective phase parameters, including calibrated parameters
+when permitted. This differs slightly from the slippage-adjusted `cost_r` on
+successful `strategy_outcomes` rows. The audit includes `entry_price_raw`,
+`risk_points`, `cost_gate_threshold` and `cost_r_unavailable_reason` to make that
+distinction explicit. No same-session next entry, invalid ATR/risk, or nonfinite
+costs are not silently included as zero-cost observations.
+
+Summary fields:
+
+- `story_eligible_bars` and `final_eligible_trades`.
+- `cost_r_statistics`: count, unavailable count, min/max/mean, and p10/p25/p50/p75/p90.
+- `cost_r_statistics_by_setup_key`: the same metrics for each setup, including
+  those rejected before cost was reached. Quantiles use all finite available
+  gate-preview costs, with NumPy's default linear interpolation.
+- `safety_rejection_counts_by_setup_key` and
+  `safety_rejection_counts_by_direction`: actual first-stop reasons.
+- `story_eligible_counts_by_setup_key` and `story_eligible_counts_by_direction`:
+  group population sizes for interpreting those counts.
+- `safety_rejection_pct_of_story_eligible`,
+  `cost_gate_rejection_pct_of_story_eligible`, and
+  `final_eligible_pct_of_story_eligible`: percentages on the full story-eligible
+  population. Each independent/waterfall gate also reports its own failure
+  percentage on that same denominator.
+
+For 71 first-stop cost rejections among 105 story-eligible bars, the cost rejection
+percentage is `67.619048`, and
+`cost_gate_rejection_fraction_of_story_eligible` is `71 / 105` (about `0.67619`).
+The legacy `pct_skipped_by_cost` still uses total joined input rows for backward
+compatibility. Empty populations produce null percentages and quantiles.
+
+For diagnostics, reconcile using `outcomes_generated`, not `rows_written`:
+
+```text
+input_rows = outcomes_generated + total_skipped
+story_eligible_bars = final_eligible_trades + sum(skipped_by_safety)
+```
+
+Summaries are also returned during normal outcome generation, but detailed
+`audit_rows` are retained/returned only when diagnostic mode is enabled. Each
+story-eligible row has exactly one final disposition. Independent failures can
+overlap, so their sum must not be interpreted as the number of rejected setups.
+Overlapping failures alone do not establish a gate's profitability or justify
+removing it; no rejected setup is simulated as a hypothetical executed trade.
+
+`test_safety_diagnostics.py` includes a synthetic 825-input/105-story-eligible
+case matching the 47 bull, 44 bear, 14 gap counts and the 71 cost, 17 structure,
+13 signal, 2 macro, 1 exhaustion rejections. It separately verifies cost overlap,
+percentiles and grouping, read-only behavior, early prerequisite failures,
+unknown data, and agreement between normal and diagnostic simulation.
