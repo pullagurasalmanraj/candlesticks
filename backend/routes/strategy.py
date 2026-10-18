@@ -2,7 +2,8 @@
 # ================================================================
 #  Strategy Route Handlers Blueprint
 # ================================================================
-import time, math, traceback
+import time, math, traceback, json
+from collections import Counter
 from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
@@ -18,11 +19,80 @@ from routes.strategy_logic import (
     _build_market_rows,
     _build_rule_rows,
     _simulate_exit_vectorized,
+    _resolve_story_trade,
+    _story_trade_context,
+    _legacy_trade_direction,
+    _outcome_excursions,
+    STORY_TRADE_DEFAULTS,
     _load_phase_params,
     invalidate_phase_params_cache
 )
 
 strategy_bp = Blueprint("strategy", __name__)
+
+
+STORY_INPUT_COLUMNS = (
+    "story_regime", "bar_event", "regime_rule_score", "event_rule_score",
+    "regime_age_bars", "candidate_regime", "candidate_age_bars",
+    "candidate_rule_score", "regime_reason_code", "event_reason_code",
+    "story_version", "reason_details",
+)
+OUTCOME_EXCURSION_COLUMNS = tuple(
+    f"{period}_{metric}"
+    for period in ("trade", "horizon", "session")
+    for metric in ("mfe", "mae", "mfe_r", "mae_r")
+)
+OUTCOME_STORY_COLUMNS = (
+    "phase_reason", *STORY_INPUT_COLUMNS,
+    "directional_edge", "bull_score", "bear_score",
+    "trade_direction", "setup_key", "eligibility_reason",
+    *OUTCOME_EXCURSION_COLUMNS,
+)
+
+
+def _outcome_schema_columns(conn):
+    """Inspect the actual search-path tables before reading/replacing outcomes."""
+    schema = read_sql_safe(
+        """
+        SELECT c.relname AS table_name, a.attname AS column_name
+        FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+        WHERE a.attrelid IN (to_regclass('market_context'),
+                            to_regclass('strategy_outcomes'))
+          AND a.attnum > 0 AND NOT a.attisdropped
+        """, conn,
+    )
+    return {
+        name: set(schema.loc[schema.table_name == name, "column_name"])
+        if not schema.empty else set()
+        for name in ("market_context", "strategy_outcomes")
+    }
+
+
+def _story_policy_from_request(value):
+    """Validate explicit research overrides without allowing NaN thresholds."""
+    if value is None:
+        return dict(STORY_TRADE_DEFAULTS)
+    if not isinstance(value, dict) or set(value) - STORY_TRADE_DEFAULTS.keys():
+        raise ValueError("story_policy must contain only supported threshold names")
+    policy = {**STORY_TRADE_DEFAULTS, **value}
+    for key, value in policy.items():
+        if isinstance(value, bool):
+            raise ValueError(f"Invalid story_policy {key}")
+        try:
+            number = float(value)
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid story_policy {key}") from None
+        if not math.isfinite(number):
+            raise ValueError(f"Invalid story_policy {key}")
+        if key == "min_regime_age_bars":
+            if number < 1 or not number.is_integer():
+                raise ValueError("min_regime_age_bars must be a positive integer")
+            policy[key] = int(number)
+        elif not 0 <= number <= 1:
+            raise ValueError(f"{key} must be between 0 and 1")
+        else:
+            policy[key] = number
+    return policy
 
 
 def _session_vix_level(df):
@@ -1592,6 +1662,11 @@ def calc_strategy_outcomes():
         # Default 0.70 --- costs must not exceed 70% of 1R. Pass 1.0 to disable.
         cost_r_gate = float(data.get("cost_r_gate", COST_R_MAX_GATE))
 
+        try:
+            story_policy = _story_policy_from_request(data.get("story_policy"))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+
         if not symbol or not timeframe:
             return jsonify({"error": "symbol and timeframe required"}), 400
         if timeframe not in {"1m", "3m", "5m", "15m"}:
@@ -1600,8 +1675,24 @@ def calc_strategy_outcomes():
             return jsonify({"error": "from_date must be before to_date"}), 400
 
         with get_db_conn() as conn:
+            schema_columns = _outcome_schema_columns(conn)
+            missing = {
+                "market_context": sorted(set(STORY_INPUT_COLUMNS) - schema_columns["market_context"]),
+                "strategy_outcomes": sorted(set(OUTCOME_STORY_COLUMNS) - schema_columns["strategy_outcomes"]),
+            }
+            if any(missing.values()):
+                # Never replace old rows with a legacy-only or unmigrated run.
+                return jsonify({
+                    "error": "Story outcome schema is incomplete. Apply the market-story and story-outcome migrations, then relabel if needed.",
+                    "missing_columns": missing,
+                }), 409
+            story_select = ", ".join(f"mc.{name}" for name in STORY_INPUT_COLUMNS)
+            phase_reason_select = (
+                "mc.phase_reason" if "phase_reason" in schema_columns["market_context"]
+                else "NULL::text AS phase_reason"
+            )
             df = read_sql_safe(
-                """
+                f"""
                 SELECT i.ts,i.open,i.high,i.low,i.close,i.atr_14,
                        mc.market_phase,mc.minute_of_day,
                        mc.ema_21_slope,mc.vwap_dist_pct,mc.range_efficiency,
@@ -1610,7 +1701,7 @@ def calc_strategy_outcomes():
                        COALESCE(mc.trend_exhaustion, 0)               AS trend_exhaustion,
                        COALESCE(mc.gap_atr,          0)               AS gap_atr,
                        COALESCE(mc.minute_of_day,    0)               AS minute_of_day_mc,
-                       mc.impulse_dir
+                       mc.impulse_dir, {phase_reason_select}, {story_select}
                 FROM indicators i
                 JOIN market_context mc
                   ON i.symbol=mc.symbol AND i.exchange=mc.exchange
@@ -1838,7 +1929,7 @@ def calc_strategy_outcomes():
                     effective_cfg["source"] = "default_unviable_fallback"
                 else:
                     effective_cfg = {
-                        "dir": default_cfg["dir"],  # direction never overridden
+                        "dir": default_cfg["dir"],  # gap resolver only; story owns trend direction
                         "tp": dp["tp"],
                         "sl": dp["sl"],
                         "lookahead_min": dp["lookahead_min"],
@@ -1868,28 +1959,49 @@ def calc_strategy_outcomes():
             if c.get("source") == "default_unviable_fallback"
         )
         n_cost_skipped = 0  # tracks trades skipped by cost_r gate
+        eligibility_counts = Counter()
+        safety_skip_counts = Counter()
+        story_eligible_bars = 0
+        story_arrays = {name: df[name].to_numpy() for name in STORY_INPUT_COLUMNS}
 
         for i in range(N):
-            cfg = _cfg_cache.get(phases[i])  # data-derived or hardcoded fallback
+            cfg = _cfg_cache.get(phases[i])  # legacy risk parameters only
+            story = _story_trade_context({name: values[i] for name, values in story_arrays.items()})
+            gap_direction = None
+            if story.get("story_regime") == "GAP_AUCTION" and cfg:
+                gap_direction = _legacy_trade_direction(
+                    cfg["dir"], gap_atr_col[i], ema_slope_col[i],
+                    impulse_dir_col[i], vwap_dist_col[i],
+                )
+            decision = _resolve_story_trade(story, gap_direction=gap_direction, **story_policy)
+            eligibility_counts[decision["eligibility_reason"]] += 1
+            if not decision["eligible"]:
+                continue
+            story_eligible_bars += 1
             if not cfg:
+                safety_skip_counts["MISSING_PHASE_CONFIG"] += 1
                 continue
             la = _la_cache.get(phases[i], 2)
             entry_idx = i + 1
             if entry_idx >= N:
+                safety_skip_counts["NO_NEXT_BAR"] += 1
                 continue
             if session_dates[entry_idx] != session_dates[i]:
+                safety_skip_counts["NEXT_BAR_OUTSIDE_SESSION"] += 1
                 continue
 
             # Issue 2: Session boundary capping relative to entry bar (entry_idx = i + 1)
             session_end = session_end_idx[entry_idx]
             max_bars_in_session = session_end - entry_idx + 1  # count of bars in session from entry_idx to session_end
             if max_bars_in_session < 1:
+                safety_skip_counts["NO_SESSION_RUNWAY"] += 1
                 continue  # Skip trade if no bars remain in the current session
 
             la_capped = min(la, max_bars_in_session)
 
             atr = atrs[i]
-            if atr <= 0:
+            if not math.isfinite(atr) or atr <= 0:
+                safety_skip_counts["INVALID_ATR"] += 1
                 continue
 
             # FIX 3: Use open of next bar as entry --- not close of signal bar.
@@ -1898,57 +2010,13 @@ def calc_strategy_outcomes():
             # look-ahead bias: every trade has a slightly better entry than live.
             raw_entry = opens[i + 1] if i + 1 < N else closes[i]  # next bar open
 
-            # ------ FIX 7: Resolve abstract direction tokens to LONG/SHORT ------
-            # FOLLOW, FADE, MEAN, BREAKOUT, NEUTRAL were silently treated as
-            # is_short=False (always LONG). This was wrong --- GAP_TIMEOUT
-            # "FOLLOW"s the gap direction (could be SHORT), GAP_CONTINUATION
-            # follows the impulse direction, FADE is the OPPOSITE of the
-            # last impulse. Using the wrong direction poisons all these outcomes.
-            #
-            # Resolution logic (uses bar i context --- no lookahead):
-            #   FOLLOW    --- follow the gap direction (gap_atr > 0 --- LONG, < 0 --- SHORT)
-            #               falls back to EMA slope if gap_atr == 0
-            #   FADE      --- opposite of last impulse direction (impulse_dir array)
-            #               falls back to opposite of EMA slope
-            #   MEAN      --- whichever side price is currently on vs VWAP
-            #               (above VWAP --- expect revert --- SHORT; below --- LONG)
-            #   BREAKOUT  --- follow EMA slope (momentum direction at bar i)
-            #   NEUTRAL   --- skip (no directional bet possible)
-            raw_dir = cfg["dir"]
-            if raw_dir == "SHORT":
-                is_short = True
-            elif raw_dir == "LONG":
-                is_short = False
-            elif raw_dir == "FOLLOW":
-                # gap_atr_col: > 0 gap up --- follow up (LONG); < 0 gap down --- follow down (SHORT)
-                gap_a = gap_atr_col[i]
-                if gap_a > 0:
-                    is_short = False
-                elif gap_a < 0:
-                    is_short = True
-                else:
-                    # No gap context --- fall back to EMA slope
-                    is_short = ema_slope_col[i] < 0
-            elif raw_dir == "FADE":
-                # FADE = trade opposite to the most recent impulse direction
-                last_impl = impulse_dir_col[i]
-                if last_impl == "BULL":
-                    is_short = True  # fade the bull impulse --- short
-                elif last_impl == "BEAR":
-                    is_short = False  # fade the bear impulse --- long
-                else:
-                    # No impulse context --- fade the EMA slope direction
-                    is_short = ema_slope_col[i] > 0
-            elif raw_dir == "MEAN":
-                # Mean-revert: price above VWAP --- expect pull-down --- SHORT
-                #              price below VWAP --- expect bounce  --- LONG
-                is_short = vwap_dist_col[i] > 0
-            elif raw_dir == "BREAKOUT":
-                # Follow momentum direction at bar i
-                is_short = ema_slope_col[i] < 0
-            else:
-                # NEUTRAL or unknown --- no directional bet
+            if not math.isfinite(raw_entry) or raw_entry <= 0:
+                safety_skip_counts["INVALID_ENTRY"] += 1
                 continue
+            # Story owns trend direction, including when the legacy phase disagrees.
+            # Gap-only token resolution above preserves continuation/fade semantics.
+            is_short = decision["trade_direction"] == "SHORT"
+            raw_dir = cfg["dir"] if story["story_regime"] == "GAP_AUCTION" else decision["trade_direction"]
 
             # ------ FIX 18: Macro regime gate ---------------------------------------------------------------------------------------
             # Do not take LONG trades in a structural BEAR_MACRO market,
@@ -1956,8 +2024,10 @@ def calc_strategy_outcomes():
             # Dynamic direction tokens have already resolved to a concrete side.
             macro = macro_arr[i]
             if is_short and macro == "BULL_MACRO":
+                safety_skip_counts["MACRO_MISMATCH"] += 1
                 continue
             if not is_short and macro == "BEAR_MACRO":
+                safety_skip_counts["MACRO_MISMATCH"] += 1
                 continue
 
             # ------ FIX 19: Price structure alignment gate ------------------------------------------------
@@ -1967,22 +2037,32 @@ def calc_strategy_outcomes():
             # the higher-timeframe swing series disagrees --- skip it.
             ps = ps_arr[i]
             phase_name_i = phases[i]
-            if phase_name_i == "TREND_CONTINUATION" and ps in ("BEAR", "TRANSITION"):
+            trend_continuation = (
+                story["story_regime"] in {"BULL_TREND", "BEAR_TREND"}
+                and story["bar_event"] == "CONTINUATION"
+            )
+            continuation_gate = trend_continuation or phase_name_i in (
+                "TREND_CONTINUATION", "BEAR_TREND_CONTINUATION"
+            )
+            if continuation_gate and not is_short and ps in ("BEAR", "TRANSITION"):
+                safety_skip_counts["PRICE_STRUCTURE_MISMATCH"] += 1
                 continue
-            if phase_name_i == "BEAR_TREND_CONTINUATION" and ps in (
+            if continuation_gate and is_short and ps in (
                 "BULL",
                 "TRANSITION",
             ):
+                safety_skip_counts["PRICE_STRUCTURE_MISMATCH"] += 1
                 continue
 
             # ------ FIX 20: Trend exhaustion gate ---------------------------------------------------------------------------
             # Skip TREND_CONTINUATION / BEAR_TREND_CONTINUATION when trend is
             # exhausted: MACD histogram shrinking for 2+ bars AND RSI extreme.
             # Prevents entering at the tail of an already-tired move.
-            if exhaust_arr[i] == 1 and phase_name_i in (
+            if exhaust_arr[i] == 1 and (trend_continuation or phase_name_i in (
                 "TREND_CONTINUATION",
                 "BEAR_TREND_CONTINUATION",
-            ):
+            )):
+                safety_skip_counts["TREND_EXHAUSTED"] += 1
                 continue
 
             # ------ FIX 1: Directional confirmation gate ------------------------------------------------------
@@ -2010,9 +2090,14 @@ def calc_strategy_outcomes():
             ):
                 bar_close = closes[i]
                 bar_open = opens[i]
+                if not (math.isfinite(bar_close) and math.isfinite(bar_open)):
+                    safety_skip_counts["INVALID_SIGNAL_BAR"] += 1
+                    continue
                 if is_short and bar_close >= bar_open:
+                    safety_skip_counts["SIGNAL_DIRECTION_MISMATCH"] += 1
                     continue  # signal bar closed bullish --- adverse for short
                 if not is_short and bar_close <= bar_open:
+                    safety_skip_counts["SIGNAL_DIRECTION_MISMATCH"] += 1
                     continue  # signal bar closed bearish --- adverse for long
 
             # ------ FIX 4: Cost viability gate ------------------------------------------------------------------------------------
@@ -2027,10 +2112,14 @@ def calc_strategy_outcomes():
             # This naturally eliminates most 1m trades (cost_r --- 1.3---1.5R)
             # while keeping 15m trades (cost_r --- 0.2---0.4R) intact.
             _R_preview = cfg["sl"] * atr
+            if not math.isfinite(_R_preview) or _R_preview <= 0:
+                safety_skip_counts["INVALID_RISK"] += 1
+                continue
             if _R_preview > 0:
                 _cost_r_preview = (raw_entry * TOTAL_COST_PCT) / _R_preview
                 if _cost_r_preview > cost_r_gate:
                     n_cost_skipped += 1
+                    safety_skip_counts["COST_GATE"] += 1
                     continue
 
             # ------ v28: EOD gate ---------------------------------------------------------------------------------------------------------------
@@ -2042,6 +2131,7 @@ def calc_strategy_outcomes():
                 and cfg.get("lookahead_min", 0) >= _EOD_LA_MIN_GATE
             ):
                 n_eod_skipped += 1
+                safety_skip_counts["EOD_GATE"] += 1
                 continue
 
             # ------ v28: Minimum rules fired gate ---------------------------------------------------------------
@@ -2054,6 +2144,7 @@ def calc_strategy_outcomes():
                 )
                 if _rc < min_rules_fired:
                     n_rules_skipped += 1
+                    safety_skip_counts["MIN_RULES_GATE"] += 1
                     continue
 
             # ------ Slippage-adjusted entry ---------------------------------------------------------------------------------
@@ -2062,6 +2153,9 @@ def calc_strategy_outcomes():
             entry = (
                 raw_entry + SLIPPAGE_PTS if not is_short else raw_entry - SLIPPAGE_PTS
             )
+            if not math.isfinite(entry) or entry <= 0:
+                safety_skip_counts["INVALID_ENTRY"] += 1
+                continue
 
             # ------ TP and SL from slippage-adjusted entry ------------------------------------
             # TP exit also has slippage working against you:
@@ -2079,14 +2173,22 @@ def calc_strategy_outcomes():
                 )  # sell TP fills lower (worse)
                 sl = entry - cfg["sl"] * atr  # stop loss fills at SL
 
+            session_highs = highs[entry_idx:session_end + 1]
+            session_lows = lows[entry_idx:session_end + 1]
+            session_closes = closes[entry_idx:session_end + 1]
+            if not all(np.isfinite(prices).all() for prices in (
+                session_highs, session_lows, session_closes
+            )):
+                safety_skip_counts["INVALID_FUTURE_PRICES"] += 1
+                continue
             # Issue 3: Exit simulation includes bar i+1 (the entry bar itself), capped at la_capped (Issue 2)
             exit_reason, exit_price, exit_after, mfe, mae = _simulate_exit_vectorized(
                 entry,
                 tp,
                 sl,
-                highs[i + 1 : i + 1 + max_bars_in_session],
-                lows[i + 1 : i + 1 + max_bars_in_session],
-                closes[i + 1 : i + 1 + max_bars_in_session],
+                session_highs,
+                session_lows,
+                session_closes,
                 la_capped,
                 is_short=is_short,
                 excursion_n=max_bars_in_session,
@@ -2094,9 +2196,20 @@ def calc_strategy_outcomes():
 
             ts = ts_arr[i]
             R = abs(entry - sl)  # risk in price points
-            if R <= 0:
+            if not math.isfinite(R) or R <= 0:
+                safety_skip_counts["INVALID_RISK"] += 1
                 continue
-
+            if exit_after <= 0:
+                safety_skip_counts["NO_EXIT_BARS"] += 1
+                continue
+            excursions = _outcome_excursions(
+                entry, session_highs, session_lows,
+                exit_after, la_capped, R, is_short,
+            )
+            # Legacy mfe/mae remain full-session research metrics for consumers
+            # such as calibrate-phase-params; explicit columns remove ambiguity.
+            mfe = excursions["session_mfe"]
+            mae = excursions["session_mae"]
             mfe_r = mfe / R
             mae_r = mae / R
 
@@ -2148,6 +2261,11 @@ def calc_strategy_outcomes():
                     rule_truth.get((ts_py, key), rule_truth.get((ts, key), False))
                 )
 
+            extra_values = {
+                **story, **decision, **excursions,
+                "phase_reason": row_mc.get("phase_reason"),
+                "reason_details": json.dumps(story["reason_details"], allow_nan=False),
+            }
             rows.append(
                 (
                     symbol,
@@ -2190,28 +2308,33 @@ def calc_strategy_outcomes():
                     str(timing),  # str
                     float(realized_r_gross),  # gross R before transaction costs
                     float(cost_r),  # cost drag in R-units
-                )
+                ) + tuple(extra_values[name] for name in OUTCOME_STORY_COLUMNS)
             )
 
-        if not rows:
-            with get_db_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        DELETE FROM strategy_outcomes
-                        WHERE symbol=%s AND exchange=%s AND timeframe=%s
-                          AND ts BETWEEN %s AND %s
-                        """,
-                        (symbol, exchange, timeframe, from_dt, to_dt),
-                    )
-            return (
-                jsonify(
-                    {"error": "No outcomes generated --- check PHASE_MODEL coverage"}
-                ),
-                400,
-            )
+        rejected_by_story = {
+            reason: count for reason, count in eligibility_counts.items()
+            if not reason.startswith("VALID_")
+        }
+        diagnostics = {
+            "input_rows": N,  # indicator/context inner join in the requested window
+            "story_eligible_bars": story_eligible_bars,
+            "eligible_trades": len(rows),
+            "eligibility_reason_counts": dict(eligibility_counts),
+            "skipped_by_eligibility": rejected_by_story,
+            "skipped_by_safety": dict(safety_skip_counts),
+            "total_skipped": sum(rejected_by_story.values()) + sum(safety_skip_counts.values()),
+            "story_policy": story_policy,
+            "skipped_transition": eligibility_counts["REGIME_TRANSITION"],
+            "skipped_range": eligibility_counts["REGIME_RANGE"],
+            "skipped_context_only_event": eligibility_counts["EVENT_CONTEXT_ONLY"],
+        }
+        # Every joined input bar has one final disposition; no fake outcome rows.
+        if N != len(rows) + diagnostics["total_skipped"]:
+            raise RuntimeError("Outcome rejection counts do not reconcile")
 
-        OUTCOME_SQL = """
+        extra_columns_sql = ", ".join(OUTCOME_STORY_COLUMNS)
+        extra_updates_sql = ", ".join(f"{name}=EXCLUDED.{name}" for name in OUTCOME_STORY_COLUMNS)
+        OUTCOME_SQL = f"""
             INSERT INTO strategy_outcomes (
                 symbol,exchange,timeframe,ts,market_phase,minute_of_day,
                 orb_fired,ema_trend_fired,atr_expansion_fired,
@@ -2222,7 +2345,7 @@ def calc_strategy_outcomes():
                 vwap_trend_outcome,volume_expansion_outcome,
                 exit_reason,exit_ts,mfe,mae,lookahead_candles,created_at,
                 mfe_r,mae_r,realized_r,exit_after_candles,exit_speed_ratio,outcome_timing,
-                realized_r_gross,cost_r
+                realized_r_gross,cost_r,{extra_columns_sql}
             ) VALUES %s
             ON CONFLICT (symbol,exchange,timeframe,ts) DO UPDATE SET
                 market_phase=EXCLUDED.market_phase,
@@ -2256,7 +2379,8 @@ def calc_strategy_outcomes():
                 outcome_timing=EXCLUDED.outcome_timing,
                 realized_r_gross=EXCLUDED.realized_r_gross,
                 cost_r=EXCLUDED.cost_r,
-                created_at=EXCLUDED.created_at
+                created_at=EXCLUDED.created_at,
+                {extra_updates_sql}
         """
 
         with get_db_conn() as conn:
@@ -2272,7 +2396,8 @@ def calc_strategy_outcomes():
                     """,
                     (symbol, exchange, timeframe, from_dt, to_dt),
                 )
-                _chunk_execute(cur, OUTCOME_SQL, rows)
+                if rows:
+                    _chunk_execute(cur, OUTCOME_SQL, rows)
 
         elapsed = round(time.time() - t0, 1)
         res_payload = {
@@ -2292,6 +2417,7 @@ def calc_strategy_outcomes():
             "skipped_by_eod": n_eod_skipped,
             "skipped_by_min_rules": n_rules_skipped,
             "min_rules_fired": min_rules_fired,
+            **diagnostics,
         }
         if params_overlap_warning:
             res_payload["overlap_warning_details"] = (
@@ -2300,6 +2426,10 @@ def calc_strategy_outcomes():
                 "Calibrated parameters were ignored and PHASE_MODEL defaults were used. "
                 "Use a request window starting after calibration for out-of-sample evaluation."
             )
+        if not rows:
+            # Preserve the existing 400 contract, now with actionable diagnostics.
+            res_payload.update(status="NO_OUTCOMES", error="No eligible outcomes generated; inspect rejection counts.")
+            return jsonify(res_payload), 400
         return jsonify(res_payload)
 
     except Exception:

@@ -949,6 +949,170 @@ def _finite_float(value, default=0.0):
     return result if math.isfinite(result) else float(default)
 
 
+MIN_REGIME_SCORE = 0.60
+MIN_EVENT_SCORE = 0.50
+MIN_DIRECTIONAL_EDGE = 0.25
+MIN_REGIME_AGE_BARS = 2
+STORY_TRADE_DEFAULTS = {
+    "min_regime_score": MIN_REGIME_SCORE,
+    "min_event_score": MIN_EVENT_SCORE,
+    "min_directional_edge": MIN_DIRECTIONAL_EDGE,
+    "min_regime_age_bars": MIN_REGIME_AGE_BARS,
+}
+EXECUTABLE_STORY_EVENTS = frozenset(
+    {"CONTINUATION", "ACCEPTANCE", "IMPULSE", "EXPANSION"}
+)
+CONFIRMED_STORY_REASONS = frozenset(
+    {"REGIME_EVIDENCE_CONFIRMED", "REGIME_CANDIDATE_CONFIRMED"}
+)
+
+
+def _story_trade_context(row):
+    """Normalize current-bar evidence; malformed/missing JSON fails closed.
+
+    Parse numbers here rather than casting JSON text in SQL: old rows may
+    contain JSON null, strings, NaN or malformed numeric evidence.
+    """
+    context = dict(row)
+    for name in ("story_regime", "bar_event", "candidate_regime",
+                 "regime_reason_code", "event_reason_code"):
+        if not isinstance(context.get(name), str):
+            context[name] = None
+    details = context.get("reason_details")
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except (TypeError, ValueError):
+            details = {}
+    details = details if isinstance(details, dict) else {}
+    context["reason_details"] = details
+    for name in ("directional_edge", "bull_score", "bear_score"):
+        value = context.get(name, details.get(name))
+        context[name] = 0.0 if isinstance(value, bool) else _finite_float(value)
+    return context
+
+
+def _legacy_trade_direction(raw_dir, gap_atr=0.0, ema_slope=0.0,
+                            impulse_dir=None, vwap_dist=0.0):
+    """Existing directional token resolution, retained only for gap trades."""
+    impulse_dir = impulse_dir if isinstance(impulse_dir, str) else None
+    if raw_dir in {"LONG", "SHORT"}:
+        return raw_dir
+    if raw_dir == "FOLLOW":
+        gap = _finite_float(gap_atr)
+        short = gap < 0 if gap != 0 else _finite_float(ema_slope) < 0
+    elif raw_dir == "FADE":
+        short = (True if impulse_dir == "BULL" else False
+                 if impulse_dir == "BEAR" else _finite_float(ema_slope) > 0)
+    elif raw_dir == "MEAN":
+        short = _finite_float(vwap_dist) > 0
+    elif raw_dir == "BREAKOUT":
+        short = _finite_float(ema_slope) < 0
+    else:
+        return None
+    return "SHORT" if short else "LONG"
+
+
+def _resolve_story_trade(context, *, gap_direction=None, **thresholds):
+    """Resolve eligibility/direction using only evidence known on this bar.
+
+    Legacy phases supply risk parameters elsewhere, never trend direction.
+    Pending confirmation is not a new reason-code taxonomy: these are the
+    exact confirmation states emitted by _derive_market_story.
+    """
+    policy = {**STORY_TRADE_DEFAULTS, **thresholds}
+    regime = context.get("story_regime")
+    regime = regime if isinstance(regime, str) else None
+    event = context.get("bar_event")
+    event = event if isinstance(event, str) else None
+
+    def result(reason, direction=None):
+        return {
+            "eligible": direction is not None,
+            "trade_direction": direction,
+            "eligibility_reason": reason,
+            "setup_key": f"{regime}:{event}:{direction}" if direction else None,
+        }
+
+    if regime == "TRANSITION":
+        return result("REGIME_TRANSITION")
+    if regime == "RANGE":
+        return result("REGIME_RANGE")
+    if regime == "GAP_AUCTION":
+        if event not in GAP_STORY_EVENTS:
+            return result("EVENT_CONTEXT_ONLY")
+        if gap_direction not in {"LONG", "SHORT"}:
+            return result("GAP_DIRECTION_UNRESOLVED")
+        return result("VALID_GAP_SETUP", gap_direction)
+    if regime not in {"BULL_TREND", "BEAR_TREND"}:
+        return result("MISSING_STORY_CONTEXT")
+
+    candidate = context.get("candidate_regime")
+    candidate = candidate if isinstance(candidate, str) else None
+    candidate_active = _finite_float(context.get("candidate_age_bars")) > 0
+    opposite = "BEAR_TREND" if regime == "BULL_TREND" else "BULL_TREND"
+    if candidate_active and candidate == opposite:
+        return result("OPPOSING_CANDIDATE")
+    if (context.get("regime_reason_code") not in CONFIRMED_STORY_REASONS
+            or (candidate_active and candidate != regime)):
+        return result("REGIME_NOT_CONFIRMED")
+    if _finite_float(context.get("regime_age_bars")) < policy["min_regime_age_bars"]:
+        return result("REGIME_TOO_YOUNG")
+    if _finite_float(context.get("regime_rule_score")) < policy["min_regime_score"]:
+        return result("LOW_REGIME_SCORE")
+    if event not in EXECUTABLE_STORY_EVENTS:
+        return result("EVENT_CONTEXT_ONLY")
+    if _finite_float(context.get("event_rule_score")) < policy["min_event_score"]:
+        return result("LOW_EVENT_SCORE")
+    edge = _finite_float(context.get("directional_edge"))
+    signed_edge = edge if regime == "BULL_TREND" else -edge
+    # Even a relaxed zero threshold must never authorize the opposite side.
+    if signed_edge <= 0 or signed_edge < policy["min_directional_edge"]:
+        return result("WEAK_DIRECTIONAL_EDGE")
+    direction = "LONG" if regime == "BULL_TREND" else "SHORT"
+    return result("VALID_BULL_SETUP" if direction == "LONG" else "VALID_BEAR_SETUP",
+                  direction)
+
+
+def _directional_excursion(entry, highs, lows, n, is_short=False):
+    """Signed OHLC excursion over exactly n bars (including the exit bar).
+
+    Exit-bar OHLC cannot reveal intrabar ordering; this is a bar-bounded
+    measure, not an assertion about prices reached before the barrier touch.
+    Callers supply an in-session slice, never the following session.
+    """
+    if not math.isfinite(float(entry)):
+        raise ValueError("Excursion entry must be finite")
+    n = min(max(int(n), 0), len(highs), len(lows))
+    if n == 0:
+        return 0.0, 0.0
+    h = np.asarray(highs[:n], dtype=float)
+    l = np.asarray(lows[:n], dtype=float)
+    if not (np.isfinite(h).all() and np.isfinite(l).all()):
+        raise ValueError("Excursion prices must be finite")
+    favorable = entry - l if is_short else h - entry
+    adverse = entry - h if is_short else l - entry
+    return max(0.0, float(favorable.max())), min(0.0, float(adverse.min()))
+
+
+def _outcome_excursions(entry, highs, lows, exit_after, horizon_n, risk,
+                        is_short=False):
+    """Compute trade, configured-horizon and session excursions independently.
+
+    highs/lows must already end at session close. Invalid R is rejected before
+    normalization so neither division-by-zero nor NaN reaches stored metrics.
+    """
+    if not math.isfinite(float(risk)) or risk <= 0:
+        raise ValueError("Excursion risk must be finite and positive")
+    values = {}
+    for prefix, n in (("trade", exit_after), ("horizon", horizon_n),
+                      ("session", min(len(highs), len(lows)))):
+        mfe, mae = _directional_excursion(entry, highs, lows, n, is_short)
+        values.update({f"{prefix}_mfe": mfe, f"{prefix}_mae": mae,
+                       f"{prefix}_mfe_r": mfe / risk, f"{prefix}_mae_r": mae / risk})
+    return values
+
+
 def _derive_market_story(
     df,
     confirmation_bars: int = 3,
