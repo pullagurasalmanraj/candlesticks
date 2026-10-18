@@ -75,8 +75,8 @@ export function CardHeader({ title, subtitle, right, icon }) {
 export function Chip({ label, tone = "neutral" }) {
     const tones = {
         neutral: { bg: "var(--bg-tertiary)", border: "var(--border-color)", fg: "var(--text-secondary)" },
-        good: { bg: "rgba(0,230,118,0.12)", border: "rgba(0,230,118,0.25)", fg: "var(--accent-up)" },
-        bad: { bg: "rgba(255,82,82,0.12)", border: "rgba(255,82,82,0.25)", fg: "var(--accent-down)" },
+        good: { bg: "var(--glow-green)", border: "rgba(0,230,118,0.25)", fg: "var(--accent-up)" },
+        bad: { bg: "var(--glow-red)", border: "rgba(255,82,82,0.25)", fg: "var(--accent-down)" },
         info: { bg: "var(--accent-blue-muted)", border: "rgba(79,158,255,0.35)", fg: "var(--accent-blue)" },
         warn: { bg: "rgba(255,213,79,0.16)", border: "rgba(255,213,79,0.28)", fg: "var(--accent-gold)" },
     };

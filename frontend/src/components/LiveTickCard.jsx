@@ -165,7 +165,7 @@ const LiveTickCard = memo(function LiveTickCard({
                     fontWeight: 600,
                     fontFamily: "var(--font-mono)",
                     color: canShowLive ? (isUp ? "var(--accent-up)" : "var(--accent-down)") : "var(--text-muted)",
-                    background: canShowLive ? (isUp ? "rgba(0,230,118,0.12)" : "rgba(255,82,82,0.12)") : "var(--bg-tertiary)",
+                    background: canShowLive ? (isUp ? "var(--glow-green)" : "var(--glow-red)") : "var(--bg-tertiary)",
                     border: `1px solid ${canShowLive ? (isUp ? "rgba(0,230,118,0.3)" : "rgba(255,82,82,0.3)") : "var(--border-subtle)"}`,
                     borderRadius: 4,
                     padding: "1px 6px",
@@ -222,7 +222,7 @@ const LiveTickCard = memo(function LiveTickCard({
                         style={{
                             width: 28, height: 28, borderRadius: 7,
                             border: isRunning ? "1px solid rgba(255,82,82,0.5)" : "1px solid rgba(0,230,118,0.4)",
-                            background: isRunning ? "rgba(255,82,82,0.18)" : "rgba(0,230,118,0.15)",
+                            background: isRunning ? "var(--glow-red)" : "var(--glow-green)",
                             color: isRunning ? "var(--accent-down)" : "var(--accent-up)",
                             cursor: "pointer", fontSize: "0.65rem", fontWeight: 700,
                             display: "flex", alignItems: "center", justifyContent: "center",
@@ -253,7 +253,7 @@ const LiveTickCard = memo(function LiveTickCard({
                         onMouseEnter={(e) => {
                             e.currentTarget.style.borderColor = "var(--accent-down)";
                             e.currentTarget.style.color = "var(--accent-down)";
-                            e.currentTarget.style.background = "rgba(255,82,82,0.12)";
+                            e.currentTarget.style.background = "var(--glow-red)";
                         }}
                         onMouseLeave={(e) => {
                             e.currentTarget.style.borderColor = "var(--border-color)";

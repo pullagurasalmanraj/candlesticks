@@ -135,8 +135,8 @@ function Sidebar({ collapsed, setCollapsed }) {
         alignItems:     "center",
         gap:            collapsed ? 0 : 10,
         justifyContent: collapsed ? "center" : "flex-start",
-        padding:        collapsed ? "10px" : "9px 12px",
-        borderRadius:   4,
+        padding:        collapsed ? "12px" : "12px 14px",
+        borderRadius:   10,
         fontSize:       "0.8125rem",
         fontFamily:     "var(--font-body)",
         fontWeight:     isActive ? 650 : 500,
@@ -144,12 +144,12 @@ function Sidebar({ collapsed, setCollapsed }) {
         transition:     "all 0.15s ease",
         background:     isActive ? "var(--accent-blue-muted)" : "transparent",
         color:          isActive ? "var(--accent-blue)"       : "var(--text-secondary)",
-        border:         `1px solid ${isActive ? "var(--accent-blue)" : "transparent"}`,
+        border:         "1px solid transparent",
         boxShadow:      "none",
     });
 
     return (
-        <aside style={{
+        <aside className="app-sidebar" style={{
             width:         collapsed ? "var(--sidebar-collapsed)" : "var(--sidebar-width)",
             height:        "100vh",
             flexShrink:    0,
@@ -192,7 +192,7 @@ function Sidebar({ collapsed, setCollapsed }) {
                                 Candlesticks
                             </div>
                             <div style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>
-                                Institutional research
+                                Your market workspace
                             </div>
                         </div>
                     </div>
@@ -402,7 +402,7 @@ function AppShell() {
             <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
 
                 {/* ── Top bar ─────────────────────────────── */}
-                <header style={{
+                <header className="app-topbar" style={{
                     height:        "var(--navbar-height)",
                     flexShrink:    0,
                     borderBottom:  "1px solid var(--border-color)",
@@ -444,7 +444,7 @@ function AppShell() {
                 </header>
 
                 {/* ── Page content ─────────────────────────── */}
-                <main style={{ flex: 1, overflowY: "auto", background: "transparent" }}>
+                <main className="app-main" style={{ flex: 1, overflowY: "auto", background: "transparent" }}>
                     <Suspense fallback={<SkeletonLoader />}>
                         <Routes>
                             <Route path="/"            element={<ProtectedRoute><BrokerProtectedRoute><Dashboard /></BrokerProtectedRoute></ProtectedRoute>} />

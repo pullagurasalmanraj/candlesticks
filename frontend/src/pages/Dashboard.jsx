@@ -1109,7 +1109,7 @@ export default function Dashboard() {
                                 title="Subscribe WSS ticks for all working list stocks"
                                 style={{
                                     border: "1px solid rgba(0,230,118,0.4)",
-                                    background: "rgba(0,230,118,0.15)",
+                                    background: "var(--glow-green)",
                                     color: "var(--accent-up)",
                                     borderRadius: 6, padding: "4px 10px",
                                     fontSize: "0.7rem", fontWeight: 700, cursor: "pointer",
@@ -1124,7 +1124,7 @@ export default function Dashboard() {
                                 title="Pause all live WSS tick subscriptions"
                                 style={{
                                     border: "1px solid rgba(255,82,82,0.4)",
-                                    background: "rgba(255,82,82,0.15)",
+                                    background: "var(--glow-red)",
                                     color: "var(--accent-down)",
                                     borderRadius: 6, padding: "4px 10px",
                                     fontSize: "0.7rem", fontWeight: 700, cursor: "pointer",
@@ -1270,7 +1270,7 @@ export default function Dashboard() {
                                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                         <span style={{
                                             fontSize: "0.7rem", fontFamily: "var(--font-mono)",
-                                            color: "var(--accent-up)", background: "rgba(0,230,118,0.12)",
+                                            color: "var(--accent-up)", background: "var(--glow-green)",
                                             border: "1px solid rgba(0,230,118,0.3)", borderRadius: 6, padding: "2px 8px"
                                         }}>
                                             {Object.keys(activeSubscriptions).length} active WSS streams
@@ -1494,7 +1494,7 @@ export default function Dashboard() {
                                                             <span style={{
                                                                 fontSize: "0.74rem", fontWeight: 700, fontFamily: "var(--font-mono)",
                                                                 color: isRunning ? "var(--accent-up)" : "var(--text-muted)",
-                                                                background: isRunning ? "rgba(0,230,118,0.15)" : "var(--bg-secondary)",
+                                                                background: isRunning ? "var(--glow-green)" : "var(--bg-secondary)",
                                                                 border: `1px solid ${isRunning ? "rgba(0,230,118,0.3)" : "var(--border-color)"}`,
                                                                 borderRadius: 4, padding: "2px 8px"
                                                             }}>
@@ -1508,7 +1508,7 @@ export default function Dashboard() {
                                                             style={{
                                                                 width: "100%", padding: "10px", borderRadius: 8,
                                                                 border: isRunning ? "1px solid rgba(255,82,82,0.4)" : "1px solid rgba(0,230,118,0.4)",
-                                                                background: isRunning ? "rgba(255,82,82,0.15)" : "rgba(0,230,118,0.15)",
+                                                                background: isRunning ? "var(--glow-red)" : "var(--glow-green)",
                                                                 color: isRunning ? "var(--accent-down)" : "var(--accent-up)",
                                                                 fontWeight: 700, fontSize: "0.8rem", cursor: "pointer",
                                                                 transition: "all 0.15s ease",

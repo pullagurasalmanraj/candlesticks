@@ -13,36 +13,36 @@
    if JS is slow. They match AURORA_LIGHT exactly.
    ──────────────────────────────────────────────────────────── */
 :root {
-    --bg-primary: #f1f4f7;
+    --bg-primary: #f5f3fc;
     --bg-secondary: #ffffff;
-    --bg-elevated: #f8fafc;
-    --bg-tertiary: #e8edf3;
-    --bg-hover: #e1e7ee;
-    --border-color: #cbd4df;
-    --border-subtle: #dde3ea;
-    --text-primary: #172334;
-    --text-secondary: #566579;
-    --text-muted: #7b899a;
-    --accent-blue: #3c78a8;
-    --accent-blue-hover: #4b87b7;
-    --accent-blue-muted: rgba(60, 120, 168, 0.14);
+    --bg-elevated: #faf9ff;
+    --bg-tertiary: #eee9fa;
+    --bg-hover: #e8e1f7;
+    --border-color: #d6cfea;
+    --border-subtle: #e8e2f3;
+    --text-primary: #29263e;
+    --text-secondary: #625b79;
+    --text-muted: #716982;
+    --accent-blue: #6352b5;
+    --accent-blue-hover: #51419b;
+    --accent-blue-muted: rgba(99, 82, 181, 0.11);
     --accent-contrast: #ffffff;
-    --accent-up: #247753;
-    --accent-down: #aa4d54;
-    --accent-gold: #876c35;
+    --accent-up: #28745d;
+    --accent-down: #b04d66;
+    --accent-gold: #8b6b30;
     --glow: rgba(60, 120, 168, 0.12);
     --glow-green: rgba(36, 119, 83, 0.10);
     --glow-red: rgba(170, 77, 84, 0.10);
     --surface-glass: #ffffff;
-    --surface-glass-strong: #f8fafc;
-    --page-gradient: #f1f4f7;
-    --accent-gradient: #3c78a8;
-    --navbar-height: 56px;
-    --sidebar-width: 232px;
+    --surface-glass-strong: #faf9ff;
+    --page-gradient: #f5f3fc;
+    --accent-gradient: #6352b5;
+    --navbar-height: 68px;
+    --sidebar-width: 240px;
     --sidebar-collapsed: 64px;
-    --card-radius: 6px;
-    --input-radius: 4px;
-    --button-radius: 4px;
+    --card-radius: 16px;
+    --input-radius: 10px;
+    --button-radius: 10px;
     --font-body: 'Inter', 'Segoe UI', sans-serif;
     --font-display: 'Inter', 'Segoe UI', sans-serif;
     --font-mono: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace;
@@ -141,7 +141,8 @@ pre,
 
 .card:hover {
     background: var(--bg-elevated);
-    border-color: var(--accent-blue);
+    border-color: var(--border-color);
+    box-shadow: var(--shadow-card-hover);
 }
 
 
@@ -402,3 +403,20 @@ video {
 }
 
 /* ── Light Theme Overrides (Softer View) ─────────────────── */
+
+/* Calm application chrome shared by every page. */
+.app-sidebar { box-shadow: 6px 0 28px rgba(65,48,110,.025); z-index: 30; }
+.app-topbar { gap: 16px; }
+.app-sidebar nav a { min-height: 44px; }
+.app-sidebar nav a:focus-visible { outline-offset: -2px; }
+.app-main { scrollbar-gutter: stable; }
+.app-main table { border-collapse: separate; border-spacing: 0; }
+.app-main thead { background: var(--bg-tertiary); }
+.app-main th { color: var(--text-secondary); font-weight: 600; }
+.app-main tbody tr { transition: background-color .15s ease; }
+.app-main tbody tr:hover { background-color: var(--bg-elevated); }
+.app-main input::placeholder, .app-main textarea::placeholder { color: var(--text-muted); opacity: 1; }
+@media (max-width: 760px) { .app-topbar { padding-inline: 16px !important; } }
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}

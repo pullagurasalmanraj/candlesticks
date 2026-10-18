@@ -51,7 +51,7 @@ const AVATAR_PRESETS = [
 ];
 
 const ACCENT_COLOR_OPTIONS = [
-    { id: "cyan", hex: ACCENT_PRESETS.cyan.hex, label: "Primary Blue" },
+    { id: "cyan", hex: ACCENT_PRESETS.cyan.hex, label: "Soft Indigo" },
     { id: "emerald", hex: ACCENT_PRESETS.emerald.hex, label: "Risk Teal" },
     { id: "purple", hex: ACCENT_PRESETS.purple.hex, label: "Slate Blue" },
     { id: "amber", hex: ACCENT_PRESETS.amber.hex, label: "Research Gold" },

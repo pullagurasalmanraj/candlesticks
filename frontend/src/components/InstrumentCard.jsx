@@ -223,7 +223,7 @@ const InstrumentCard = memo(function InstrumentCard({
                         flexShrink: 0,
                     }}
                     onMouseEnter={e => {
-                        e.currentTarget.style.background = "rgba(255,82,82,0.12)";
+                        e.currentTarget.style.background = "var(--glow-red)";
                         e.currentTarget.style.borderColor = "var(--accent-down)";
                         e.currentTarget.style.color = "var(--accent-down)";
                         e.currentTarget.style.transform = "scale(1.08)";

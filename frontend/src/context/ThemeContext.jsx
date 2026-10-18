@@ -4,30 +4,30 @@ import CssBaseline from "@mui/material/CssBaseline";
 
 const ThemeContext = createContext(null);
 
-// Institutional surface presets: restrained contrast, opaque work surfaces and
-// low-saturation semantic colours suitable for long market-monitoring sessions.
+// Soft Lilac is inspired by the reference indigo/lilac pair. The existing
+// midnight key preserves saved preferences while updating the default palette.
 export const THEME_PRESETS = {
     midnight: {
-        label: "Institutional Navy",
-        description: "Deep navy execution workspace",
-        preview: ["#08111d", "#111d2d", "#3c78a8"],
+        label: "Soft Lilac",
+        description: "Calm lilac surfaces with soft indigo accents",
+        preview: ["#f5f3fc", "#e8deff", "#6352b5"],
         dark: {
-            "--bg-primary": "#08111d", "--bg-secondary": "#0d1724", "--bg-elevated": "#111d2d",
-            "--bg-tertiary": "#152234", "--bg-hover": "#19283c", "--border-color": "#26364b",
-            "--border-subtle": "#1b2a3d", "--text-primary": "#e6edf5", "--text-secondary": "#9aa9ba",
-            "--text-muted": "#65758a", "--accent-up": "#3a9b72", "--accent-down": "#c65d63",
-            "--accent-gold": "#ad8b47", "--surface-glass": "#0d1724",
-            "--surface-glass-strong": "#0b1521", "--glow-green": "rgba(58,155,114,0.12)",
-            "--glow-red": "rgba(198,93,99,0.12)", "--page-gradient": "#08111d",
+            "--bg-primary": "#151522", "--bg-secondary": "#1d1e30", "--bg-elevated": "#24253a",
+            "--bg-tertiary": "#2a2b42", "--bg-hover": "#33344e", "--border-color": "#41425c",
+            "--border-subtle": "#303148", "--text-primary": "#eeedf8", "--text-secondary": "#b9b8cf",
+            "--text-muted": "#a09eb9", "--accent-up": "#7bc7ac", "--accent-down": "#ed9da9",
+            "--accent-gold": "#d6bc86", "--surface-glass": "#1d1e30",
+            "--surface-glass-strong": "#24253a", "--glow-green": "rgba(123,199,172,0.12)",
+            "--glow-red": "rgba(237,157,169,0.12)", "--page-gradient": "#151522",
         },
         light: {
-            "--bg-primary": "#f1f4f7", "--bg-secondary": "#ffffff", "--bg-elevated": "#f8fafc",
-            "--bg-tertiary": "#e8edf3", "--bg-hover": "#e1e7ee", "--border-color": "#cbd4df",
-            "--border-subtle": "#dde3ea", "--text-primary": "#172334", "--text-secondary": "#566579",
-            "--text-muted": "#7b899a", "--accent-up": "#247753", "--accent-down": "#aa4d54",
-            "--accent-gold": "#876c35", "--surface-glass": "#ffffff",
-            "--surface-glass-strong": "#f8fafc", "--glow-green": "rgba(36,119,83,0.10)",
-            "--glow-red": "rgba(170,77,84,0.10)", "--page-gradient": "#f1f4f7",
+            "--bg-primary": "#f5f3fc", "--bg-secondary": "#ffffff", "--bg-elevated": "#faf9ff",
+            "--bg-tertiary": "#eee9fa", "--bg-hover": "#e8e1f7", "--border-color": "#d6cfea",
+            "--border-subtle": "#e8e2f3", "--text-primary": "#29263e", "--text-secondary": "#625b79",
+            "--text-muted": "#716982", "--accent-up": "#28745d", "--accent-down": "#b04d66",
+            "--accent-gold": "#8b6b30", "--surface-glass": "#ffffff",
+            "--surface-glass-strong": "#faf9ff", "--glow-green": "rgba(40,116,93,0.10)",
+            "--glow-red": "rgba(176,77,102,0.10)", "--page-gradient": "#f5f3fc",
         },
     },
     graphite: {
@@ -79,7 +79,7 @@ export const THEME_PRESETS = {
 };
 
 export const ACCENT_PRESETS = {
-    cyan: { hex: "#3C78A8", muted: "rgba(60,120,168,0.14)", hover: "#4B87B7", glow: "rgba(60,120,168,0.12)", contrast: "#ffffff" },
+    cyan: { hex: "#6352B5", muted: "rgba(99,82,181,0.11)", hover: "#51419B", glow: "rgba(99,82,181,0.16)", contrast: "#ffffff", darkHex: "#B7A8F3", darkHover: "#C8BCFA", darkContrast: "#211B38" },
     emerald: { hex: "#2E7D72", muted: "rgba(46,125,114,0.14)", hover: "#398B80", glow: "rgba(46,125,114,0.12)", contrast: "#ffffff" },
     purple: { hex: "#5B6F8E", muted: "rgba(91,111,142,0.14)", hover: "#6A7E9D", glow: "rgba(91,111,142,0.12)", contrast: "#ffffff" },
     amber: { hex: "#927640", muted: "rgba(146,118,64,0.14)", hover: "#A0844E", glow: "rgba(146,118,64,0.10)", contrast: "#ffffff" },
@@ -87,8 +87,8 @@ export const ACCENT_PRESETS = {
 };
 
 export const LAYOUT = {
-    navbarHeight: "56px", sidebarWidth: "232px", sidebarCollapsed: "64px",
-    cardRadius: "6px", inputRadius: "4px", buttonRadius: "4px", chipRadius: "3px",
+    navbarHeight: "68px", sidebarWidth: "240px", sidebarCollapsed: "64px",
+    cardRadius: "16px", inputRadius: "10px", buttonRadius: "10px", chipRadius: "8px",
     contentPadding: "1.25rem", maxWidth: "1600px",
 };
 
@@ -110,8 +110,11 @@ function getSystemTheme() {
 
 function buildMuiTheme(mode, presetKey, accentKey) {
     const p = getPalette(mode, presetKey);
-    const accent = ACCENT_PRESETS[accentKey] || ACCENT_PRESETS.cyan;
-    const cardShadow = mode === "dark" ? "0 1px 2px rgba(0,0,0,0.28)" : "0 1px 2px rgba(15,23,42,0.06)";
+    const baseAccent = ACCENT_PRESETS[accentKey] || ACCENT_PRESETS.cyan;
+    const accent = mode === "dark" && baseAccent.darkHex
+        ? { ...baseAccent, hex: baseAccent.darkHex, hover: baseAccent.darkHover, contrast: baseAccent.darkContrast, muted: "rgba(183,168,243,0.14)" }
+        : baseAccent;
+    const cardShadow = mode === "dark" ? "0 6px 24px rgba(0,0,0,0.14)" : "0 6px 24px rgba(65,48,110,0.045)";
 
     return createTheme({
         palette: {
@@ -134,7 +137,7 @@ function buildMuiTheme(mode, presetKey, accentKey) {
             body2: { fontFamily: TYPOGRAPHY.fontBody, fontSize: "0.8rem", color: p["--text-secondary"] },
             caption: { fontFamily: TYPOGRAPHY.fontMono, fontSize: "0.75rem" },
         },
-        shape: { borderRadius: 4 },
+        shape: { borderRadius: 10 },
         components: {
             MuiCssBaseline: { styleOverrides: { body: { background: p["--bg-primary"] } } },
             MuiCard: { styleOverrides: { root: {
@@ -184,7 +187,10 @@ function buildMuiTheme(mode, presetKey, accentKey) {
 function injectCSSVariables(mode, presetKey, accentKey) {
     const root = document.documentElement;
     const palette = getPalette(mode, presetKey);
-    const accent = ACCENT_PRESETS[accentKey] || ACCENT_PRESETS.cyan;
+    const baseAccent = ACCENT_PRESETS[accentKey] || ACCENT_PRESETS.cyan;
+    const accent = mode === "dark" && baseAccent.darkHex
+        ? { ...baseAccent, hex: baseAccent.darkHex, hover: baseAccent.darkHover, contrast: baseAccent.darkContrast, muted: "rgba(183,168,243,0.14)" }
+        : baseAccent;
 
     Object.entries(palette).forEach(([key, value]) => root.style.setProperty(key, value));
     root.style.setProperty("--accent-blue", accent.hex);
@@ -205,8 +211,8 @@ function injectCSSVariables(mode, presetKey, accentKey) {
     root.style.setProperty("--font-body", TYPOGRAPHY.fontBody);
     root.style.setProperty("--font-display", TYPOGRAPHY.fontDisplay);
     root.style.setProperty("--font-mono", TYPOGRAPHY.fontMono);
-    root.style.setProperty("--shadow-card", mode === "dark" ? "0 1px 2px rgba(0,0,0,.28)" : "0 1px 2px rgba(15,23,42,.06)");
-    root.style.setProperty("--shadow-card-hover", mode === "dark" ? "0 2px 5px rgba(0,0,0,.24)" : "0 2px 5px rgba(15,23,42,.08)");
+    root.style.setProperty("--shadow-card", mode === "dark" ? "0 6px 24px rgba(0,0,0,.14)" : "0 6px 24px rgba(65,48,110,.045)");
+    root.style.setProperty("--shadow-card-hover", mode === "dark" ? "0 10px 30px rgba(0,0,0,.18)" : "0 10px 30px rgba(65,48,110,.08)");
     root.style.setProperty("--shadow-dropdown", mode === "dark" ? "0 10px 28px rgba(0,0,0,.32)" : "0 10px 28px rgba(15,23,42,.12)");
     root.style.setProperty("--shadow-glow-blue", "none");
     root.style.setProperty("--shadow-glow-green", "none");
