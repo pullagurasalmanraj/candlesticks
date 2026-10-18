@@ -1,0 +1,126 @@
+{
+  "status": "VERIFIED",
+  "verified_at_utc": "2026-10-18T17:34:55.765571+00:00",
+  "endpoint": "https://candlesticks-india.southafricanorth.cloudapp.azure.com/api/offline/compare-entry-geometry",
+  "request_window": {
+    "from_date": "2000-01-01",
+    "to_date": "2026-10-18"
+  },
+  "data_read_diagnostics": {
+    "after_compare_symbol": {
+      "ITC": {
+        "nonnull_story_regime": 16650,
+        "story_eligible_signals": 3011
+      },
+      "TATASTEEL": {
+        "nonnull_story_regime": 16650,
+        "story_eligible_signals": 3072
+      }
+    },
+    "after_read_sql_safe": {
+      "ITC": {
+        "indicator_rows": 16725,
+        "nonnull_story_regime": 16650
+      },
+      "TATASTEEL": {
+        "indicator_rows": 16725,
+        "nonnull_story_regime": 16650
+      }
+    },
+    "connection": {
+      "context_relation": "market_context",
+      "database": "candleticks",
+      "host": "postgres",
+      "indicators_relation": "indicators",
+      "port": 5432,
+      "schema": "public",
+      "search_path": "\"$user\", public",
+      "server_address": "172.18.0.2/32",
+      "server_port": 5432,
+      "transaction_isolation": "repeatable read",
+      "transaction_read_only": "on"
+    },
+    "pandas_version": "3.0.6",
+    "reader_version": "NON_NULL_SAMPLE_V2",
+    "sql_counts": {
+      "ITC": {
+        "indicator_rows": 16725,
+        "matching_context_rows": 16650,
+        "nonnull_story_regime": 16650
+      },
+      "TATASTEEL": {
+        "indicator_rows": 16725,
+        "matching_context_rows": 16650,
+        "nonnull_story_regime": 16650
+      }
+    },
+    "stage_by_symbol": {
+      "ITC": "CONSISTENT",
+      "TATASTEEL": "CONSISTENT"
+    }
+  },
+  "root_cause": "pandas 3 leading string NA was float NaN; None-only sampling classified textual columns as numeric and coerced all labels to NaN",
+  "pre_fix_nonnull_story_regime": {
+    "SQL_each_symbol": 16650,
+    "raw_dataframe_each_symbol": 16650,
+    "after_read_sql_safe_each_symbol": 0
+  },
+  "symbols": {
+    "ITC": {
+      "indicator_rows": 16725,
+      "bars_without_story_labels": 75,
+      "story_eligible_signals": 3011,
+      "counterfactual_input_rows": 16650,
+      "periods": {
+        "holdout": {
+          "story_eligible_signals": 977,
+          "baseline_simulated_samples": 966,
+          "counterfactual_simulated_samples": 966,
+          "all_baseline_metrics_and_setup_groups_match": true,
+          "baseline_avg_gross_r": -0.06781291280738942,
+          "baseline_avg_net_r": -0.7755060639398786
+        },
+        "research": {
+          "story_eligible_signals": 2034,
+          "baseline_simulated_samples": 2024,
+          "counterfactual_simulated_samples": 2024,
+          "all_baseline_metrics_and_setup_groups_match": true,
+          "baseline_avg_gross_r": -0.12503611790522517,
+          "baseline_avg_net_r": -0.8148794128987127
+        }
+      },
+      "counterfactual_rows_written": 0
+    },
+    "TATASTEEL": {
+      "indicator_rows": 16725,
+      "bars_without_story_labels": 75,
+      "story_eligible_signals": 3072,
+      "counterfactual_input_rows": 16650,
+      "periods": {
+        "holdout": {
+          "story_eligible_signals": 932,
+          "baseline_simulated_samples": 925,
+          "counterfactual_simulated_samples": 925,
+          "all_baseline_metrics_and_setup_groups_match": true,
+          "baseline_avg_gross_r": -0.1720499805478834,
+          "baseline_avg_net_r": -0.7500405906177049
+        },
+        "research": {
+          "story_eligible_signals": 2140,
+          "baseline_simulated_samples": 2122,
+          "counterfactual_simulated_samples": 2122,
+          "all_baseline_metrics_and_setup_groups_match": true,
+          "baseline_avg_gross_r": -0.16439461294232074,
+          "baseline_avg_net_r": -0.6621890680040132
+        }
+      },
+      "counterfactual_rows_written": 0
+    }
+  },
+  "baseline_parity": {
+    "status": "PASS",
+    "metric_comparisons": 1216,
+    "maximum_absolute_difference": 0.0,
+    "scope": "same date window and default cost model; all raw story signals, both periods and every setup group"
+  }
+}

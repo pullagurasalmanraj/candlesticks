@@ -9,7 +9,7 @@ import pandas as pd
 from flask import Blueprint, jsonify, request
 from psycopg2 import Error as DatabaseError
 
-from db import get_db_conn, read_sql_safe
+from db import READ_SQL_SAFE_VERSION, get_db_conn, read_sql_safe
 from routes.strategy import STORY_INPUT_COLUMNS
 from routes.strategy_costs import COST_MODEL_VERSION, EquityIntradayCostModel
 from routes.strategy_counterfactual import _simulate_counterfactual_trade
@@ -47,6 +47,69 @@ VARIANTS = (
 _CALENDAR_DAY = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 _METRICS = ("realized_r_gross", "realized_r_net", "net_points",
             "trade_mfe", "trade_mae", "trade_mfe_r", "trade_mae_r", "risk_points")
+
+# Counts and data retrieval must use precisely the same join, filters and connection.
+_COMPARISON_JOIN = """
+    FROM indicators i LEFT JOIN market_context mc
+      ON mc.symbol=i.symbol AND mc.exchange=i.exchange AND mc.timeframe=i.timeframe AND mc.ts=i.ts
+    WHERE i.symbol=ANY(%s) AND i.exchange=%s AND i.timeframe=%s AND i.ts >= %s AND i.ts < %s
+"""
+
+
+def _database_read_diagnostics(conn, query_params):
+    """Independent SQL counts on the actual comparison's read-only transaction."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT current_database() AS database, current_schema() AS schema,
+                   current_setting('search_path') AS search_path,
+                   current_setting('transaction_read_only') AS transaction_read_only,
+                   current_setting('transaction_isolation') AS transaction_isolation,
+                   inet_server_addr()::text AS server_address, inet_server_port() AS server_port,
+                   to_regclass('indicators')::text AS indicators_relation,
+                   to_regclass('market_context')::text AS context_relation
+        """)
+        identity = dict(cur.fetchone())
+        identity.update(host=conn.info.host, port=conn.info.port)
+        cur.execute(f"""
+            SELECT i.symbol, COUNT(*) AS indicator_rows, COUNT(mc.ts) AS matching_context_rows,
+                   COUNT(mc.story_regime) AS nonnull_story_regime
+            {_COMPARISON_JOIN}
+            GROUP BY i.symbol ORDER BY i.symbol
+        """, query_params)
+        counts = {row["symbol"]: {k: int(row[k]) for k in (
+            "indicator_rows", "matching_context_rows", "nonnull_story_regime")}
+                  for row in cur.fetchall()}
+    return {"connection": identity, "sql_counts": {
+        symbol: counts.get(symbol, {"indicator_rows": 0, "matching_context_rows": 0, "nonnull_story_regime": 0})
+        for symbol in SYMBOLS}, "reader_version": READ_SQL_SAFE_VERSION, "pandas_version": pd.__version__}
+
+
+def _dataframe_story_counts(frame):
+    return {symbol: {
+        "indicator_rows": int((frame["symbol"] == symbol).sum()) if not frame.empty else 0,
+        "nonnull_story_regime": int(frame.loc[frame["symbol"] == symbol, "story_regime"].notna().sum()) if not frame.empty else 0,
+    } for symbol in SYMBOLS}
+
+
+def _label_loss_stages(diagnostics):
+    stages = {}
+    for symbol in SYMBOLS:
+        sql = diagnostics["sql_counts"][symbol]
+        frame = diagnostics["after_read_sql_safe"][symbol]
+        processed = diagnostics.get("after_compare_symbol", {}).get(symbol)
+        if (sql["indicator_rows"] != frame["indicator_rows"] or
+                sql["nonnull_story_regime"] != frame["nonnull_story_regime"]):
+            stage = "DATAFRAME_RETRIEVAL_MISMATCH"
+        elif processed and processed["nonnull_story_regime"] != frame["nonnull_story_regime"]:
+            stage = "IN_MEMORY_PROCESSING_MISMATCH"
+        elif not sql["indicator_rows"]:
+            stage = "NO_INDICATOR_DATA"
+        elif not sql["nonnull_story_regime"]:
+            stage = "SQL_NO_STORY_LABELS"
+        else:
+            stage = "CONSISTENT"
+        stages[symbol] = stage
+    return stages
 
 
 def _mean_median(values):
@@ -372,15 +435,20 @@ def run_entry_geometry_comparison(data):
             if missing:
                 return {"status": "MISSING_STORY_SCHEMA", "missing_columns": missing, "rows_written": 0}
             story_select = ", ".join(f"mc.{k}" for k in STORY_INPUT_COLUMNS)
+            query_params = [list(SYMBOLS), "NSE", "5m", start, end]
+            diagnostics = _database_read_diagnostics(conn, query_params)
             frame = read_sql_safe(f"""
                 SELECT i.symbol, i.ts, i.open, i.high, i.low, i.close, i.volume, i.atr_14,
                        mc.market_phase, mc.gap_atr, mc.ema_21_slope, mc.impulse_dir, mc.vwap_dist_pct,
                        {story_select}
-                FROM indicators i LEFT JOIN market_context mc
-                  ON mc.symbol=i.symbol AND mc.exchange=i.exchange AND mc.timeframe=i.timeframe AND mc.ts=i.ts
-                WHERE i.symbol=ANY(%s) AND i.exchange=%s AND i.timeframe=%s AND i.ts >= %s AND i.ts < %s
+                {_COMPARISON_JOIN}
                 ORDER BY i.symbol, i.ts
-            """, conn, params=[list(SYMBOLS), "NSE", "5m", start, end])
+            """, conn, params=query_params)
+            # Capture immediately, before parameter reads or any in-memory processing.
+            diagnostics["after_read_sql_safe"] = _dataframe_story_counts(frame)
+            diagnostics["stage_by_symbol"] = _label_loss_stages(diagnostics)
+            if "DATAFRAME_RETRIEVAL_MISMATCH" in diagnostics["stage_by_symbol"].values():
+                return {"status": "DATA_READ_MISMATCH", "rows_written": 0, "data_read_diagnostics": diagnostics}
             available = set(columns.loc[columns.table_name == "phase_params", "column_name"]) if not columns.empty else set()
             required = {"symbol", "exchange", "timeframe", "market_phase", "optimal_tp", "optimal_sl",
                         "optimal_lookahead_min", "viable", "calibrated_from", "calibrated_to"}
@@ -392,12 +460,12 @@ def run_entry_geometry_comparison(data):
     finally:
         conn.close()
     if frame.empty:
-        return {"status": "NO_DATA", "rows_written": 0, "symbols": list(SYMBOLS), "timeframe": "5m"}
+        return {"status": "NO_DATA", "rows_written": 0, "symbols": list(SYMBOLS), "timeframe": "5m", "data_read_diagnostics": diagnostics}
     frame["ts"] = pd.to_datetime(frame["ts"], utc=True)
     days = sorted(frame.ts.dt.tz_convert("Asia/Kolkata").dt.date.unique())
     if split is None:
         if len(days) < 2:
-            return {"status": "INSUFFICIENT_SPLIT_DATA", "trading_days": len(days), "rows_written": 0}
+            return {"status": "INSUFFICIENT_SPLIT_DATA", "trading_days": len(days), "rows_written": 0, "data_read_diagnostics": diagnostics}
         research_days = max(1, min(len(days)-1, math.floor(.7*len(days))))
         split = pd.Timestamp(days[research_days]).tz_localize("Asia/Kolkata").tz_convert("UTC")
     by_symbol = {}
@@ -413,8 +481,15 @@ def run_entry_geometry_comparison(data):
                 }
         by_symbol[symbol] = compare_symbol(frame.loc[frame.symbol == symbol], split_at=split, from_dt=start,
                                            params=symbol_params, cost_model=cost_model)
+    diagnostics["after_compare_symbol"] = {symbol: {
+        "nonnull_story_regime": result["input_rows"] - result.get("data_quality", {}).get("bars_without_story_labels", 0),
+        "story_eligible_signals": sum(period["story_eligible_signals"] for period in result["periods"].values()),
+    } for symbol, result in by_symbol.items()}
+    diagnostics["stage_by_symbol"] = _label_loss_stages(diagnostics)
     return {
-        "status": "SUCCESS" if all(s["status"] == "SUCCESS" for s in by_symbol.values()) else "PARTIAL_DATA",
+        "status": ("DATA_READ_MISMATCH" if "IN_MEMORY_PROCESSING_MISMATCH" in diagnostics["stage_by_symbol"].values() else
+                   "SUCCESS" if all(s["status"] == "SUCCESS" for s in by_symbol.values()) else "PARTIAL_DATA"),
+        "data_read_diagnostics": diagnostics,
         "research_only": True, "comparison_version": COMPARISON_VERSION,
         "rows_written": 0, "production_strategy_modified": False, "holdout_used_for_selection": False,
         "parameter_selection_performed": False, "timeframe": "5m", "symbols": by_symbol,

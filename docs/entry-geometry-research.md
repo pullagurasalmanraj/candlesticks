@@ -156,16 +156,17 @@ report; inspect its JSON instead of treating it as a successful backtest.
 
 ## Local data availability check
 
-`research-results/entry-geometry-local.json` is a real read-only check of the
-local Docker database on 2026-10-18. It reports:
+`research-results/entry-geometry-local.json` is an archived local run from before
+the pandas 3 reader fix. Its missing-label result is **not evidence that stored
+story context is absent**: the old reader could erase textual labels after SQL
+retrieval. Do not interpret that archived run as a trading comparison or use it
+to diagnose Azure data availability.
 
-- ITC: no 5m indicator rows.
-- TATASTEEL: 16,875 5m bars, 2025-10-23 through 2026-09-18, all lacking stored
-  story context; zero eligible signals in either period.
-
-Its status is `PARTIAL_DATA`; TATASTEEL is `NO_STORY_ELIGIBLE_SIGNALS`. Null
-statistics are intentional. This database cannot establish the dominant weakness.
-The runner does not fetch missing ITC data, regenerate labels or invent results.
+The actual Azure connection was subsequently traced, repaired and verified.
+See [the reader fix](azure-comparison-reader-fix.md) and
+`research-results/azure-comparison-verification.json`. API responses now include
+`data_read_diagnostics` with same-transaction SQL counts, immediate DataFrame
+counts, processed label counts and connection identity, without credentials.
 
 Tests cover baseline parity, timing and frozen ATR/direction, geometry, session/
 split boundaries, holdout isolation, pending reservations, overlap counting,

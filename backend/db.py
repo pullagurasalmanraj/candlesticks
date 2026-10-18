@@ -23,6 +23,8 @@ DB_CONFIG = {
     "port": os.getenv("PGPORT") or os.getenv("DB_PORT") or "5432",
 }
 
+READ_SQL_SAFE_VERSION = "NON_NULL_SAMPLE_V2"
+
 # -------------------------------------------------
 # Connection helper
 # -------------------------------------------------
@@ -57,7 +59,11 @@ def read_sql_safe(sql, conn, params=None):
         return pd.DataFrame()
     df = pd.DataFrame([dict(r) for r in rows])
     for col in df.columns:
-        first_valid = next((v for v in df[col] if v is not None), None)
+        # pandas 3 infers string columns with NaN (not None) for SQL NULLs.
+        # A leading NaN is a float, but it is not evidence of a numeric column:
+        # coercing based on it destroys every later string label. Skip all NA
+        # representations before deciding whether Decimal/numeric conversion fits.
+        first_valid = next(iter(df[col].dropna()), None)
         if isinstance(first_valid, (decimal.Decimal, int, float)):
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df

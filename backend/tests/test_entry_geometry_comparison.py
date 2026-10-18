@@ -207,6 +207,18 @@ class TestComparisonEndpoint(unittest.TestCase):
     def run_route(self, frame=None, data=None, schema=None):
         frame = frame if frame is not None else history()
         combined = pd.concat([frame, frame.assign(symbol="TATASTEEL")], ignore_index=True)
+        self.conn.info.host = "unit-postgres"
+        self.conn.info.port = 5432
+        cursor = self.conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = {
+            "database": "unit_db", "schema": "public", "search_path": '"$user", public',
+            "transaction_read_only": "on", "transaction_isolation": "repeatable read",
+            "server_address": "127.0.0.1/32", "server_port": 5432,
+        }
+        cursor.fetchall.return_value = [{"symbol": s, "indicator_rows": len(g),
+            "matching_context_rows": int(g.story_regime.notna().sum()),
+            "nonnull_story_regime": int(g.story_regime.notna().sum())}
+            for s, g in combined.groupby("symbol")]
         with patch.object(research, "get_db_conn", return_value=self.conn), \
              patch.object(research, "read_sql_safe", side_effect=[self.schema if schema is None else schema, combined]) as read:
             response = self.client.post("/api/offline/compare-entry-geometry", json=data or {})
@@ -228,7 +240,15 @@ class TestComparisonEndpoint(unittest.TestCase):
         self.assertEqual(data["split"]["research_to_exclusive"], data["split"]["holdout_from_inclusive"])
         self.conn.set_session.assert_called_once_with(readonly=True, isolation_level="REPEATABLE READ")
         self.conn.close.assert_called_once()
-        self.conn.cursor.assert_not_called()  # SQL is mocked; no other hidden calls
+        self.conn.cursor.assert_called_once()  # independent counts use the same connection
+        raw_calls = self.conn.cursor.return_value.__enter__.return_value.execute.call_args_list
+        self.assertTrue(all(q.args[0].lstrip().startswith("SELECT") for q in raw_calls))
+        self.assertEqual(raw_calls[1].args[1], self.queries[1].kwargs["params"])
+        diagnostics = data["data_read_diagnostics"]
+        self.assertEqual(diagnostics["connection"]["host"], "unit-postgres")
+        self.assertEqual(diagnostics["stage_by_symbol"], {"ITC": "CONSISTENT", "TATASTEEL": "CONSISTENT"})
+        self.assertEqual(diagnostics["sql_counts"]["ITC"]["nonnull_story_regime"], 48)
+        self.assertEqual(diagnostics["after_read_sql_safe"]["ITC"]["nonnull_story_regime"], 48)
         self.assertTrue(all(q.args[0].lstrip().startswith("SELECT") for q in self.queries))
         self.assertIn("LEFT JOIN market_context", self.queries[1].args[0])
         self.assertNotIn("strategy_outcomes", self.queries[1].args[0])
