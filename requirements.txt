@@ -17,3 +17,4 @@ pytz
 python-dateutil
 upstox-python-sdk
 azure-monitor-opentelemetry
+gunicorn

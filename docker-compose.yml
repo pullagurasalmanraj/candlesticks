@@ -44,7 +44,7 @@ services:
         container_name: candlesticks-backend
         restart: unless-stopped
         working_dir: /app/backend
-        command: [ "python", "app.py" ]
+        command: ["gunicorn", "--workers", "1", "--bind", "0.0.0.0:8000", "--access-logfile", "-", "--error-logfile", "-", "app:app"]
         volumes:
             - ./backend:/app/backend
         environment:

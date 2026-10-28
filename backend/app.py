@@ -75,6 +75,7 @@ from routes.strategy_comparison import comparison_bp
 from routes.ml import ml_bp
 from routes.live import live_bp
 from routes.logos import logos_bp
+from routes.health import health_bp
 
 
 app.register_blueprint(auth_bp)
@@ -87,6 +88,7 @@ app.register_blueprint(comparison_bp)
 app.register_blueprint(ml_bp)
 app.register_blueprint(live_bp)
 app.register_blueprint(logos_bp)
+app.register_blueprint(health_bp)
 
 
 # ── Static SPA catch-all ─────────────────────────────────────────

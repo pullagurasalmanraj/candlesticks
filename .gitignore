@@ -10,6 +10,14 @@ __pycache__/
 .env
 backend/.instrument_sync.lock
 
+backend/tests
+backend/tokens.json
+
+docs/
+scripts/
+research/
+
+
 # OS files
 $RECYCLE.BIN/
 Thumbs.db
