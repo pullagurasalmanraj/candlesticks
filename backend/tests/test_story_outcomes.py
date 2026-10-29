@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pandas as pd
 from flask import Flask
+from psycopg2 import sql as pg_sql
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -21,6 +22,16 @@ from routes.strategy_logic import (  # noqa: E402
     _simulate_exit_vectorized,
     _story_trade_context,
 )
+
+
+def render_sql(query):
+    """Render composables for mocked-DB assertions, without a live connection."""
+    if not isinstance(query, pg_sql.Composable):
+        return query
+    # Only replace the connection-dependent quoting primitive in these unit tests.
+    with patch("psycopg2.extensions.quote_ident",
+               side_effect=lambda name, context: '"' + name.replace('"', '""') + '"'):
+        return query.as_string(None)
 
 
 def story(**changes):
@@ -218,9 +229,11 @@ class TestStoryOutcomeRoute(unittest.TestCase):
             schema[table].remove(name)
 
         def capture(cur, sql, rows):
+            self.insert_query = sql
+            sql = render_sql(sql)
             self.insert_sql = sql
             columns = re.search(r"INSERT INTO strategy_outcomes\s*\((.*?)\)\s*VALUES", sql, re.S).group(1)
-            columns = [name.strip() for name in columns.split(",")]
+            columns = [name.strip().strip('"') for name in columns.split(",")]
             for row in rows:
                 self.assertEqual(len(columns), len(row))
                 self.written.append(dict(zip(columns, row)))
@@ -260,7 +273,30 @@ class TestStoryOutcomeRoute(unittest.TestCase):
         # Timezone normalization remains UTC-naive for the existing DB writer.
         self.assertIsNone(row["ts"].tzinfo)
         for name in strategy.STORY_INPUT_COLUMNS:
-            self.assertIn(f"mc.{name}", self.queries[0].args[0])
+            self.assertIn(f'"mc"."{name}"', render_sql(self.queries[0].args[0]))
+
+    def test_composed_queries_keep_identifiers_and_request_values_separate(self):
+        symbol = "ITC'; DROP TABLE strategy_outcomes; --"
+        response = self.run_route(params={"symbol": symbol})
+        self.assertEqual(response.status_code, 200, response.json)
+        query = self.queries[0].args[0]
+        self.assertIsInstance(query, pg_sql.Composed)
+        rendered = render_sql(query)
+        self.assertNotIn(symbol.upper(), rendered)
+        self.assertEqual(self.queries[0].kwargs["params"][0], symbol.upper())
+        self.assertEqual(rendered.count("%s"), 5)
+        self.assertIn('"mc"."phase_reason"', rendered)
+        self.assertIsInstance(self.insert_query, pg_sql.Composed)
+        self.assertEqual(self.insert_sql.count("%s"), 1)
+        for name in strategy.OUTCOME_STORY_COLUMNS:
+            self.assertIn(f'"{name}"="excluded"."{name}"', self.insert_sql)
+
+    def test_optional_phase_reason_column_uses_fixed_null_projection(self):
+        response = self.run_route(missing=("market_context", "phase_reason"))
+        self.assertEqual(response.status_code, 200, response.json)
+        rendered = render_sql(self.queries[0].args[0])
+        self.assertIn("NULL::text AS phase_reason", rendered)
+        self.assertNotIn('"mc"."phase_reason"', rendered)
 
     def test_bear_story_overrides_bull_legacy_phase(self):
         response = self.run_route(self.frame(

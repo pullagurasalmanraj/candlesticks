@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import numpy as np
 from flask import Blueprint, request, jsonify
+from psycopg2 import sql
 
 from db import get_db_conn, read_sql_safe, chunk_execute as _chunk_execute
 from routes.strategy_logic import (
@@ -1723,13 +1724,16 @@ def calc_strategy_outcomes():
                     "error": "Story outcome schema is incomplete. Apply the market-story and story-outcome migrations, then relabel if needed.",
                     "missing_columns": missing,
                 }), 409
-            story_select = ", ".join(f"mc.{name}" for name in STORY_INPUT_COLUMNS)
+            story_select = sql.SQL(", ").join(
+                sql.Identifier("mc", name) for name in STORY_INPUT_COLUMNS
+            )
             phase_reason_select = (
-                "mc.phase_reason" if "phase_reason" in schema_columns["market_context"]
-                else "NULL::text AS phase_reason"
+                sql.Identifier("mc", "phase_reason")
+                if "phase_reason" in schema_columns["market_context"]
+                else sql.SQL("NULL::text AS phase_reason")
             )
             df = read_sql_safe(
-                f"""
+                sql.SQL("""
                 SELECT i.ts,i.open,i.high,i.low,i.close,i.atr_14,
                        mc.market_phase,mc.minute_of_day,
                        mc.ema_21_slope,mc.vwap_dist_pct,mc.range_efficiency,
@@ -1746,7 +1750,10 @@ def calc_strategy_outcomes():
                 WHERE i.symbol=%s AND i.exchange=%s AND i.timeframe=%s
                   AND i.ts >= %s AND i.ts < %s
                 ORDER BY i.ts
-            """,
+            """).format(
+                    phase_reason_select=phase_reason_select,
+                    story_select=story_select,
+                ),
                 conn,
                 params=[symbol, exchange, timeframe, from_dt, to_dt],
             )
@@ -2474,9 +2481,16 @@ def calc_strategy_outcomes():
                     or counterfactual_summary["production_eligible"] != len(rows)):
                 raise RuntimeError("Counterfactual research does not reconcile with production audit")
 
-        extra_columns_sql = ", ".join(OUTCOME_STORY_COLUMNS)
-        extra_updates_sql = ", ".join(f"{name}=EXCLUDED.{name}" for name in OUTCOME_STORY_COLUMNS)
-        OUTCOME_SQL = f"""
+        extra_columns_sql = sql.SQL(", ").join(
+            sql.Identifier(name) for name in OUTCOME_STORY_COLUMNS
+        )
+        extra_updates_sql = sql.SQL(", ").join(
+            sql.SQL("{}={}").format(
+                sql.Identifier(name), sql.Identifier("excluded", name)
+            )
+            for name in OUTCOME_STORY_COLUMNS
+        )
+        OUTCOME_SQL = sql.SQL("""
             INSERT INTO strategy_outcomes (
                 symbol,exchange,timeframe,ts,market_phase,minute_of_day,
                 orb_fired,ema_trend_fired,atr_expansion_fired,
@@ -2523,7 +2537,10 @@ def calc_strategy_outcomes():
                 cost_r=EXCLUDED.cost_r,
                 created_at=EXCLUDED.created_at,
                 {extra_updates_sql}
-        """
+        """).format(
+            extra_columns_sql=extra_columns_sql,
+            extra_updates_sql=extra_updates_sql,
+        )
 
         if not diagnostic_mode and not counterfactual_mode:
             with get_db_conn() as conn:

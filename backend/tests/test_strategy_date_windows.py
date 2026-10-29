@@ -88,6 +88,7 @@ class TestResearchWindowRoutes(unittest.TestCase):
         observed = []
 
         def read(sql, conn, params):
+            sql = fixtures.render_sql(sql)
             alias = "i." if "FROM indicators i" in sql else ""
             self.assert_window(sql, params, alias)
             observed.append(sql)
@@ -122,8 +123,9 @@ class TestResearchWindowRoutes(unittest.TestCase):
             "from_inclusive": self.start.isoformat(), "to_exclusive": self.end.isoformat(),
         })
         for query in self.route.queries:
-            self.assert_window(query.args[0], query.kwargs["params"],
-                               "i." if "FROM indicators i" in query.args[0] else "")
+            rendered = fixtures.render_sql(query.args[0])
+            self.assert_window(rendered, query.kwargs["params"],
+                               "i." if "FROM indicators i" in rendered else "")
         self.route.cur.execute.assert_not_called()
 
     def test_calibration_queries_and_saved_inclusive_metadata(self):
